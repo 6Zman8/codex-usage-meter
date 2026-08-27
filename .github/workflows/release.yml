@@ -1,0 +1,34 @@
+name: Build release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build single executable
+        shell: pwsh
+        run: |
+          .\build.ps1
+          $file = Get-Item -LiteralPath '.\bin\CodexUsageMeter.exe'
+          $actual = [version]$file.VersionInfo.FileVersion
+          $actualTag = "v$($actual.Major).$($actual.Minor).$($actual.Build)"
+          if ($actualTag -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $env:GITHUB_REF_NAME does not match executable version $actualTag"
+          }
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME '.\bin\CodexUsageMeter.exe#CodexUsageMeter.exe' --verify-tag --generate-notes --title "Codex Usage Meter $env:GITHUB_REF_NAME"
