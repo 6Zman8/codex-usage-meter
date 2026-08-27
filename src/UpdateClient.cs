@@ -46,10 +46,15 @@ namespace CodexUsageMeter
 
         public static Task<UpdateCheckResult> CheckLatestAsync()
         {
-            return Task.Run<UpdateCheckResult>((Func<UpdateCheckResult>)CheckLatest);
+            return CheckLatestAsync(null);
         }
 
-        private static UpdateCheckResult CheckLatest()
+        internal static Task<UpdateCheckResult> CheckLatestAsync(Version assumedCurrentVersion)
+        {
+            return Task.Run<UpdateCheckResult>(() => CheckLatest(assumedCurrentVersion));
+        }
+
+        private static UpdateCheckResult CheckLatest(Version assumedCurrentVersion)
         {
             EnableTls12();
             string endpoint = "https://api.github.com/repos/" + RepositoryOwner + "/" + RepositoryName + "/releases/latest";
@@ -80,7 +85,7 @@ namespace CodexUsageMeter
 
             string tag = StringValue(root, "tag_name");
             Version latest = ParseVersion(tag);
-            Version current = GetCurrentVersion();
+            Version current = assumedCurrentVersion ?? GetCurrentVersion();
             UpdateReleaseInfo release = ParseRelease(root, latest, tag);
             return new UpdateCheckResult {
                 CurrentVersionText = FormatVersion(current),

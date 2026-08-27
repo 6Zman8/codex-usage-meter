@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 
 namespace CodexUsageMeter
 {
@@ -43,7 +43,12 @@ namespace CodexUsageMeter
                     : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "update-check-result.txt");
                 try
                 {
-                    UpdateCheckResult result = UpdateClient.CheckLatestAsync().GetAwaiter().GetResult();
+                    Version assumedCurrentVersion = null;
+                    if (args.Length > 2 && !Version.TryParse(args[2], out assumedCurrentVersion))
+                    {
+                        throw new ArgumentException("테스트 기준 버전 형식이 올바르지 않습니다: " + args[2]);
+                    }
+                    UpdateCheckResult result = UpdateClient.CheckLatestAsync(assumedCurrentVersion).GetAwaiter().GetResult();
                     string stagedPath = UpdateClient.DownloadAndVerifyAsync(result.Release).GetAwaiter().GetResult();
                     try { File.Delete(stagedPath); } catch { }
                     File.WriteAllText(resultPath, "PASS current=v" + result.CurrentVersionText +
@@ -2034,7 +2039,7 @@ namespace CodexUsageMeter
             DateTime monthStart = currentMonth.AddMonths(Math.Max(-1, Math.Min(1, view.CalendarMonthOffset)));
             DateTime nextMonth = monthStart.AddMonths(1);
             int daysInMonth = DateTime.DaysInMonth(monthStart.Year, monthStart.Month);
-            int leadingCells = ((int)monthStart.DayOfWeek + 6) % 7;
+            int leadingCells = (int)monthStart.DayOfWeek;
             Dictionary<DateTime, long> byDate = new Dictionary<DateTime, long>();
             if (buckets != null)
             {
@@ -2149,13 +2154,27 @@ namespace CodexUsageMeter
                 long tokens;
                 byDate.TryGetValue(date, out tokens);
                 Grid slot = new Grid { Margin = new Thickness(1.5, 0.0, 1.5, 0.0), ToolTip = date.ToString("MM'/'dd") + " · " + FormatTokenCount(tokens) };
+                slot.RowDefinitions.Add(new RowDefinition { Height = new GridLength(26.0) });
+                slot.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                Grid barArea = new Grid { Margin = new Thickness(0.0, 0.0, 0.0, 2.0) };
                 Border track = new Border { Background = BrushFromHex("#303030"), CornerRadius = new CornerRadius(3.0), VerticalAlignment = VerticalAlignment.Stretch };
                 Border fill = new Border {
                     Background = BrushFromHex("#2F9E7E"), CornerRadius = new CornerRadius(3.0), VerticalAlignment = VerticalAlignment.Bottom,
                     Height = tokens <= 0 ? 2.0 : 4.0 + 19.0 * tokens / (double)maximum
                 };
-                slot.Children.Add(track);
-                slot.Children.Add(fill);
+                TextBlock dateLabel = new TextBlock {
+                    Text = day == 6 ? "오늘" : date.ToString("dd"),
+                    FontSize = 8.0,
+                    FontWeight = day == 6 ? FontWeights.SemiBold : FontWeights.Normal,
+                    Foreground = day == 6 ? BrushFromHex("#8DE0C4") : BrushFromHex("#A1A1AA"),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                barArea.Children.Add(track);
+                barArea.Children.Add(fill);
+                slot.Children.Add(barArea);
+                Grid.SetRow(dateLabel, 1);
+                slot.Children.Add(dateLabel);
                 view.WeeklyUsageGrid.Children.Add(slot);
             }
         }
@@ -2791,12 +2810,12 @@ namespace CodexUsageMeter
                     "Account1Card", "Account1TitleText", "Account1BadgeText", "Account1PrimaryName", "Account1PrimaryValue", "Account1PrimaryBar", "Account1PrimaryTimeBar", "Account1PrimaryReset", "Account1PrimaryRemaining",
                     "Account1SecondaryName", "Account1SecondaryValue", "Account1SecondaryBar", "Account1SecondaryTimeBar", "Account1SecondaryReset", "Account1SecondaryRemaining",
                     "Account1ResetCreditsValue", "Account1ResetCreditsDetail", "Account1LifetimeValue", "Account1PeakValue",
-                    "Account1StreakValue", "Account1LongestTurnValue", "Account1CalendarTitle", "Account1CalendarPreviousButton", "Account1CalendarNextButton", "Account1WeeklyUsageValue", "Account1WeeklyUsageGrid", "Account1UsageGrid", "Account1UsageEmpty", "Account1Status",
+                    "Account1StreakValue", "Account1LongestTurnValue", "Account1CalendarTitle", "Account1CalendarPreviousButton", "Account1CalendarNextButton", "Account1WeeklyUsageValue", "Account1WeeklyUsageGrid", "Account1WeekdayHeader", "Account1UsageGrid", "Account1UsageEmpty", "Account1Status",
                     "Account2Identity", "Account2LoginButton", "Account2LogoutButton",
                     "Account2Card", "Account2TitleText", "Account2BadgeText", "Account2PrimaryName", "Account2PrimaryValue", "Account2PrimaryBar", "Account2PrimaryTimeBar", "Account2PrimaryReset", "Account2PrimaryRemaining",
                     "Account2SecondaryName", "Account2SecondaryValue", "Account2SecondaryBar", "Account2SecondaryTimeBar", "Account2SecondaryReset", "Account2SecondaryRemaining",
                     "Account2ResetCreditsValue", "Account2ResetCreditsDetail", "Account2LifetimeValue", "Account2PeakValue",
-                    "Account2StreakValue", "Account2LongestTurnValue", "Account2CalendarTitle", "Account2CalendarPreviousButton", "Account2CalendarNextButton", "Account2WeeklyUsageValue", "Account2WeeklyUsageGrid", "Account2UsageGrid", "Account2UsageEmpty", "Account2Status",
+                    "Account2StreakValue", "Account2LongestTurnValue", "Account2CalendarTitle", "Account2CalendarPreviousButton", "Account2CalendarNextButton", "Account2WeeklyUsageValue", "Account2WeeklyUsageGrid", "Account2WeekdayHeader", "Account2UsageGrid", "Account2UsageEmpty", "Account2Status",
                     "PerformanceItemsPanel", "PerformanceCountText", "SystemStatus",
                     "CompactAccountSummaryText", "CompactAccountPageButton", "CompactAccount1Card", "CompactAccount1TitleText", "CompactAccount1BadgeText", "CompactAccount1Identity", "CompactAccount1PrimaryValue",
                     "CompactAccount1PrimaryTrack", "CompactAccount1PrimaryRing", "CompactAccount1PrimaryTimeBar", "CompactAccount1PrimaryTimeValue", "CompactAccount1PrimaryRecommendationRing", "CompactAccount1SecondaryTrack", "CompactAccount1SecondaryValue", "CompactAccount1SecondaryRing", "CompactAccount1SecondaryTimeBar", "CompactAccount1SecondaryTimeValue", "CompactAccount1SecondaryRecommendationRing", "CompactAccount1PaceValue", "CompactAccount1ResetValue",
@@ -2813,6 +2832,14 @@ namespace CodexUsageMeter
                     {
                         throw new InvalidOperationException("UI 요소를 찾지 못했습니다: " + requiredName);
                     }
+                }
+                UniformGrid account1WeekdayHeader = window.FindName("Account1WeekdayHeader") as UniformGrid;
+                UniformGrid account2WeekdayHeader = window.FindName("Account2WeekdayHeader") as UniformGrid;
+                string account1WeekdayOrder = String.Concat(account1WeekdayHeader.Children.OfType<TextBlock>().Select(label => label.Text));
+                string account2WeekdayOrder = String.Concat(account2WeekdayHeader.Children.OfType<TextBlock>().Select(label => label.Text));
+                if (account1WeekdayOrder != "일월화수목금토" || account2WeekdayOrder != "일월화수목금토")
+                {
+                    throw new InvalidOperationException("달력 요일이 일요일부터 토요일 순서가 아닙니다.");
                 }
                 WindowChrome chrome = WindowChrome.GetWindowChrome(window);
                 Border expandedShell = window.FindName("ExpandedShell") as Border;
