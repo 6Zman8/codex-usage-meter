@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
 
 namespace CodexUsageMeter
 {
@@ -79,6 +79,7 @@ namespace CodexUsageMeter
             string responsivePreviewPath = uiSmoke && args.Length > 3 ? Path.GetFullPath(args[3]) : null;
             string maximizedPreviewPath = uiSmoke && args.Length > 4 ? Path.GetFullPath(args[4]) : null;
             string settingsPreviewPath = uiSmoke && args.Length > 5 ? Path.GetFullPath(args[5]) : null;
+            string updateModalPreviewPath = uiSmoke && args.Length > 6 ? Path.GetFullPath(args[6]) : null;
 
             bool created = true;
             if (!uiSmoke)
@@ -137,6 +138,12 @@ namespace CodexUsageMeter
                                     controller.ShowSettingsForPreview();
                                     controller.CapturePreview(settingsPreviewPath);
                                     controller.HideSettingsForPreview();
+                                }
+                                if (!String.IsNullOrWhiteSpace(updateModalPreviewPath))
+                                {
+                                    controller.SetDisplayModeForPreview(true);
+                                    controller.ShowUpdateModalForPreview();
+                                    controller.CapturePreview(updateModalPreviewPath);
                                 }
                             }
                         }
@@ -904,6 +911,17 @@ namespace CodexUsageMeter
         {
             _settingsOverlay.Visibility = Visibility.Collapsed;
             ApplyFontScale(1.5, false);
+            _window.UpdateLayout();
+        }
+
+        public void ShowUpdateModalForPreview()
+        {
+            ApplyFontScale(1.5, false);
+            _settingsOverlay.Visibility = Visibility.Visible;
+            _updateStatusText.Text = "새 버전 v1.0.2 사용 가능";
+            ShowModal("새 버전 사용 가능",
+                "현재 v1.0.1 → 최신 v1.0.2\n\n다운로드 후 프로그램을 종료하고 새 버전으로 다시 시작합니다.",
+                null, "다운로드 및 재시작", "나중에", null, null);
             _window.UpdateLayout();
         }
 
@@ -2833,6 +2851,13 @@ namespace CodexUsageMeter
                         throw new InvalidOperationException("UI 요소를 찾지 못했습니다: " + requiredName);
                     }
                 }
+                Grid modalOverlay = window.FindName("ModalOverlay") as Grid;
+                Grid settingsOverlay = window.FindName("SettingsOverlay") as Grid;
+                if (modalOverlay.Parent == null || modalOverlay.Parent != settingsOverlay.Parent ||
+                    Panel.GetZIndex(modalOverlay) <= Panel.GetZIndex(settingsOverlay))
+                {
+                    throw new InvalidOperationException("알림창이 위젯·전체 공용 최상단 레이어가 아닙니다.");
+                }
                 UniformGrid account1WeekdayHeader = window.FindName("Account1WeekdayHeader") as UniformGrid;
                 UniformGrid account2WeekdayHeader = window.FindName("Account2WeekdayHeader") as UniformGrid;
                 string account1WeekdayOrder = String.Concat(account1WeekdayHeader.Children.OfType<TextBlock>().Select(label => label.Text));
@@ -2911,7 +2936,7 @@ namespace CodexUsageMeter
                     throw new InvalidOperationException("Shift 비율 고정 계산이 올바르지 않습니다.");
                 }
                 window.Close();
-                lines.Add("PASS ui: dynamic performance panel, settings overlay, no app minimum size, top-bar always-on-top, maximize/restore, and app icon enabled");
+                lines.Add("PASS ui: shared modal above compact/expanded settings, dynamic performance panel, no app minimum size, top-bar always-on-top, maximize/restore, and app icon enabled");
 
                 UpdateClient.RunUpdaterSelfTest();
                 lines.Add("PASS updater: embedded helper replacement, SHA-256 verification, and rollback path enabled; current v" + UpdateClient.CurrentVersionText);
