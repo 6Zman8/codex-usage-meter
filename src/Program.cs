@@ -36,6 +36,30 @@ namespace CodexUsageMeter
         [STAThread]
         public static int Main(string[] args)
         {
+            if (args.Length > 0 && String.Equals(args[0], "--update-check-test", StringComparison.OrdinalIgnoreCase))
+            {
+                string resultPath = args.Length > 1
+                    ? Path.GetFullPath(args[1])
+                    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "update-check-result.txt");
+                try
+                {
+                    UpdateCheckResult result = UpdateClient.CheckLatestAsync().GetAwaiter().GetResult();
+                    string stagedPath = UpdateClient.DownloadAndVerifyAsync(result.Release).GetAwaiter().GetResult();
+                    try { File.Delete(stagedPath); } catch { }
+                    File.WriteAllText(resultPath, "PASS current=v" + result.CurrentVersionText +
+                        " latest=v" + result.LatestVersionText + " available=" + result.UpdateAvailable.ToString() +
+                        " asset=" + (result.Release == null ? String.Empty : result.Release.DownloadUrl) +
+                        " sha256=" + (result.Release == null ? String.Empty : result.Release.Sha256) +
+                        " downloadVerified=True", Encoding.UTF8);
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    File.WriteAllText(resultPath, "FAIL " + ex.ToString(), Encoding.UTF8);
+                    return 1;
+                }
+            }
+
             if (args.Length > 0 && String.Equals(args[0], "--self-test", StringComparison.OrdinalIgnoreCase))
             {
                 string resultPath = args.Length > 1
