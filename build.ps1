@@ -43,6 +43,8 @@ $references = @(
     (Join-Path $frameworkRoot 'System.Web.Extensions.dll'),
     (Join-Path $frameworkRoot 'System.Drawing.dll'),
     (Join-Path $frameworkRoot 'System.Windows.Forms.dll'),
+    (Join-Path $wpfRoot 'UIAutomationClient.dll'),
+    (Join-Path $wpfRoot 'UIAutomationTypes.dll'),
     (Join-Path $wpfRoot 'WindowsBase.dll'),
     (Join-Path $wpfRoot 'PresentationCore.dll'),
     (Join-Path $wpfRoot 'PresentationFramework.dll'),
@@ -95,6 +97,7 @@ foreach ($reference in $references) {
 
 $arguments += @(
     (Join-Path $sourceRoot 'Program.cs'),
+    (Join-Path $sourceRoot 'CodexDesktopLogout.cs'),
     (Join-Path $sourceRoot 'CodexClient.cs'),
     (Join-Path $sourceRoot 'SystemMonitor.cs'),
     (Join-Path $sourceRoot 'UpdateClient.cs')

@@ -113,7 +113,7 @@
                 <StackPanel><StackPanel Orientation="Horizontal"><TextBlock x:Name="Account1TitleText" Text="계정 1" FontSize="16" FontWeight="Bold"/>
                   <Border Background="#203B33" CornerRadius="7" Margin="7,1,0,0" Padding="6,1"><TextBlock x:Name="Account1BadgeText" Text="1" Foreground="#8DE0C4" FontSize="9" FontWeight="Bold"/></Border></StackPanel>
                   <TextBlock x:Name="Account1Identity" Text="연결 확인 중…" Style="{StaticResource Muted}" TextTrimming="CharacterEllipsis"/></StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button x:Name="Account1LoginButton" Content="연결" Style="{StaticResource AccentButton}" Margin="0,0,5,0"/><Button x:Name="Account1LogoutButton" Content="해제"/></StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button x:Name="Account1LoginButton" Content="연결" Style="{StaticResource AccentButton}" Margin="0,0,5,0"/><Button x:Name="Account1CodexLoginButton" Content="Codex 로그인" Style="{StaticResource AccentButton}" Margin="0,0,5,0" Visibility="Collapsed"/><Button x:Name="Account1LogoutButton" Content="해제"/></StackPanel>
               </Grid>
               <Border Grid.Row="1" Style="{StaticResource SubCard}" Margin="0,10,0,0"><StackPanel>
                 <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="Account1PrimaryName" Text="단기 한도" FontWeight="SemiBold" FontSize="12"/><TextBlock x:Name="Account1PrimaryValue" Grid.Column="1" Text="--" FontWeight="Bold" FontSize="13" Foreground="#5EEAD4"/></Grid>
@@ -147,7 +147,7 @@
                 <StackPanel><StackPanel Orientation="Horizontal"><TextBlock x:Name="Account2TitleText" Text="계정 2" FontSize="16" FontWeight="Bold"/>
                   <Border Background="#342B18" CornerRadius="7" Margin="7,1,0,0" Padding="6,1"><TextBlock x:Name="Account2BadgeText" Text="2" Foreground="#FCD34D" FontSize="9" FontWeight="Bold"/></Border></StackPanel>
                   <TextBlock x:Name="Account2Identity" Text="연결 확인 중…" Style="{StaticResource Muted}" TextTrimming="CharacterEllipsis"/></StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button x:Name="Account2LoginButton" Content="연결" Style="{StaticResource AccentButton}" Margin="0,0,5,0"/><Button x:Name="Account2LogoutButton" Content="해제"/></StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button x:Name="Account2LoginButton" Content="연결" Style="{StaticResource AccentButton}" Margin="0,0,5,0"/><Button x:Name="Account2CodexLoginButton" Content="Codex 로그인" Style="{StaticResource AccentButton}" Margin="0,0,5,0" Visibility="Collapsed"/><Button x:Name="Account2LogoutButton" Content="해제"/></StackPanel>
               </Grid>
               <Border Grid.Row="1" Style="{StaticResource SubCard}" Margin="0,10,0,0"><StackPanel>
                 <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="Account2PrimaryName" Text="단기 한도" FontWeight="SemiBold" FontSize="12"/><TextBlock x:Name="Account2PrimaryValue" Grid.Column="1" Text="--" FontWeight="Bold" FontSize="13" Foreground="#5EEAD4"/></Grid>
@@ -229,9 +229,10 @@
 
           <Border x:Name="CompactAccount1Card" Grid.Row="0" Style="{StaticResource SubCard}" Padding="13,10">
             <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <Border Width="24" Height="24" CornerRadius="8" Background="#203B33"><TextBlock x:Name="CompactAccount1BadgeText" Text="1" Foreground="#8DE0C4" FontWeight="Bold" FontSize="9" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
                 <StackPanel Grid.Column="1" Margin="8,0,0,0"><TextBlock x:Name="CompactAccount1TitleText" Text="계정 1" FontWeight="SemiBold" FontSize="12"/><TextBlock x:Name="CompactAccount1Identity" Text="연결 확인 중…" Style="{StaticResource Muted}" FontSize="9" TextTrimming="CharacterEllipsis"/></StackPanel>
+                <Button x:Name="CompactAccount1CodexLoginButton" Grid.Column="2" Content="로그인 변경" Style="{StaticResource AccentButton}" Height="24" Padding="8,2" FontSize="9" Margin="7,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
               </Grid>
               <Grid Grid.Row="1" Margin="0,4,0,2"><Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="8"/><ColumnDefinition Width="96"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <Canvas Width="120" Height="120" HorizontalAlignment="Center" VerticalAlignment="Center" ToolTip="주간: 진한 보라는 현재 값, 아래의 연한 보라는 권장량">
@@ -260,9 +261,10 @@
 
           <Border x:Name="CompactAccount2Card" Grid.Row="2" Style="{StaticResource SubCard}" Padding="13,10">
             <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <Border Width="24" Height="24" CornerRadius="8" Background="#3B3320"><TextBlock x:Name="CompactAccount2BadgeText" Text="2" Foreground="#E7C86E" FontWeight="Bold" FontSize="9" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
                 <StackPanel Grid.Column="1" Margin="8,0,0,0"><TextBlock x:Name="CompactAccount2TitleText" Text="계정 2" FontWeight="SemiBold" FontSize="12"/><TextBlock x:Name="CompactAccount2Identity" Text="연결 확인 중…" Style="{StaticResource Muted}" FontSize="9" TextTrimming="CharacterEllipsis"/></StackPanel>
+                <Button x:Name="CompactAccount2CodexLoginButton" Grid.Column="2" Content="로그인 변경" Style="{StaticResource AccentButton}" Height="24" Padding="8,2" FontSize="9" Margin="7,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"/>
               </Grid>
               <Grid Grid.Row="1" Margin="0,4,0,2"><Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="8"/><ColumnDefinition Width="96"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <Canvas Width="120" Height="120" HorizontalAlignment="Center" VerticalAlignment="Center" ToolTip="주간: 진한 보라는 현재 값, 아래의 연한 보라는 권장량">

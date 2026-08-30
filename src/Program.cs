@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.0.2.0")]
-[assembly: AssemblyFileVersion("1.0.2.0")]
+[assembly: AssemblyVersion("1.0.3.0")]
+[assembly: AssemblyFileVersion("1.0.3.0")]
 
 namespace CodexUsageMeter
 {
@@ -197,6 +197,8 @@ namespace CodexUsageMeter
         public TextBlock CompactBadgeText;
         public TextBlock Identity;
         public Button LoginButton;
+        public Button CodexLoginButton;
+        public Button CompactCodexLoginButton;
         public Button LogoutButton;
         public TextBlock PrimaryName;
         public TextBlock PrimaryValue;
@@ -281,6 +283,7 @@ namespace CodexUsageMeter
         private readonly AccountView _account2;
         private readonly List<AccountState> _accounts;
         private readonly string _accountsRoot;
+        private readonly CodexDesktopLogout _codexDesktopLogout;
         private readonly SystemMonitor _systemMonitor;
         private readonly DispatcherTimer _systemTimer;
         private readonly DispatcherTimer _accountTimer;
@@ -365,6 +368,7 @@ namespace CodexUsageMeter
         private bool _refreshing;
         private bool _settingAutostart;
         private bool _updateChecking;
+        private bool _changingCodexLogin;
         private bool _disposed;
         private bool _compactMode;
         private bool _displayModeInitialized;
@@ -390,6 +394,7 @@ namespace CodexUsageMeter
             string localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             _accountsRoot = Path.Combine(localData, "CodexUsageMeter", "accounts");
             _accounts = new List<AccountState>();
+            _codexDesktopLogout = new CodexDesktopLogout();
 
             _account1 = CreateAccountView(1, "계정 1", null);
             _account2 = CreateAccountView(2, "계정 2", null);
@@ -511,6 +516,10 @@ namespace CodexUsageMeter
             _compactAccountPageButton.Click += CompactAccountPageButtonClick;
             _account1.LoginButton.Click += Account1LoginClick;
             _account2.LoginButton.Click += Account2LoginClick;
+            _account1.CodexLoginButton.Click += Account1CodexLoginClick;
+            _account2.CodexLoginButton.Click += Account2CodexLoginClick;
+            _account1.CompactCodexLoginButton.Click += Account1CodexLoginClick;
+            _account2.CompactCodexLoginButton.Click += Account2CodexLoginClick;
             _account1.LogoutButton.Click += Account1LogoutClick;
             _account2.LogoutButton.Click += Account2LogoutClick;
             _account1.CalendarPreviousButton.Click += delegate { ChangeCalendarMonth(_account1, -1); };
@@ -582,6 +591,8 @@ namespace CodexUsageMeter
             view.CompactBadgeText = Find<TextBlock>("Compact" + prefix + "BadgeText");
             view.Identity = Find<TextBlock>(prefix + "Identity");
             view.LoginButton = Find<Button>(prefix + "LoginButton");
+            view.CodexLoginButton = Find<Button>(prefix + "CodexLoginButton");
+            view.CompactCodexLoginButton = Find<Button>("Compact" + prefix + "CodexLoginButton");
             view.LogoutButton = Find<Button>(prefix + "LogoutButton");
             view.PrimaryName = Find<TextBlock>(prefix + "PrimaryName");
             view.PrimaryValue = Find<TextBlock>(prefix + "PrimaryValue");
@@ -1108,6 +1119,16 @@ namespace CodexUsageMeter
         private async void Account2LoginClick(object sender, RoutedEventArgs e)
         {
             await BeginLoginAsync(_account2);
+        }
+
+        private void Account1CodexLoginClick(object sender, RoutedEventArgs e)
+        {
+            ConfirmCodexLoginChange(_account1);
+        }
+
+        private void Account2CodexLoginClick(object sender, RoutedEventArgs e)
+        {
+            ConfirmCodexLoginChange(_account2);
         }
 
         private void Account1LogoutClick(object sender, RoutedEventArgs e)
@@ -1771,6 +1792,69 @@ namespace CodexUsageMeter
             }
         }
 
+        private void ConfirmCodexLoginChange(AccountView view)
+        {
+            if (view == null || view.State == null || _changingCodexLogin) return;
+            string identity = view.LastSnapshot == null ? null : view.LastSnapshot.Email;
+            string account = String.IsNullOrWhiteSpace(identity)
+                ? view.Label
+                : view.Label + " (" + identity + ")";
+            ShowModal("Codex 로그인 변경",
+                "Codex 창의 실제 로그아웃을 실행한 뒤 정상 로그인 화면으로 이동합니다. " +
+                "미터기는 종료되지 않고 사용량 조회용 로그인도 그대로 유지됩니다. " +
+                "로그인 화면이 열리면 브라우저에서 " + account + "을 선택해 주세요.",
+                null, "Codex 로그아웃", "취소", delegate { BeginCodexLoginChange(view); }, null);
+        }
+
+        private async void BeginCodexLoginChange(AccountView view)
+        {
+            if (view == null || _changingCodexLogin) return;
+            _changingCodexLogin = true;
+            SetCodexLoginButtonsEnabled(false);
+            SetFooterText("Codex 로그아웃 화면을 여는 중…");
+            CodexLogoutResult result;
+            try
+            {
+                result = await Task.Run(delegate
+                {
+                    return _codexDesktopLogout.TryLogout(TimeSpan.FromSeconds(8));
+                });
+            }
+            catch (Exception ex)
+            {
+                result = CodexLogoutResult.Failed("Codex 로그아웃 중 오류가 발생했습니다: " + ex.Message);
+            }
+            finally
+            {
+                _changingCodexLogin = false;
+                SetCodexLoginButtonsEnabled(true);
+            }
+
+            string identity = view.LastSnapshot == null ? null : view.LastSnapshot.Email;
+            string target = String.IsNullOrWhiteSpace(identity)
+                ? view.Label
+                : view.Label + " (" + identity + ")";
+            if (result.Success)
+            {
+                SetFooterText("Codex 로그인 화면에서 " + target + "을 선택해 주세요.");
+            }
+            else
+            {
+                SetFooterText(result.Message);
+                _window.Activate();
+                ShowModal("Codex 로그아웃 실패", result.Message, null, "확인", null, null, null);
+            }
+        }
+
+        private void SetCodexLoginButtonsEnabled(bool enabled)
+        {
+            foreach (AccountView account in new AccountView[] { _account1, _account2 })
+            {
+                account.CodexLoginButton.IsEnabled = enabled;
+                account.CompactCodexLoginButton.IsEnabled = enabled;
+            }
+        }
+
         private static bool TrySetClipboardText(string text)
         {
             for (int attempt = 0; attempt < 6; attempt++)
@@ -1879,6 +1963,8 @@ namespace CodexUsageMeter
             {
                 view.Identity.Text = "연결되지 않음";
                 view.LoginButton.Visibility = Visibility.Visible;
+                view.CodexLoginButton.Visibility = Visibility.Collapsed;
+                view.CompactCodexLoginButton.Visibility = Visibility.Collapsed;
                 view.LogoutButton.Visibility = Visibility.Collapsed;
                 ClearWindow(view.PrimaryName, view.PrimaryValue, view.PrimaryBar, view.PrimaryTimeBar, view.PrimaryReset, view.PrimaryRemaining, "단기 한도", false);
                 ClearWindow(view.SecondaryName, view.SecondaryValue, view.SecondaryBar, view.SecondaryTimeBar, view.SecondaryReset, view.SecondaryRemaining, "장기 한도", true);
@@ -1898,6 +1984,8 @@ namespace CodexUsageMeter
             }
             view.Identity.Text = identity;
             view.LoginButton.Visibility = Visibility.Collapsed;
+            view.CodexLoginButton.Visibility = Visibility.Visible;
+            view.CompactCodexLoginButton.Visibility = Visibility.Visible;
             view.LogoutButton.Visibility = Visibility.Visible;
             UpdateWindow(view.PrimaryName, view.PrimaryValue, view.PrimaryBar, view.PrimaryTimeBar, view.PrimaryReset, view.PrimaryRemaining, snapshot.Primary, "단기 한도", false);
             UpdateWindow(view.SecondaryName, view.SecondaryValue, view.SecondaryBar, view.SecondaryTimeBar, view.SecondaryReset, view.SecondaryRemaining, snapshot.Secondary, "장기 한도", true);
@@ -2824,20 +2912,20 @@ namespace CodexUsageMeter
                     "ExpandedLayout", "CompactLayout", "ExpandedShell", "CompactShell", "AccountCountBadgeText", "AccountSummaryText", "CompactModeButton", "ExpandedModeButton",
                     "RefreshButton", "TopmostButton", "SettingsButton", "HideButton", "MaximizeButton", "CloseButton", "TitleBar", "AutostartCheckBox", "FooterStatus",
                     "CompactRefreshButton", "CompactTopmostButton", "CompactSettingsButton", "CompactHideButton", "CompactMaximizeButton", "CompactCloseButton", "CompactTitleBar", "CompactFooterStatus",
-                    "Account1Identity", "Account1LoginButton", "Account1LogoutButton",
+                    "Account1Identity", "Account1LoginButton", "Account1CodexLoginButton", "Account1LogoutButton",
                     "Account1Card", "Account1TitleText", "Account1BadgeText", "Account1PrimaryName", "Account1PrimaryValue", "Account1PrimaryBar", "Account1PrimaryTimeBar", "Account1PrimaryReset", "Account1PrimaryRemaining",
                     "Account1SecondaryName", "Account1SecondaryValue", "Account1SecondaryBar", "Account1SecondaryTimeBar", "Account1SecondaryReset", "Account1SecondaryRemaining",
                     "Account1ResetCreditsValue", "Account1ResetCreditsDetail", "Account1LifetimeValue", "Account1PeakValue",
                     "Account1StreakValue", "Account1LongestTurnValue", "Account1CalendarTitle", "Account1CalendarPreviousButton", "Account1CalendarNextButton", "Account1WeeklyUsageValue", "Account1WeeklyUsageGrid", "Account1WeekdayHeader", "Account1UsageGrid", "Account1UsageEmpty", "Account1Status",
-                    "Account2Identity", "Account2LoginButton", "Account2LogoutButton",
+                    "Account2Identity", "Account2LoginButton", "Account2CodexLoginButton", "Account2LogoutButton",
                     "Account2Card", "Account2TitleText", "Account2BadgeText", "Account2PrimaryName", "Account2PrimaryValue", "Account2PrimaryBar", "Account2PrimaryTimeBar", "Account2PrimaryReset", "Account2PrimaryRemaining",
                     "Account2SecondaryName", "Account2SecondaryValue", "Account2SecondaryBar", "Account2SecondaryTimeBar", "Account2SecondaryReset", "Account2SecondaryRemaining",
                     "Account2ResetCreditsValue", "Account2ResetCreditsDetail", "Account2LifetimeValue", "Account2PeakValue",
                     "Account2StreakValue", "Account2LongestTurnValue", "Account2CalendarTitle", "Account2CalendarPreviousButton", "Account2CalendarNextButton", "Account2WeeklyUsageValue", "Account2WeeklyUsageGrid", "Account2WeekdayHeader", "Account2UsageGrid", "Account2UsageEmpty", "Account2Status",
                     "PerformanceItemsPanel", "PerformanceCountText", "SystemStatus",
-                    "CompactAccountSummaryText", "CompactAccountPageButton", "CompactAccount1Card", "CompactAccount1TitleText", "CompactAccount1BadgeText", "CompactAccount1Identity", "CompactAccount1PrimaryValue",
+                    "CompactAccountSummaryText", "CompactAccountPageButton", "CompactAccount1Card", "CompactAccount1TitleText", "CompactAccount1BadgeText", "CompactAccount1Identity", "CompactAccount1CodexLoginButton", "CompactAccount1PrimaryValue",
                     "CompactAccount1PrimaryTrack", "CompactAccount1PrimaryRing", "CompactAccount1PrimaryTimeBar", "CompactAccount1PrimaryTimeValue", "CompactAccount1PrimaryRecommendationRing", "CompactAccount1SecondaryTrack", "CompactAccount1SecondaryValue", "CompactAccount1SecondaryRing", "CompactAccount1SecondaryTimeBar", "CompactAccount1SecondaryTimeValue", "CompactAccount1SecondaryRecommendationRing", "CompactAccount1PaceValue", "CompactAccount1ResetValue",
-                    "CompactAccount2Card", "CompactAccount2TitleText", "CompactAccount2BadgeText", "CompactAccount2Identity", "CompactAccount2PrimaryValue",
+                    "CompactAccount2Card", "CompactAccount2TitleText", "CompactAccount2BadgeText", "CompactAccount2Identity", "CompactAccount2CodexLoginButton", "CompactAccount2PrimaryValue",
                     "CompactAccount2PrimaryTrack", "CompactAccount2PrimaryRing", "CompactAccount2PrimaryTimeBar", "CompactAccount2PrimaryTimeValue", "CompactAccount2PrimaryRecommendationRing", "CompactAccount2SecondaryTrack", "CompactAccount2SecondaryValue", "CompactAccount2SecondaryRing", "CompactAccount2SecondaryTimeBar", "CompactAccount2SecondaryTimeValue", "CompactAccount2SecondaryRecommendationRing", "CompactAccount2PaceValue", "CompactAccount2ResetValue",
                     "CompactCpuValue", "CompactCpuTrack", "CompactCpuRing", "CompactGpuLabel", "CompactGpuValue", "CompactGpuTrack", "CompactGpuRing", "CompactMemoryValue", "CompactMemoryTrack", "CompactMemoryRing", "CompactDiskLabel", "CompactDiskValue", "CompactDiskTrack", "CompactDiskRing", "CompactNetworkValue",
                     "ModalOverlay", "ModalTitle", "ModalMessage", "ModalCodePanel", "ModalCode", "ModalPrimaryButton", "ModalSecondaryButton",
@@ -2857,6 +2945,14 @@ namespace CodexUsageMeter
                     Panel.GetZIndex(modalOverlay) <= Panel.GetZIndex(settingsOverlay))
                 {
                     throw new InvalidOperationException("알림창이 위젯·전체 공용 최상단 레이어가 아닙니다.");
+                }
+                Button account1CodexLoginButton = window.FindName("Account1CodexLoginButton") as Button;
+                Button compactAccount1CodexLoginButton = window.FindName("CompactAccount1CodexLoginButton") as Button;
+                if (account1CodexLoginButton == null || compactAccount1CodexLoginButton == null ||
+                    Convert.ToString(account1CodexLoginButton.Content) != "Codex 로그인" ||
+                    Convert.ToString(compactAccount1CodexLoginButton.Content) != "로그인 변경")
+                {
+                    throw new InvalidOperationException("Codex 로그인 변경 버튼 구성이 올바르지 않습니다.");
                 }
                 UniformGrid account1WeekdayHeader = window.FindName("Account1WeekdayHeader") as UniformGrid;
                 UniformGrid account2WeekdayHeader = window.FindName("Account2WeekdayHeader") as UniformGrid;
@@ -2936,7 +3032,7 @@ namespace CodexUsageMeter
                     throw new InvalidOperationException("Shift 비율 고정 계산이 올바르지 않습니다.");
                 }
                 window.Close();
-                lines.Add("PASS ui: shared modal above compact/expanded settings, dynamic performance panel, no app minimum size, top-bar always-on-top, maximize/restore, and app icon enabled");
+                lines.Add("PASS ui: Codex relogin buttons, shared modal, responsive layout, saved settings, and app icon enabled");
 
                 UpdateClient.RunUpdaterSelfTest();
                 lines.Add("PASS updater: embedded helper replacement, SHA-256 verification, and rollback path enabled; current v" + UpdateClient.CurrentVersionText);
