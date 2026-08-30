@@ -653,6 +653,29 @@ namespace CodexUsageMeter
             return String.IsNullOrWhiteSpace(message) ? "알 수 없는 오류" : message;
         }
 
+        public void Suspend()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException("CodexRpcClient");
+            }
+
+            _startGate.Wait();
+            try
+            {
+                if (_disposed)
+                {
+                    throw new ObjectDisposedException("CodexRpcClient");
+                }
+                FailPending(new IOException("계정 전환을 위해 미터기 연결을 잠시 멈췄습니다."));
+                StopProcess();
+            }
+            finally
+            {
+                _startGate.Release();
+            }
+        }
+
         public void Dispose()
         {
             if (_disposed)

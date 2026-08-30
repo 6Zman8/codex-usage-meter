@@ -36,6 +36,19 @@ namespace CodexUsageMeter
         [STAThread]
         public static int Main(string[] args)
         {
+            if (args.Length > 0 && String.Equals(args[0], "--account-switch-self-test", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    AccountSwitcherSelfTest.Run();
+                    return 0;
+                }
+                catch
+                {
+                    return 1;
+                }
+            }
+
             if (args.Length > 0 && String.Equals(args[0], "--update-check-test", StringComparison.OrdinalIgnoreCase))
             {
                 string resultPath = args.Length > 1
@@ -283,7 +296,7 @@ namespace CodexUsageMeter
         private readonly AccountView _account2;
         private readonly List<AccountState> _accounts;
         private readonly string _accountsRoot;
-        private readonly CodexDesktopLogout _codexDesktopLogout;
+        private readonly AccountSwitcher _accountSwitcher;
         private readonly SystemMonitor _systemMonitor;
         private readonly DispatcherTimer _systemTimer;
         private readonly DispatcherTimer _accountTimer;
@@ -368,7 +381,7 @@ namespace CodexUsageMeter
         private bool _refreshing;
         private bool _settingAutostart;
         private bool _updateChecking;
-        private bool _changingCodexLogin;
+        private bool _switchingAccount;
         private bool _disposed;
         private bool _compactMode;
         private bool _displayModeInitialized;
@@ -380,6 +393,7 @@ namespace CodexUsageMeter
         private string _performanceSignature;
         private int _accountCount = 2;
         private int _accountPage;
+        private int? _activeCodexAccountNumber;
         private bool _customMaximized;
         private bool _handlingNativeMaximize;
         private Rect _restoreBounds;
@@ -393,8 +407,10 @@ namespace CodexUsageMeter
             _codexPath = CodexLocator.Find();
             string localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             _accountsRoot = Path.Combine(localData, "CodexUsageMeter", "accounts");
+            string defaultCodexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
             _accounts = new List<AccountState>();
-            _codexDesktopLogout = new CodexDesktopLogout();
+            _accountSwitcher = new AccountSwitcher(defaultCodexHome, _accountsRoot,
+                new CodexDesktopLifecycle(), new FileAccountSwitchJournal());
 
             _account1 = CreateAccountView(1, "계정 1", null);
             _account2 = CreateAccountView(2, "계정 2", null);
@@ -1489,9 +1505,9 @@ namespace CodexUsageMeter
             }
         }
 
-        private async Task RefreshAccountsAsync()
+        private async Task RefreshAccountsAsync(bool allowDuringSwitch = false)
         {
-            if (_refreshing)
+            if (_refreshing || (_switchingAccount && !allowDuringSwitch))
             {
                 return;
             }
@@ -1514,6 +1530,7 @@ namespace CodexUsageMeter
                 {
                     states[index].LastSnapshot = snapshots[index];
                 }
+                _activeCodexAccountNumber = _accountSwitcher.DetectActiveAccountNumber(_accountCount);
                 BindAccountPage();
                 UpdateFooter();
             }
@@ -1524,10 +1541,10 @@ namespace CodexUsageMeter
             finally
             {
                 _refreshing = false;
-                _refreshButton.IsEnabled = true;
-                _compactRefreshButton.IsEnabled = true;
-                _accountCountDecreaseButton.IsEnabled = _accountCount > 1;
-                _accountCountIncreaseButton.IsEnabled = _accountCount < 4;
+                _refreshButton.IsEnabled = !_switchingAccount;
+                _compactRefreshButton.IsEnabled = !_switchingAccount;
+                _accountCountDecreaseButton.IsEnabled = !_switchingAccount && _accountCount > 1;
+                _accountCountIncreaseButton.IsEnabled = !_switchingAccount && _accountCount < 4;
             }
         }
 
@@ -1794,55 +1811,71 @@ namespace CodexUsageMeter
 
         private void ConfirmCodexLoginChange(AccountView view)
         {
-            if (view == null || view.State == null || _changingCodexLogin) return;
-            string identity = view.LastSnapshot == null ? null : view.LastSnapshot.Email;
-            string account = String.IsNullOrWhiteSpace(identity)
-                ? view.Label
-                : view.Label + " (" + identity + ")";
-            ShowModal("Codex 로그인 변경",
-                "Codex 창의 실제 로그아웃을 실행한 뒤 정상 로그인 화면으로 이동합니다. " +
-                "미터기는 종료되지 않고 사용량 조회용 로그인도 그대로 유지됩니다. " +
-                "로그인 화면이 열리면 브라우저에서 " + account + "을 선택해 주세요.",
-                null, "Codex 로그아웃", "취소", delegate { BeginCodexLoginChange(view); }, null);
+            if (view == null || view.State == null || _switchingAccount) return;
+            if (view.LastSnapshot == null || !view.LastSnapshot.IsAuthenticated)
+            {
+                ShowModal("계정 전환 불가", "먼저 이 계정을 미터기에 연결해 주세요.", null,
+                    "확인", null, null, null);
+                return;
+            }
+            if (_activeCodexAccountNumber.HasValue && _activeCodexAccountNumber.Value == view.State.Number)
+            {
+                SetFooterText(view.Label + "이 이미 Codex에서 사용 중입니다.");
+                return;
+            }
+            BeginCodexLoginChange(view);
         }
 
         private async void BeginCodexLoginChange(AccountView view)
         {
-            if (view == null || _changingCodexLogin) return;
-            _changingCodexLogin = true;
+            if (view == null || view.State == null || _switchingAccount) return;
+            _switchingAccount = true;
+            _accountTimer.Stop();
             SetCodexLoginButtonsEnabled(false);
-            SetFooterText("Codex 로그아웃 화면을 여는 중…");
-            CodexLogoutResult result;
+            _refreshButton.IsEnabled = false;
+            _compactRefreshButton.IsEnabled = false;
+            _accountCountDecreaseButton.IsEnabled = false;
+            _accountCountIncreaseButton.IsEnabled = false;
+            int targetNumber = view.State.Number;
+            SetFooterText(view.Label + "로 전환하기 위해 Codex만 완전히 다시 여는 중…");
+            AccountSwitchResult result;
             try
             {
+                int? currentNumber = _activeCodexAccountNumber;
+                AccountState[] states = _accounts.ToArray();
                 result = await Task.Run(delegate
                 {
-                    return _codexDesktopLogout.TryLogout(TimeSpan.FromSeconds(8));
+                    foreach (AccountState state in states) state.Client.Suspend();
+                    return _accountSwitcher.SwitchTo(targetNumber, currentNumber);
                 });
             }
-            catch (Exception ex)
+            catch
             {
-                result = CodexLogoutResult.Failed("Codex 로그아웃 중 오류가 발생했습니다: " + ex.Message);
+                result = AccountSwitchResult.Failed(false,
+                    "계정 전환 중 예상하지 못한 오류가 발생했습니다. 인증정보 내용은 표시하지 않았습니다.");
             }
-            finally
-            {
-                _changingCodexLogin = false;
-                SetCodexLoginButtonsEnabled(true);
-            }
-
-            string identity = view.LastSnapshot == null ? null : view.LastSnapshot.Email;
-            string target = String.IsNullOrWhiteSpace(identity)
-                ? view.Label
-                : view.Label + " (" + identity + ")";
+            await RefreshAccountsAsync(true);
+            _switchingAccount = false;
+            _accountTimer.Start();
+            SetCodexLoginButtonsEnabled(true);
+            _refreshButton.IsEnabled = true;
+            _compactRefreshButton.IsEnabled = true;
+            _accountCountDecreaseButton.IsEnabled = _accountCount > 1;
+            _accountCountIncreaseButton.IsEnabled = _accountCount < 4;
+            BindAccountPage();
             if (result.Success)
             {
-                SetFooterText("Codex 로그인 화면에서 " + target + "을 선택해 주세요.");
+                SetFooterText(result.Message);
             }
             else
             {
                 SetFooterText(result.Message);
                 _window.Activate();
-                ShowModal("Codex 로그아웃 실패", result.Message, null, "확인", null, null, null);
+                ShowModal("Codex 계정 전환 실패", result.Message, null, "확인", null, null, null);
+            }
+            if (_disposed)
+            {
+                _accountTimer.Stop();
             }
         }
 
@@ -1850,8 +1883,22 @@ namespace CodexUsageMeter
         {
             foreach (AccountView account in new AccountView[] { _account1, _account2 })
             {
-                account.CodexLoginButton.IsEnabled = enabled;
-                account.CompactCodexLoginButton.IsEnabled = enabled;
+                UpdateCodexLoginButton(account, enabled);
+            }
+        }
+
+        private void UpdateCodexLoginButton(AccountView view, bool enabled = true)
+        {
+            if (view == null || view.State == null) return;
+            bool active = _activeCodexAccountNumber.HasValue &&
+                _activeCodexAccountNumber.Value == view.State.Number;
+            view.CodexLoginButton.Content = active ? "현재 Codex" : "Codex로 전환";
+            view.CodexLoginButton.IsEnabled = enabled && !_switchingAccount && !active;
+            view.CompactCodexLoginButton.Content = active ? "현재" : "전환";
+            view.CompactCodexLoginButton.IsEnabled = enabled && !_switchingAccount && !active;
+            if (active && !view.Identity.Text.StartsWith("현재 Codex · ", StringComparison.Ordinal))
+            {
+                view.Identity.Text = "현재 Codex · " + view.Identity.Text;
             }
         }
 
@@ -1987,6 +2034,7 @@ namespace CodexUsageMeter
             view.CodexLoginButton.Visibility = Visibility.Visible;
             view.CompactCodexLoginButton.Visibility = Visibility.Visible;
             view.LogoutButton.Visibility = Visibility.Visible;
+            UpdateCodexLoginButton(view);
             UpdateWindow(view.PrimaryName, view.PrimaryValue, view.PrimaryBar, view.PrimaryTimeBar, view.PrimaryReset, view.PrimaryRemaining, snapshot.Primary, "단기 한도", false);
             UpdateWindow(view.SecondaryName, view.SecondaryValue, view.SecondaryBar, view.SecondaryTimeBar, view.SecondaryReset, view.SecondaryRemaining, snapshot.Secondary, "장기 한도", true);
             UpdateResetCredits(view, snapshot);
@@ -2949,8 +2997,8 @@ namespace CodexUsageMeter
                 Button account1CodexLoginButton = window.FindName("Account1CodexLoginButton") as Button;
                 Button compactAccount1CodexLoginButton = window.FindName("CompactAccount1CodexLoginButton") as Button;
                 if (account1CodexLoginButton == null || compactAccount1CodexLoginButton == null ||
-                    Convert.ToString(account1CodexLoginButton.Content) != "Codex 로그인" ||
-                    Convert.ToString(compactAccount1CodexLoginButton.Content) != "로그인 변경")
+                    Convert.ToString(account1CodexLoginButton.Content) != "Codex로 전환" ||
+                    Convert.ToString(compactAccount1CodexLoginButton.Content) != "전환")
                 {
                     throw new InvalidOperationException("Codex 로그인 변경 버튼 구성이 올바르지 않습니다.");
                 }
@@ -3037,6 +3085,9 @@ namespace CodexUsageMeter
                 UpdateClient.RunUpdaterSelfTest();
                 lines.Add("PASS updater: embedded helper replacement, SHA-256 verification, and rollback path enabled; current v" + UpdateClient.CurrentVersionText);
 
+                AccountSwitcherSelfTest.Run();
+                lines.Add("PASS account switcher: Codex-only targeting, stop-before-auth, and restart-after-auth checks enabled");
+
                 SystemMonitor monitor = new SystemMonitor();
                 monitor.SampleAsync().GetAwaiter().GetResult();
                 Thread.Sleep(1100);
@@ -3049,6 +3100,9 @@ namespace CodexUsageMeter
                 client.ProbeAsync().GetAwaiter().GetResult();
                 AccountSnapshot account = client.RefreshAsync().GetAwaiter().GetResult();
                 lines.Add("PASS app-server: initialized; isolated profile authenticated=" + account.IsAuthenticated.ToString());
+                client.Suspend();
+                client.ProbeAsync().GetAwaiter().GetResult();
+                lines.Add("PASS app-server suspend: isolated meter connection stops and reconnects independently");
                 lines.Add("PASS self-test completed " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
                 WriteResult(resultPath, lines);
                 return 0;
