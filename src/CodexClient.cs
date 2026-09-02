@@ -72,7 +72,7 @@ namespace CodexUsageMeter
 
     internal sealed class CodexRpcClient : IDisposable
     {
-        private readonly string _codexPath;
+        private readonly Func<string> _codexPathResolver;
         private readonly string _profileRoot;
         private readonly JavaScriptSerializer _json;
         private readonly Dictionary<int, TaskCompletionSource<Dictionary<string, object>>> _pending;
@@ -90,8 +90,14 @@ namespace CodexUsageMeter
         public event EventHandler AccountChanged;
 
         public CodexRpcClient(string codexPath, string profileRoot)
+            : this(delegate { return codexPath; }, profileRoot)
         {
-            _codexPath = codexPath;
+        }
+
+        public CodexRpcClient(Func<string> codexPathResolver, string profileRoot)
+        {
+            if (codexPathResolver == null) throw new ArgumentNullException("codexPathResolver");
+            _codexPathResolver = codexPathResolver;
             _profileRoot = profileRoot;
             _json = new JavaScriptSerializer();
             _pending = new Dictionary<int, TaskCompletionSource<Dictionary<string, object>>>();
@@ -211,9 +217,14 @@ namespace CodexUsageMeter
 
                 StopProcess();
                 Directory.CreateDirectory(_profileRoot);
+                string codexPath = _codexPathResolver();
+                if (String.IsNullOrWhiteSpace(codexPath) || !File.Exists(codexPath))
+                {
+                    throw new FileNotFoundException("현재 설치된 codex.exe를 찾을 수 없습니다.", codexPath);
+                }
 
                 ProcessStartInfo start = new ProcessStartInfo();
-                start.FileName = _codexPath;
+                start.FileName = codexPath;
                 start.Arguments = "app-server --stdio";
                 start.UseShellExecute = false;
                 start.CreateNoWindow = true;
@@ -765,19 +776,15 @@ namespace CodexUsageMeter
     {
         public static string Find()
         {
-            List<string> candidates = new List<string>();
             string pathValue = Environment.GetEnvironmentVariable("PATH") ?? String.Empty;
-            foreach (string rawPart in pathValue.Split(Path.PathSeparator))
-            {
-                string part = rawPart.Trim().Trim('"');
-                if (!String.IsNullOrWhiteSpace(part))
-                {
-                    candidates.Add(Path.Combine(part, "codex.exe"));
-                }
-            }
-
             string localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string bundledRoot = Path.Combine(localData, "OpenAI", "Codex", "bin");
+            return FindFrom(pathValue, bundledRoot);
+        }
+
+        internal static string FindFrom(string pathValue, string bundledRoot)
+        {
+            List<string> candidates = new List<string>();
             if (Directory.Exists(bundledRoot))
             {
                 try
@@ -790,6 +797,16 @@ namespace CodexUsageMeter
                 }
                 catch
                 {
+                }
+            }
+
+            pathValue = pathValue ?? String.Empty;
+            foreach (string rawPart in pathValue.Split(Path.PathSeparator))
+            {
+                string part = rawPart.Trim().Trim('"');
+                if (!String.IsNullOrWhiteSpace(part))
+                {
+                    candidates.Add(Path.Combine(part, "codex.exe"));
                 }
             }
 

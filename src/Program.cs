@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.0.3.0")]
-[assembly: AssemblyFileVersion("1.0.3.0")]
+[assembly: AssemblyVersion("1.0.4.0")]
+[assembly: AssemblyFileVersion("1.0.4.0")]
 
 namespace CodexUsageMeter
 {
@@ -291,7 +291,6 @@ namespace CodexUsageMeter
         }
 
         private readonly Window _window;
-        private readonly string _codexPath;
         private readonly AccountView _account1;
         private readonly AccountView _account2;
         private readonly List<AccountState> _accounts;
@@ -404,7 +403,6 @@ namespace CodexUsageMeter
         public DashboardController(Window window)
         {
             _window = window;
-            _codexPath = CodexLocator.Find();
             string localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             _accountsRoot = Path.Combine(localData, "CodexUsageMeter", "accounts");
             string defaultCodexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
@@ -1363,7 +1361,8 @@ namespace CodexUsageMeter
                 AccountState state = new AccountState();
                 state.Number = number;
                 state.Label = "계정 " + number.ToString();
-                state.Client = new CodexRpcClient(_codexPath, Path.Combine(_accountsRoot, "account-" + number.ToString()));
+                state.Client = new CodexRpcClient(new Func<string>(CodexLocator.Find),
+                    Path.Combine(_accountsRoot, "account-" + number.ToString()));
                 state.Client.AccountChanged += AccountClientChanged;
                 _accounts.Add(state);
             }
@@ -3096,12 +3095,39 @@ namespace CodexUsageMeter
                     ", physical disks " + system.Disks.Count.ToString() + ", network adapters " + system.Networks.Count.ToString());
 
                 Directory.CreateDirectory(temporaryProfile);
-                client = new CodexRpcClient(codex, temporaryProfile);
+                string oldPathDirectory = Path.Combine(temporaryProfile, "old-path");
+                string bundledRoot = Path.Combine(temporaryProfile, "bundled");
+                string oldPathCodex = Path.Combine(oldPathDirectory, "codex.exe");
+                string newBundledDirectory = Path.Combine(bundledRoot, "new-build");
+                string newBundledCodex = Path.Combine(newBundledDirectory, "codex.exe");
+                Directory.CreateDirectory(oldPathDirectory);
+                Directory.CreateDirectory(newBundledDirectory);
+                File.WriteAllText(oldPathCodex, "old", Encoding.UTF8);
+                File.WriteAllText(newBundledCodex, "new", Encoding.UTF8);
+                File.SetLastWriteTimeUtc(oldPathCodex, DateTime.UtcNow.AddMinutes(-10));
+                File.SetLastWriteTimeUtc(newBundledCodex, DateTime.UtcNow);
+                string selectedAfterUpdate = CodexLocator.FindFrom(oldPathDirectory, bundledRoot);
+                if (!String.Equals(selectedAfterUpdate, Path.GetFullPath(newBundledCodex), StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("Codex 업데이트 후 최신 번들 실행파일을 선택하지 않았습니다.");
+                }
+                lines.Add("PASS Codex locator: newest desktop bundle wins over stale process PATH");
+
+                int codexResolveCount = 0;
+                client = new CodexRpcClient(delegate
+                {
+                    codexResolveCount++;
+                    return CodexLocator.Find();
+                }, temporaryProfile);
                 client.ProbeAsync().GetAwaiter().GetResult();
                 AccountSnapshot account = client.RefreshAsync().GetAwaiter().GetResult();
                 lines.Add("PASS app-server: initialized; isolated profile authenticated=" + account.IsAuthenticated.ToString());
                 client.Suspend();
                 client.ProbeAsync().GetAwaiter().GetResult();
+                if (codexResolveCount < 2)
+                {
+                    throw new InvalidOperationException("Codex 업데이트 후 재연결할 때 최신 실행파일을 다시 찾지 않았습니다.");
+                }
                 lines.Add("PASS app-server suspend: isolated meter connection stops and reconnects independently");
                 lines.Add("PASS self-test completed " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
                 WriteResult(resultPath, lines);
