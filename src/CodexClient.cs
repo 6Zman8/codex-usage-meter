@@ -112,6 +112,27 @@ namespace CodexUsageMeter
             await EnsureStartedAsync();
         }
 
+        public async Task PrepareForSwitchAsync()
+        {
+            try
+            {
+                await EnsureStartedAsync();
+                Dictionary<string, object> result = await RequestRawAsync("account/read",
+                    new Dictionary<string, object> { { "refreshToken", true } });
+                Dictionary<string, object> account = JsonValue.AsObject(JsonValue.Get(result, "account"));
+                if (account == null || JsonValue.AsString(JsonValue.Get(account, "type")) != "chatgpt")
+                    throw new InvalidOperationException("ChatGPT 계정 인증이 필요합니다.");
+                // This checks authentication, not remaining quota, and never creates a model turn.
+                await RequestRawAsync("account/rateLimits/read", new Dictionary<string, object>());
+            }
+            catch
+            {
+                // RPC errors can include server details. Do not expose authentication data.
+                throw new InvalidOperationException(
+                    "선택 계정의 인증을 갱신·확인하지 못해 Codex를 종료하지 않았습니다. 연결 상태를 확인해 주세요.");
+            }
+        }
+
         public async Task<AccountSnapshot> RefreshAsync()
         {
             AccountSnapshot snapshot = new AccountSnapshot();
@@ -417,7 +438,7 @@ namespace CodexUsageMeter
             }
             catch (Exception ex)
             {
-                if (!_disposed)
+                if (!_disposed && Object.ReferenceEquals(_process, process))
                 {
                     FailPending(ex);
                 }

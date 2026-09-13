@@ -1,12 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Management;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
+using Microsoft.Win32.SafeHandles;
 
 namespace CodexUsageMeter
 {
@@ -19,6 +23,7 @@ namespace CodexUsageMeter
     internal interface ICodexDesktopProcess : IDisposable
     {
         int Id { get; }
+        bool IsAppServer { get; }
         bool HasMainWindow { get; }
         bool HasExited { get; }
         bool TryCloseMainWindow();
@@ -33,6 +38,19 @@ namespace CodexUsageMeter
     internal interface ICodexDesktopStarter
     {
         bool TryLaunch(out string error);
+    }
+
+    internal interface IDesktopLifecycleClock
+    {
+        long Milliseconds { get; }
+        void Delay(int milliseconds);
+    }
+
+    internal sealed class DesktopLifecycleClock : IDesktopLifecycleClock
+    {
+        private readonly Stopwatch _watch = Stopwatch.StartNew();
+        public long Milliseconds { get { return _watch.ElapsedMilliseconds; } }
+        public void Delay(int milliseconds) { Thread.Sleep(milliseconds); }
     }
 
     internal interface IAccountSwitchJournal
@@ -134,6 +152,12 @@ namespace CodexUsageMeter
             return _store.DetectActiveAccountNumber(accountCount);
         }
 
+        public void SynchronizeCurrentCredentials(int accountCount)
+        {
+            int? current = _store.DetectActiveAccountNumber(accountCount);
+            if (current.HasValue) _store.SaveCurrentAccountIfMatching(current.Value, _store.ReadDefault());
+        }
+
         public AccountSwitchResult SwitchTo(int targetAccountNumber, int? currentAccountNumber)
         {
             if (targetAccountNumber < 1)
@@ -147,8 +171,10 @@ namespace CodexUsageMeter
 
             byte[] originalAuth = null;
             bool originalExisted = false;
+            bool stopAttempted = false;
             bool desktopStopped = false;
             bool targetApplied = false;
+            bool startAttempted = false;
             try
             {
                 int meterProcessId;
@@ -160,17 +186,12 @@ namespace CodexUsageMeter
                 _journal.Write("target-validated", "target-account=" + targetAccountNumber.ToString());
                 int? detected = _store.DetectActiveAccountNumber(Math.Max(targetAccountNumber,
                     currentAccountNumber.HasValue ? currentAccountNumber.Value : 0));
-                if (detected.HasValue && detected.Value == targetAccountNumber)
-                {
-                    _journal.Write("switch-already-active", "target-account=" + targetAccountNumber.ToString());
-                    return AccountSwitchResult.Completed(true, "이미 선택한 계정이 Codex에서 사용 중입니다.");
-                }
-
                 string stopError;
+                stopAttempted = true;
                 if (!_lifecycle.TryStop(TimeSpan.FromSeconds(20), out stopError))
                 {
                     _journal.Write("codex-stop-failed", "target-account=" + targetAccountNumber.ToString());
-                    return AccountSwitchResult.Failed(false, String.IsNullOrWhiteSpace(stopError)
+                    return RecoverAfterStopFailure(String.IsNullOrWhiteSpace(stopError)
                         ? "Codex를 완전히 종료하지 못해 계정을 변경하지 않았습니다."
                         : stopError);
                 }
@@ -182,12 +203,14 @@ namespace CodexUsageMeter
                     CodexAuthRecord current = _store.ReadDefault();
                     originalAuth = current.Bytes;
                     originalExisted = true;
-                    if (currentAccountNumber.HasValue)
+                    if (detected.HasValue)
                     {
-                        _store.SaveCurrentAccountIfMatching(currentAccountNumber.Value, current);
+                        _store.SaveCurrentAccountIfMatching(detected.Value, current);
                     }
                 }
 
+                // Read again after all writers have stopped; the desktop may have refreshed auth on exit.
+                target = _store.ReadAccount(targetAccountNumber);
                 _store.WriteDefault(target.Bytes);
                 targetApplied = true;
                 _journal.Write("auth-applied", "target-account=" + targetAccountNumber.ToString());
@@ -198,7 +221,8 @@ namespace CodexUsageMeter
                 }
 
                 string startError;
-                if (!_lifecycle.TryStart(TimeSpan.FromSeconds(20), out startError))
+                startAttempted = true;
+                if (!_lifecycle.TryStart(TimeSpan.FromSeconds(60), out startError))
                 {
                     throw new InvalidOperationException(String.IsNullOrWhiteSpace(startError)
                         ? "Codex를 다시 실행하지 못했습니다."
@@ -212,8 +236,22 @@ namespace CodexUsageMeter
             }
             catch (Exception ex)
             {
+                if (stopAttempted && !desktopStopped)
+                {
+                    _journal.Write("codex-stop-failed", "error-type=" + ex.GetType().Name);
+                    return RecoverAfterStopFailure(SafeFailureMessage(ex));
+                }
                 bool restored = false;
-                if (targetApplied)
+                bool safeToRestore = desktopStopped;
+                if (startAttempted)
+                {
+                    // A failed launch can still leave a live backend. Never change its auth underneath it.
+                    string cleanupError;
+                    try { safeToRestore = _lifecycle.TryStop(TimeSpan.FromSeconds(20), out cleanupError); }
+                    catch { safeToRestore = false; }
+                    _journal.Write("failed-start-cleanup", "stopped=" + safeToRestore.ToString());
+                }
+                if (targetApplied && safeToRestore)
                 {
                     try
                     {
@@ -227,10 +265,11 @@ namespace CodexUsageMeter
                     }
                 }
 
-                if (desktopStopped)
+                if (safeToRestore && (!targetApplied || restored))
                 {
                     string ignored;
-                    if (!_lifecycle.TryStart(TimeSpan.FromSeconds(20), out ignored)) restored = false;
+                    try { if (!_lifecycle.TryStart(TimeSpan.FromSeconds(60), out ignored)) restored = false; }
+                    catch { restored = false; }
                 }
 
                 _journal.Write("switch-failed", "target-account=" + targetAccountNumber.ToString() +
@@ -242,7 +281,9 @@ namespace CodexUsageMeter
                 {
                     message = restored
                         ? "계정 전환에 실패하여 기존 계정으로 복원하고 Codex를 다시 열었습니다. " + message
-                        : "계정 전환과 기존 계정 복원에 실패했습니다. Codex 로그인 상태를 확인해 주세요. " + message;
+                        : !safeToRestore
+                            ? "Codex의 종료를 확인하지 못해 계정 정보가 섞이지 않도록 선택 계정의 인증을 유지했습니다. " + message
+                            : "계정 전환과 기존 계정 복원에 실패했습니다. Codex 로그인 상태를 확인해 주세요. " + message;
                 }
                 return AccountSwitchResult.Failed(targetApplied && restored, message);
             }
@@ -250,6 +291,26 @@ namespace CodexUsageMeter
             {
                 Interlocked.Exchange(ref _switching, 0);
             }
+        }
+
+        private AccountSwitchResult RecoverAfterStopFailure(string stopError)
+        {
+            // Shutdown may have already closed the desktop window. Authentication has not
+            // been written yet, so reopening is safe even if an old backend is still alive.
+            bool reopened = false;
+            try
+            {
+                string startError;
+                reopened = _lifecycle.TryStart(TimeSpan.FromSeconds(60), out startError);
+            }
+            catch (Exception ex)
+            {
+                _journal.Write("stop-failure-recovery-error", "error-type=" + ex.GetType().Name);
+            }
+            _journal.Write("stop-failure-recovery", "started=" + reopened.ToString());
+            return AccountSwitchResult.Failed(false, (reopened
+                ? "종료 확인에 실패하여 계정 전환을 취소하고 기존 계정으로 Codex를 다시 열었습니다. "
+                : "계정 정보는 변경하지 않았지만 Codex를 다시 열지 못했습니다. 시작 메뉴에서 Codex를 열어 주세요. ") + stopError);
         }
 
         private static string SafeFailureMessage(Exception exception)
@@ -266,6 +327,7 @@ namespace CodexUsageMeter
     {
         public byte[] Bytes { get; set; }
         public string AccountId { get; set; }
+        public DateTimeOffset? LastRefresh { get; set; }
     }
 
     internal sealed class CodexAuthFileStore
@@ -317,7 +379,12 @@ namespace CodexUsageMeter
             {
                 throw new InvalidDataException("현재 Codex 계정과 미터기의 활성 계정이 일치하지 않아 전환을 중단했습니다.");
             }
-            AtomicWrite(AccountPath(accountNumber), current.Bytes);
+            // The meter and desktop refresh independently. Do not overwrite newer registered credentials.
+            if (!registered.LastRefresh.HasValue ||
+                (current.LastRefresh.HasValue && current.LastRefresh.Value > registered.LastRefresh.Value))
+            {
+                AtomicWrite(AccountPath(accountNumber), current.Bytes);
+            }
         }
 
         public void WriteDefault(byte[] bytes)
@@ -364,7 +431,11 @@ namespace CodexUsageMeter
             RequiredToken(tokens, "id_token");
             RequiredToken(tokens, "access_token");
             RequiredToken(tokens, "refresh_token");
-            return new CodexAuthRecord { Bytes = bytes, AccountId = accountId };
+            DateTimeOffset lastRefresh;
+            bool hasRefresh = DateTimeOffset.TryParse(JsonValue.AsString(JsonValue.Get(root, "last_refresh")),
+                CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out lastRefresh);
+            return new CodexAuthRecord { Bytes = bytes, AccountId = accountId,
+                LastRefresh = hasRefresh ? (DateTimeOffset?)lastRefresh : null };
         }
 
         private static string RequiredToken(Dictionary<string, object> tokens, string key)
@@ -406,53 +477,81 @@ namespace CodexUsageMeter
     {
         private readonly ICodexDesktopProcessSource _processSource;
         private readonly ICodexDesktopStarter _starter;
+        private readonly IDesktopLifecycleClock _clock;
+        private readonly IAccountSwitchJournal _journal;
 
         public CodexDesktopLifecycle()
-            : this(new SystemCodexDesktopProcessSource(), new SystemCodexDesktopStarter())
+            : this(new FileAccountSwitchJournal())
         {
         }
 
-        internal CodexDesktopLifecycle(ICodexDesktopProcessSource processSource, ICodexDesktopStarter starter)
+        internal CodexDesktopLifecycle(IAccountSwitchJournal journal)
+            : this(new SystemCodexDesktopProcessSource(), new SystemCodexDesktopStarter(),
+                new DesktopLifecycleClock(), journal)
+        {
+        }
+
+        internal CodexDesktopLifecycle(ICodexDesktopProcessSource processSource, ICodexDesktopStarter starter,
+            IDesktopLifecycleClock clock, IAccountSwitchJournal journal)
         {
             if (processSource == null) throw new ArgumentNullException("processSource");
             if (starter == null) throw new ArgumentNullException("starter");
             _processSource = processSource;
             _starter = starter;
+            _clock = clock;
+            _journal = journal;
         }
 
         public bool TryStop(TimeSpan timeout, out string error)
         {
             error = null;
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            while (stopwatch.Elapsed < timeout)
+            long started = _clock.Milliseconds;
+            long? emptySince = null;
+            Dictionary<int, ICodexDesktopProcess> observed = new Dictionary<int, ICodexDesktopProcess>();
+            try
             {
-                ICodexDesktopProcess[] processes = _processSource.FindCodexProcesses() ??
-                    new ICodexDesktopProcess[0];
-                try
+                while (_clock.Milliseconds - started < timeout.TotalMilliseconds)
                 {
-                    ICodexDesktopProcess[] active = processes.Where(delegate(ICodexDesktopProcess process)
+                    // Retain handles to descendants even after their parent disappears from discovery.
+                    foreach (ICodexDesktopProcess process in _processSource.FindCodexProcesses())
                     {
-                        return process != null && !process.HasExited;
-                    }).ToArray();
-                    if (active.Length == 0) return true;
-
-                    foreach (ICodexDesktopProcess process in active)
-                    {
+                        ICodexDesktopProcess previous;
+                        if (observed.TryGetValue(process.Id, out previous))
+                        {
+                            if (!previous.HasExited) { process.Dispose(); continue; }
+                            previous.Dispose();
+                        }
+                        observed[process.Id] = process;
+                        _journal.Write("stop-observed", "pid=" + process.Id.ToString());
                         if (process.HasMainWindow) process.TryCloseMainWindow();
                     }
-                    foreach (ICodexDesktopProcess process in active)
+                    ICodexDesktopProcess[] active = observed.Values.Where(p => !p.HasExited).ToArray();
+                    if (active.Length == 0)
                     {
-                        if (!process.HasExited) process.TryTerminate();
+                        if (!emptySince.HasValue) emptySince = _clock.Milliseconds;
+                        // Also catch children spawned while shutdown was already in progress.
+                        if (_clock.Milliseconds - emptySince.Value >= 500) return true;
                     }
-                }
-                finally
-                {
-                    foreach (ICodexDesktopProcess process in processes)
+                    else
                     {
-                        if (process != null) process.Dispose();
+                        emptySince = null;
+                        if (_clock.Milliseconds - started >= 750)
+                        {
+                            foreach (ICodexDesktopProcess process in active) process.TryTerminate();
+                        }
                     }
+                    _clock.Delay(100);
                 }
-                Thread.Sleep(100);
+            }
+            catch (Exception ex)
+            {
+                _journal.Write("stop-inspection-failed", "error-type=" + ex.GetType().Name);
+                error = "Codex 내부 프로세스의 종료 상태를 확인하지 못해 계정을 변경하지 않았습니다.";
+                return false;
+            }
+            finally
+            {
+                foreach (ICodexDesktopProcess process in observed.Values) process.Dispose();
             }
             error = "Codex 프로세스를 제한 시간 안에 완전히 종료하지 못해 계정을 변경하지 않았습니다.";
             return false;
@@ -463,28 +562,47 @@ namespace CodexUsageMeter
             error = null;
             if (!_starter.TryLaunch(out error)) return false;
 
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            while (stopwatch.Elapsed < timeout)
+            long started = _clock.Milliseconds;
+            long? stableSince = null;
+            string stableProcesses = null;
+            try
             {
-                ICodexDesktopProcess[] processes = _processSource.FindCodexProcesses() ??
-                    new ICodexDesktopProcess[0];
-                try
+                while (_clock.Milliseconds - started < timeout.TotalMilliseconds)
                 {
-                    if (processes.Any(delegate(ICodexDesktopProcess process)
+                    ICodexDesktopProcess[] processes = _processSource.FindCodexProcesses();
+                    try
                     {
-                        return process != null && !process.HasExited && process.HasMainWindow;
-                    })) return true;
-                }
-                finally
-                {
-                    foreach (ICodexDesktopProcess process in processes)
-                    {
-                        if (process != null) process.Dispose();
+                        ICodexDesktopProcess[] active = processes.Where(p => !p.HasExited).ToArray();
+                        bool windowReady = active.Any(p => p.HasMainWindow);
+                        int[] backends = active.Where(p => p.IsAppServer).Select(p => p.Id).OrderBy(id => id).ToArray();
+                        string identity = windowReady && backends.Length > 0
+                            ? String.Join(",", active.Where(p => p.HasMainWindow || p.IsAppServer)
+                                .Select(p => p.Id).OrderBy(id => id)) : null;
+                        if (identity == null || identity != stableProcesses)
+                        {
+                            stableSince = identity == null ? (long?)null : _clock.Milliseconds;
+                            stableProcesses = identity;
+                        }
+                        // A splash/error window alone is not a successful restart. Observe a stable
+                        // desktop + desktop-owned backend, including across delayed runtime extraction.
+                        if (stableSince.HasValue && _clock.Milliseconds - stableSince.Value >= 3000)
+                        {
+                            _journal.Write("start-processes-stable", "pids=" + identity);
+                            return true;
+                        }
                     }
+                    finally
+                    {
+                        foreach (ICodexDesktopProcess process in processes) process.Dispose();
+                    }
+                    _clock.Delay(250);
                 }
-                Thread.Sleep(150);
             }
-            error = "Codex를 실행했지만 제한 시간 안에 새 창이 나타나지 않았습니다.";
+            catch (Exception ex)
+            {
+                _journal.Write("start-inspection-failed", "error-type=" + ex.GetType().Name);
+            }
+            error = "Codex의 창과 내부 실행 프로세스가 제한 시간 안에 안정적으로 시작되지 않았습니다.";
             return false;
         }
     }
@@ -521,42 +639,74 @@ namespace CodexUsageMeter
         {
             HashSet<int> ids = FindCodexChatGptProcessIds();
             if (ids.Count == 0) return new ICodexDesktopProcess[0];
-            IncludeDescendants(ids);
+            HashSet<int> roots = new HashSet<int>(ids);
+            List<KeyValuePair<int, int>> tree = ReadProcessTree();
+            int meterId;
+            using (Process meter = Process.GetCurrentProcess()) meterId = meter.Id;
+            IncludeDescendantsExceptMeter(ids, tree, meterId);
 
             List<ICodexDesktopProcess> matches = new List<ICodexDesktopProcess>();
-            foreach (int id in ids)
+            try
             {
-                try
+                foreach (int id in ids)
                 {
-                    using (Process process = Process.GetProcessById(id))
+                    Process process = null;
+                    try
                     {
-                        matches.Add(new SystemCodexDesktopProcess(process));
+                        process = Process.GetProcessById(id);
+                        bool desktopChild = tree.Any(edge => edge.Key == id && roots.Contains(edge.Value));
+                        matches.Add(new SystemCodexDesktopProcess(process, desktopChild));
+                        process = null; // The wrapper owns the process handle until Dispose.
                     }
+                    catch (ArgumentException) { }
+                    catch (InvalidOperationException) { }
+                    catch (Win32Exception)
+                    {
+                        // A process may finish between the system snapshot and opening its handle.
+                        // Only skip it after confirming exit; access errors on a live process still fail.
+                        if (process == null || !process.HasExited) throw;
+                    }
+                    finally { if (process != null) process.Dispose(); }
                 }
-                catch
-                {
-                }
+                return matches.ToArray();
             }
-            return matches.ToArray();
+            catch
+            {
+                foreach (ICodexDesktopProcess process in matches) process.Dispose();
+                throw;
+            }
         }
 
         private static HashSet<int> FindCodexChatGptProcessIds()
         {
+            return FindCodexChatGptProcessIds(Process.GetProcessesByName("ChatGPT"));
+        }
+
+        internal static HashSet<int> FindCodexChatGptProcessIds(Process[] processes)
+        {
             HashSet<int> ids = new HashSet<int>();
-            foreach (Process process in Process.GetProcessesByName("ChatGPT"))
+            try
             {
-                try
+                foreach (Process process in processes)
                 {
-                    string path = process.MainModule == null ? null : process.MainModule.FileName;
-                    if (IsCodexDesktopPath(path)) ids.Add(process.Id);
+                    try
+                    {
+                        if (process.HasExited) continue;
+                        string path = process.MainModule == null ? null : process.MainModule.FileName;
+                        if (IsCodexDesktopPath(path)) ids.Add(process.Id);
+                    }
+                    catch (InvalidOperationException) { }
+                    catch (Win32Exception)
+                    {
+                        // MainModule can throw ERROR_PARTIAL_COPY (299) once the process exits.
+                        // Recheck exit instead of aborting a shutdown that has already succeeded.
+                        if (!process.HasExited) throw;
+                    }
                 }
-                catch
-                {
-                }
-                finally
-                {
-                    process.Dispose();
-                }
+            }
+            finally
+            {
+                foreach (Process process in processes) process.Dispose();
             }
             return ids;
         }
@@ -568,15 +718,15 @@ namespace CodexUsageMeter
                 path.IndexOf("\\WindowsApps\\OpenAI.Codex_", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static void IncludeDescendants(HashSet<int> ids)
+        private static List<KeyValuePair<int, int>> ReadProcessTree()
         {
-            try
+            List<KeyValuePair<int, int>> processes = new List<KeyValuePair<int, int>>();
+            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                "SELECT ProcessId, ParentProcessId FROM Win32_Process"))
             {
-                List<KeyValuePair<int, int>> processes = new List<KeyValuePair<int, int>>();
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
-                    "SELECT ProcessId, ParentProcessId FROM Win32_Process"))
+                using (ManagementObjectCollection results = searcher.Get())
                 {
-                    foreach (ManagementObject item in searcher.Get())
+                    foreach (ManagementObject item in results)
                     {
                         using (item)
                         {
@@ -587,36 +737,61 @@ namespace CodexUsageMeter
                     }
                 }
 
-                bool changed;
-                do
-                {
-                    changed = false;
-                    foreach (KeyValuePair<int, int> process in processes)
-                    {
-                        if (ids.Contains(process.Value) && ids.Add(process.Key)) changed = true;
-                    }
-                }
-                while (changed);
             }
-            catch
+            return processes;
+        }
+
+        internal static void IncludeDescendantsExceptMeter(HashSet<int> ids,
+            List<KeyValuePair<int, int>> processes, int meterId)
+        {
+            HashSet<int> protectedIds = new HashSet<int> { meterId };
+            IncludeDescendants(protectedIds, processes);
+            IncludeDescendants(ids, processes);
+            ids.ExceptWith(protectedIds);
+        }
+
+        private static void IncludeDescendants(HashSet<int> ids, List<KeyValuePair<int, int>> processes)
+        {
+            bool changed;
+            do
             {
+                changed = false;
+                foreach (KeyValuePair<int, int> process in processes)
+                {
+                    if (ids.Contains(process.Value) && ids.Add(process.Key)) changed = true;
+                }
             }
+            while (changed);
         }
     }
 
     internal sealed class SystemCodexDesktopProcess : ICodexDesktopProcess
     {
         private readonly int _processId;
-        private readonly long _startTimeFileTimeUtc;
+        private readonly Process _process;
+        private readonly SafeWaitHandle _exitHandle;
+        private readonly bool _isAppServer;
 
-        public SystemCodexDesktopProcess(Process process)
+        public SystemCodexDesktopProcess(Process process, bool desktopChild)
         {
             if (process == null) throw new ArgumentNullException("process");
             _processId = process.Id;
-            _startTimeFileTimeUtc = process.StartTime.ToUniversalTime().ToFileTimeUtc();
+            _isAppServer = desktopChild && String.Equals(process.ProcessName, "codex", StringComparison.OrdinalIgnoreCase);
+            // Hold the native process handle: an exit request is not the same as exit completion,
+            // and a later process reusing this PID must never become a termination target.
+            _exitHandle = OpenProcess(0x00100000, false, _processId); // SYNCHRONIZE only, not PROCESS_ALL_ACCESS
+            if (_exitHandle.IsInvalid)
+            {
+                int error = Marshal.GetLastWin32Error();
+                _exitHandle.Dispose();
+                if (error == 87) throw new InvalidOperationException("Process already exited.");
+                throw new Win32Exception(error);
+            }
+            _process = process;
         }
 
         public int Id { get { return _processId; } }
+        public bool IsAppServer { get { return _isAppServer; } }
 
         public bool HasMainWindow
         {
@@ -624,10 +799,8 @@ namespace CodexUsageMeter
             {
                 try
                 {
-                    using (Process process = OpenCurrentProcess())
-                    {
-                        return process != null && process.MainWindowHandle != IntPtr.Zero;
-                    }
+                    _process.Refresh();
+                    return !HasExited && _process.MainWindowHandle != IntPtr.Zero && _process.Responding;
                 }
                 catch { return false; }
             }
@@ -637,11 +810,9 @@ namespace CodexUsageMeter
         {
             get
             {
-                try
-                {
-                    using (Process process = OpenCurrentProcess()) return process == null;
-                }
-                catch { return true; }
+                uint result = WaitForSingleObject(_exitHandle, 0);
+                if (result == 0xFFFFFFFF) throw new Win32Exception(Marshal.GetLastWin32Error());
+                return result == 0;
             }
         }
 
@@ -649,7 +820,7 @@ namespace CodexUsageMeter
         {
             try
             {
-                using (Process process = OpenCurrentProcess()) return process == null || process.CloseMainWindow();
+                return HasExited || _process.CloseMainWindow();
             }
             catch { return false; }
         }
@@ -658,37 +829,18 @@ namespace CodexUsageMeter
         {
             try
             {
-                using (Process process = OpenCurrentProcess())
-                {
-                    if (process == null) return true;
-                    process.Kill();
-                    return true;
-                }
+                if (!HasExited) _process.Kill();
+                return true;
             }
             catch { return false; }
         }
 
-        public void Dispose() { }
+        public void Dispose() { _exitHandle.Dispose(); _process.Dispose(); }
 
-        private Process OpenCurrentProcess()
-        {
-            Process process;
-            try { process = Process.GetProcessById(_processId); }
-            catch (ArgumentException) { return null; }
-            try
-            {
-                if (process.StartTime.ToUniversalTime().ToFileTimeUtc() != _startTimeFileTimeUtc)
-                {
-                    process.Dispose();
-                    return null;
-                }
-                return process;
-            }
-            catch
-            {
-                process.Dispose();
-                throw;
-            }
-        }
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern SafeWaitHandle OpenProcess(uint access, bool inheritHandle, int processId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(SafeWaitHandle handle, uint milliseconds);
     }
 }

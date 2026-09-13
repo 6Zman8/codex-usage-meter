@@ -10,6 +10,11 @@ namespace CodexUsageMeter
     {
         public static void Run()
         {
+            Run(delegate { });
+        }
+
+        public static void Run(Action<string> report)
+        {
             Require(SystemCodexDesktopProcessSource.IsCodexDesktopPath(
                     @"C:\Program Files\WindowsApps\OpenAI.Codex_26.825.6671.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe"),
                 "Codex 데스크톱 프로세스를 식별해야 합니다.");
@@ -43,6 +48,8 @@ namespace CodexUsageMeter
             {
                 try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch { }
             }
+            report("PASS original switch ordering");
+            AccountSwitchRegressionTests.Run(report);
         }
 
         private static void WriteAuth(string path, string accountId, string marker)
