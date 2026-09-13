@@ -1,0 +1,1 @@
+Fixes hidden update buttons, Korean text, and Codex reconnect.

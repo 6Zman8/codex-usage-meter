@@ -355,13 +355,25 @@
   </Grid>
   <Grid x:Name="ModalOverlay" Background="#D9000000" Visibility="Collapsed" Panel.ZIndex="900">
     <Border MaxWidth="410" Margin="18" Padding="24" Background="#1B1B1B" BorderBrush="#454545" BorderThickness="1" CornerRadius="16" HorizontalAlignment="Stretch" VerticalAlignment="Center">
-      <StackPanel>
-        <Border Width="42" Height="42" CornerRadius="13" Background="#203B33" HorizontalAlignment="Left"><TextBlock Text="C" Foreground="#8DE0C4" FontWeight="Bold" FontSize="18" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
-        <TextBlock x:Name="ModalTitle" Text="알림" FontSize="19" FontWeight="Bold" Margin="0,15,0,0"/>
-        <TextBlock x:Name="ModalMessage" Text="" Foreground="#A1A1AA" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" LineHeight="19"/>
-        <Border x:Name="ModalCodePanel" Background="#111111" BorderBrush="#3A3A3A" BorderThickness="1" CornerRadius="10" Padding="14" Margin="0,15,0,0" Visibility="Collapsed"><TextBlock x:Name="ModalCode" Text="" FontFamily="Consolas" FontSize="22" FontWeight="Bold" Foreground="#8DE0C4" HorizontalAlignment="Center"/></Border>
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0"><Button x:Name="ModalSecondaryButton" Content="취소" Margin="0,0,8,0"/><Button x:Name="ModalPrimaryButton" Content="확인" Style="{StaticResource AccentButton}" MinWidth="80"/></StackPanel>
-      </StackPanel>
+      <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <ScrollViewer x:Name="ModalScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" CanContentScroll="False" Focusable="False">
+          <StackPanel>
+            <Border Width="42" Height="42" CornerRadius="13" Background="#203B33" HorizontalAlignment="Left"><TextBlock Text="C" Foreground="#8DE0C4" FontWeight="Bold" FontSize="18" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+            <TextBlock x:Name="ModalTitle" Text="알림" FontSize="19" FontWeight="Bold" TextWrapping="Wrap" Margin="0,15,0,0"/>
+            <TextBlock x:Name="ModalMessage" Text="" Foreground="#A1A1AA" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" LineHeight="19"/>
+            <Border x:Name="ModalCodePanel" Background="#111111" BorderBrush="#3A3A3A" BorderThickness="1" CornerRadius="10" Padding="14" Margin="0,15,0,0" Visibility="Collapsed"><TextBlock x:Name="ModalCode" Text="" FontFamily="Consolas" FontSize="22" FontWeight="Bold" Foreground="#8DE0C4" TextWrapping="Wrap" TextAlignment="Center"/></Border>
+          </StackPanel>
+        </ScrollViewer>
+        <Grid Grid.Row="1" Margin="0,16,0,0">
+          <Grid.Resources>
+            <DataTemplate x:Key="ModalButtonContent"><TextBlock Text="{Binding}" TextWrapping="Wrap" TextAlignment="Center"/></DataTemplate>
+          </Grid.Resources>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Button x:Name="ModalSecondaryButton" Content="취소" ContentTemplate="{StaticResource ModalButtonContent}" Margin="0,0,8,0"/>
+          <Button x:Name="ModalPrimaryButton" Grid.Column="1" Content="확인" ContentTemplate="{StaticResource ModalButtonContent}" Style="{StaticResource AccentButton}"/>
+        </Grid>
+      </Grid>
     </Border>
   </Grid>
   <Path Data="M 0,14 L 14,0 M 5,14 L 14,5 M 10,14 L 14,10" Stroke="#73737B" StrokeThickness="1"

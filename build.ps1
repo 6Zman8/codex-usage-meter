@@ -98,6 +98,7 @@ $arguments += @(
     (Join-Path $sourceRoot 'AccountSwitcher.cs'),
     (Join-Path $sourceRoot 'AccountSwitcherSelfTest.cs'),
     (Join-Path $sourceRoot 'AccountSwitchRegressionTests.cs'),
+    (Join-Path $sourceRoot 'UpdateUiRegressionTests.cs'),
     (Join-Path $sourceRoot 'CodexClient.cs'),
     (Join-Path $sourceRoot 'SystemMonitor.cs'),
     (Join-Path $sourceRoot 'UpdateClient.cs')

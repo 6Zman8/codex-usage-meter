@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.0.6.0")]
-[assembly: AssemblyFileVersion("1.0.6.0")]
+[assembly: AssemblyVersion("1.0.7.0")]
+[assembly: AssemblyFileVersion("1.0.7.0")]
 
 namespace CodexUsageMeter
 {
@@ -36,6 +36,22 @@ namespace CodexUsageMeter
         [STAThread]
         public static int Main(string[] args)
         {
+            if (args.Length > 1 && args[0] == "--update-ui-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try
+                {
+                    UpdateUiRegressionTests.Run(line => report.AppendLine(line), args.Length > 2 ? args[2] : null);
+                    File.WriteAllText(Path.GetFullPath(args[1]), report.ToString());
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    report.AppendLine("FAIL " + ex.ToString());
+                    File.WriteAllText(Path.GetFullPath(args[1]), report.ToString());
+                    return 1;
+                }
+            }
             if (args.Length == 1 && args[0] == "--process-exit-test-child")
             {
                 Thread.Sleep(10000);
@@ -357,6 +373,7 @@ namespace CodexUsageMeter
         private readonly TextBlock _accountCountBadgeText;
         private readonly TextBlock _accountSummaryText;
         private readonly Grid _modalOverlay;
+        private readonly ScrollViewer _modalScrollViewer;
         private readonly TextBlock _modalTitle;
         private readonly TextBlock _modalMessage;
         private readonly Border _modalCodePanel;
@@ -473,6 +490,7 @@ namespace CodexUsageMeter
             _accountCountBadgeText = Find<TextBlock>("AccountCountBadgeText");
             _accountSummaryText = Find<TextBlock>("AccountSummaryText");
             _modalOverlay = Find<Grid>("ModalOverlay");
+            _modalScrollViewer = Find<ScrollViewer>("ModalScrollViewer");
             _modalTitle = Find<TextBlock>("ModalTitle");
             _modalMessage = Find<TextBlock>("ModalMessage");
             _modalCodePanel = Find<Border>("ModalCodePanel");
@@ -2009,6 +2027,7 @@ namespace CodexUsageMeter
             _modalPrimaryAction = primaryAction;
             _modalSecondaryAction = secondaryAction;
             _modalOverlay.Visibility = Visibility.Visible;
+            _modalScrollViewer.ScrollToHome();
             _modalPrimaryButton.Focus();
         }
 
@@ -3012,7 +3031,7 @@ namespace CodexUsageMeter
                     "CompactAccount2Card", "CompactAccount2TitleText", "CompactAccount2BadgeText", "CompactAccount2Identity", "CompactAccount2CodexLoginButton", "CompactAccount2PrimaryValue",
                     "CompactAccount2PrimaryTrack", "CompactAccount2PrimaryRing", "CompactAccount2PrimaryTimeBar", "CompactAccount2PrimaryTimeValue", "CompactAccount2PrimaryRecommendationRing", "CompactAccount2SecondaryTrack", "CompactAccount2SecondaryValue", "CompactAccount2SecondaryRing", "CompactAccount2SecondaryTimeBar", "CompactAccount2SecondaryTimeValue", "CompactAccount2SecondaryRecommendationRing", "CompactAccount2PaceValue", "CompactAccount2ResetValue",
                     "CompactCpuValue", "CompactCpuTrack", "CompactCpuRing", "CompactGpuLabel", "CompactGpuValue", "CompactGpuTrack", "CompactGpuRing", "CompactMemoryValue", "CompactMemoryTrack", "CompactMemoryRing", "CompactDiskLabel", "CompactDiskValue", "CompactDiskTrack", "CompactDiskRing", "CompactNetworkValue",
-                    "ModalOverlay", "ModalTitle", "ModalMessage", "ModalCodePanel", "ModalCode", "ModalPrimaryButton", "ModalSecondaryButton",
+                    "ModalOverlay", "ModalScrollViewer", "ModalTitle", "ModalMessage", "ModalCodePanel", "ModalCode", "ModalPrimaryButton", "ModalSecondaryButton",
                     "SettingsOverlay", "SettingsCloseButton", "SettingsDoneButton", "AccountCountDecreaseButton", "AccountCountValue", "AccountCountIncreaseButton", "FontDecreaseButton", "FontResetButton", "FontIncreaseButton", "FontScaleValue", "AppVersionValue", "UpdateStatusText", "UpdateCheckButton",
                     "AccountPagePreviousButton", "AccountPageText", "AccountPageNextButton"
                 };
@@ -3117,6 +3136,7 @@ namespace CodexUsageMeter
                 }
                 window.Close();
                 lines.Add("PASS ui: Codex relogin buttons, shared modal, responsive layout, saved settings, and app icon enabled");
+                UpdateUiRegressionTests.Run(lines.Add, null);
 
                 UpdateClient.RunUpdaterSelfTest();
                 lines.Add("PASS updater: embedded helper replacement, SHA-256 verification, and rollback path enabled; current v" + UpdateClient.CurrentVersionText);

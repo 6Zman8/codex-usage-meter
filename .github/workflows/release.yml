@@ -26,9 +26,21 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME does not match executable version $actualTag"
           }
 
+      - name: Verify update dialog and Korean release notes
+        shell: pwsh
+        run: |
+          $test = Start-Process -FilePath '.\bin\CodexUsageMeter.exe' -ArgumentList '--update-ui-self-test update-ui-self-test.txt' -WindowStyle Hidden -PassThru
+          if (-not $test.WaitForExit(30000)) {
+            throw 'Update UI verification timed out'
+          }
+          Get-Content -LiteralPath '.\update-ui-self-test.txt'
+          if ($test.ExitCode -ne 0) {
+            throw 'Update UI verification failed'
+          }
+
       - name: Publish GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:GITHUB_REF_NAME '.\bin\CodexUsageMeter.exe#CodexUsageMeter.exe' --verify-tag --generate-notes --title "Codex Usage Meter $env:GITHUB_REF_NAME"
+          gh release create $env:GITHUB_REF_NAME '.\bin\CodexUsageMeter.exe#CodexUsageMeter.exe' --verify-tag --notes-file '.\docs\releases\update-summary.txt' --title "Codex Usage Meter $env:GITHUB_REF_NAME"

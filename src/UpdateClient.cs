@@ -274,6 +274,7 @@ namespace CodexUsageMeter
         private static WebClient CreateWebClient()
         {
             WebClient client = new WebClient();
+            client.Encoding = Encoding.UTF8;
             client.Headers[HttpRequestHeader.UserAgent] = "CodexUsageMeter/" + CurrentVersionText;
             client.Headers[HttpRequestHeader.Accept] = "application/vnd.github+json";
             client.Headers["X-GitHub-Api-Version"] = "2026-03-10";
