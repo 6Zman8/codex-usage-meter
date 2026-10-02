@@ -47,11 +47,7 @@ namespace CodexUsageMeterUpdater
                     return 0;
                 }
 
-                ProcessStartInfo start = new ProcessStartInfo();
-                start.FileName = targetPath;
-                start.WorkingDirectory = Path.GetDirectoryName(targetPath);
-                start.UseShellExecute = true;
-                Process updated = Process.Start(start);
+                Process updated = CodexUsageMeter.IndependentProcess.Start(targetPath, String.Empty);
                 if (updated == null) throw new InvalidOperationException("새 버전을 시작하지 못했습니다.");
                 Thread.Sleep(5000);
                 updated.Refresh();
@@ -73,7 +69,7 @@ namespace CodexUsageMeterUpdater
                     {
                         if (File.Exists(targetPath)) File.Delete(targetPath);
                         File.Move(backupPath, targetPath);
-                        if (!noRestart) Process.Start(targetPath);
+                        if (!noRestart) CodexUsageMeter.IndependentProcess.Start(targetPath, String.Empty);
                     }
                 }
                 catch { }

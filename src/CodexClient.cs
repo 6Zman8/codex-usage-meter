@@ -116,14 +116,13 @@ namespace CodexUsageMeter
         {
             try
             {
-                await EnsureStartedAsync();
-                Dictionary<string, object> result = await RequestRawAsync("account/read",
-                    new Dictionary<string, object> { { "refreshToken", true } });
+                Dictionary<string, object> result = await ReadWithReconnectAsync("account/read",
+                    new Dictionary<string, object> { { "refreshToken", false } });
                 Dictionary<string, object> account = JsonValue.AsObject(JsonValue.Get(result, "account"));
                 if (account == null || JsonValue.AsString(JsonValue.Get(account, "type")) != "chatgpt")
                     throw new InvalidOperationException("ChatGPT 계정 인증이 필요합니다.");
                 // This checks authentication, not remaining quota, and never creates a model turn.
-                await RequestRawAsync("account/rateLimits/read", new Dictionary<string, object>());
+                await ReadWithReconnectAsync("account/rateLimits/read", new Dictionary<string, object>());
             }
             catch
             {
@@ -142,8 +141,7 @@ namespace CodexUsageMeter
 
             try
             {
-                await EnsureStartedAsync();
-                Dictionary<string, object> accountResult = await RequestRawAsync(
+                Dictionary<string, object> accountResult = await ReadWithReconnectAsync(
                     "account/read",
                     new Dictionary<string, object> { { "refreshToken", false } });
 
@@ -160,7 +158,7 @@ namespace CodexUsageMeter
 
                 try
                 {
-                    Dictionary<string, object> limitResult = await RequestRawAsync(
+                    Dictionary<string, object> limitResult = await ReadWithReconnectAsync(
                         "account/rateLimits/read",
                         new Dictionary<string, object>());
                     ParseRateLimits(limitResult, snapshot);
@@ -172,7 +170,7 @@ namespace CodexUsageMeter
 
                 try
                 {
-                    Dictionary<string, object> usageResult = await RequestRawAsync(
+                    Dictionary<string, object> usageResult = await ReadWithReconnectAsync(
                         "account/usage/read",
                         new Dictionary<string, object>());
                     ParseUsage(usageResult, snapshot);
@@ -293,7 +291,7 @@ namespace CodexUsageMeter
         {
             if (_process == null || _process.HasExited)
             {
-                throw new InvalidOperationException("Codex app-server가 실행 중이 아닙니다.");
+                throw new IOException("Codex app-server가 실행 중이 아닙니다.");
             }
 
             int id = Interlocked.Increment(ref _nextId);
@@ -347,6 +345,32 @@ namespace CodexUsageMeter
             return result ?? new Dictionary<string, object>();
         }
 
+        private Task<Dictionary<string, object>> ReadWithReconnectAsync(string method, Dictionary<string, object> parameters)
+        {
+            return RetryReadAsync(async delegate {
+                await EnsureStartedAsync();
+                return await RequestRawAsync(method, parameters);
+            }, delegate { StopProcess(); });
+        }
+
+        internal static async Task<T> RetryReadAsync<T>(Func<Task<T>> read, Action reconnect)
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                try { return await read(); }
+                catch (Exception ex)
+                {
+                    // Only idempotent reads use this path. Never repeat login/logout or
+                    // force token rotation after an ambiguous/lost response.
+                    System.ComponentModel.Win32Exception startError = ex as System.ComponentModel.Win32Exception;
+                    bool transientStart = startError != null && (startError.NativeErrorCode == 2 || startError.NativeErrorCode == 3);
+                    if (attempt >= 1 || !(ex is IOException || ex is TimeoutException || transientStart)) throw;
+                    reconnect();
+                }
+                await Task.Delay(350);
+            }
+        }
+
         private void SendNotification(string method, Dictionary<string, object> parameters)
         {
             Dictionary<string, object> message = new Dictionary<string, object>();
@@ -362,7 +386,7 @@ namespace CodexUsageMeter
             {
                 if (_process == null || _process.HasExited)
                 {
-                    throw new InvalidOperationException("Codex app-server 연결이 종료되었습니다.");
+                    throw new IOException("Codex app-server 연결이 종료되었습니다.");
                 }
                 _process.StandardInput.WriteLine(serialized);
             }

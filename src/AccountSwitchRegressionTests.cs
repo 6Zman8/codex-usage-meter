@@ -32,6 +32,12 @@ namespace CodexUsageMeter
             report("PASS orphaned backend exit, stop timeout, and inventory failure");
             TestStart();
             report("PASS delayed startup, window-only rejection, backend restart stability");
+            TestTransientLifecycle();
+            report("PASS transient inventory and activation failures recover in one bounded operation");
+            TestReadRetry();
+            report("PASS read-only transport retry is bounded and authentication errors are not retried");
+            TestCloseDuringSwitch();
+            report("PASS closing the meter during a switch is cancelled before any cleanup");
             TestAuth();
             report("PASS same-account reconnect, fresh auth preservation, exit-time auth refresh");
             TestRollback();
@@ -139,6 +145,13 @@ namespace CodexUsageMeter
         {
             WithFiles(delegate(string home, string accounts, string auth) {
                 Recorder recorder = new Recorder(auth);
+                recorder.AfterStart = delegate { WriteAuth(auth, "external", "changed-outside", "2026-10-03T00:00:00Z"); };
+                AccountSwitchResult result = new AccountSwitcher(home, accounts, recorder).SwitchTo(2, 1);
+                Require(!result.Success && ReadAccount(auth) == "external" && recorder.Events.Count == 2,
+                    "A different account after startup must not be reported as success or overwritten by rollback");
+            });
+            WithFiles(delegate(string home, string accounts, string auth) {
+                Recorder recorder = new Recorder(auth);
                 AccountSwitcher switcher = new AccountSwitcher(home, accounts, recorder);
                 Require(switcher.SwitchTo(2, 1).Success, "Switch to target.");
                 recorder.Events.Clear();
@@ -158,6 +171,81 @@ namespace CodexUsageMeter
                 Require(new AccountSwitcher(home, accounts, recorder).SwitchTo(1, 1).Success, "Same-account restart.");
                 Require(File.ReadAllText(auth).Contains("id-on-exit"), "Re-read auth refreshed during desktop shutdown.");
             });
+        }
+
+        private static void TestTransientLifecycle()
+        {
+            Clock clock = new Clock();
+            int reads = 0;
+            State window = new State(clock, 100, false, true, 0);
+            State backend = new State(clock, 101, true, false, 0);
+            Source source = new Source(delegate {
+                if (++reads <= 2) throw new System.ComponentModel.Win32Exception(299);
+                return new State[] { window, backend };
+            });
+            string error;
+            Require(Lifecycle(source, clock).TryStart(TimeSpan.FromSeconds(15), out error), "A short-lived inspection race must not require a second click: " + error);
+            Require(source.OpenHandles == 0, "Release handles after inspection retries");
+            clock = new Clock();
+            RetryStarter starter = new RetryStarter();
+            window = new State(clock, 200, false, true, 0);
+            backend = new State(clock, 201, true, false, 0);
+            source = new Source(delegate { return starter.Attempts < 2 ? new State[0] : new State[] { window, backend }; });
+            CodexDesktopLifecycle lifecycle = new CodexDesktopLifecycle(source, starter, clock, NullAccountSwitchJournal.Instance);
+            Require(lifecycle.TryStart(TimeSpan.FromSeconds(20), out error) && starter.Attempts == 2,
+                "An activation lost during shutdown should be retried once processes are absent");
+            clock = new Clock();
+            reads = 0;
+            source = new Source(delegate { if (++reads == 1) throw new System.ComponentModel.Win32Exception(299); return new State[0]; });
+            Require(Lifecycle(source, clock).TryStop(TimeSpan.FromSeconds(5), out error), "Transient stop enumeration should retry before failing");
+        }
+
+        private sealed class RetryStarter : ICodexDesktopStarter
+        {
+            public int Attempts;
+            public bool TryLaunch(out string error) { Attempts++; error = "temporary activation race"; return Attempts > 1; }
+        }
+
+        private static void TestReadRetry()
+        {
+            int reads = 0, reconnects = 0;
+            Func<System.Threading.Tasks.Task<int>> recover = delegate {
+                if (++reads == 1) throw new IOException("isolated broken transport");
+                return System.Threading.Tasks.Task.FromResult(42);
+            };
+            Require(CodexRpcClient.RetryReadAsync(recover, delegate { reconnects++; }).GetAwaiter().GetResult() == 42 && reads == 2 && reconnects == 1,
+                "Broken transport must be reconnected once");
+            reads = 0; reconnects = 0;
+            try
+            {
+                CodexRpcClient.RetryReadAsync<int>(delegate { reads++; throw new TimeoutException(); }, delegate { reconnects++; }).GetAwaiter().GetResult();
+                throw new InvalidOperationException("Persistent timeout was ignored");
+            }
+            catch (TimeoutException) { Require(reads == 2 && reconnects == 1, "Retries must be bounded"); }
+            reads = 0; reconnects = 0;
+            try
+            {
+                CodexRpcClient.RetryReadAsync<int>(delegate { reads++; throw new RpcException("authentication required"); }, delegate { reconnects++; }).GetAwaiter().GetResult();
+                throw new InvalidOperationException("Authentication failure was ignored");
+            }
+            catch (RpcException) { Require(reads == 1 && reconnects == 0, "Authentication failure must not retry tokens"); }
+        }
+
+        private static void TestCloseDuringSwitch()
+        {
+            DashboardController controller = (DashboardController)FormatterServices.GetUninitializedObject(typeof(DashboardController));
+            BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            typeof(DashboardController).GetField("_switchingAccount", flags).SetValue(controller, true);
+            foreach (string field in new string[] { "_footerStatus", "_compactFooterStatus" })
+            {
+                FieldInfo info = typeof(DashboardController).GetField(field, flags);
+                if (info != null) info.SetValue(controller, new TextBlock());
+            }
+            System.ComponentModel.CancelEventArgs args = new System.ComponentModel.CancelEventArgs();
+            typeof(DashboardController).GetMethod("WindowClosing", flags).Invoke(controller, new object[] { null, args });
+            Require(args.Cancel, "Closing a meter mid-transaction must not terminate its authentication operation");
+            // Tray Exit also must stop before touching timers, the icon or Application.Shutdown.
+            typeof(DashboardController).GetMethod("ExitApplication", flags).Invoke(controller, new object[0]);
         }
 
         private static void TestRollback()
@@ -285,7 +373,7 @@ namespace CodexUsageMeter
             private int _stops, _starts;
             public readonly List<string> Events = new List<string>();
             public bool StopAllowed = true, FailFirstStart, FailSecondStop, ThrowOnStop;
-            public Action BeforeStop;
+            public Action BeforeStop, AfterStart;
             public Recorder(string auth) { _auth = auth; }
             public bool TryStop(TimeSpan timeout, out string error)
             {
@@ -296,7 +384,9 @@ namespace CodexUsageMeter
                 return StopAllowed && !(++_stops == 2 && FailSecondStop);
             }
             public bool TryStart(TimeSpan timeout, out string error)
-            { Events.Add("start:" + ReadAccount(_auth)); error = "simulated start failure"; return !(++_starts == 1 && FailFirstStart); }
+            { Events.Add("start:" + ReadAccount(_auth)); error = "simulated start failure";
+                if (AfterStart != null) AfterStart();
+                return !(++_starts == 1 && FailFirstStart); }
         }
         private sealed class Clock : IDesktopLifecycleClock
         { public long Milliseconds { get; private set; } public void Delay(int milliseconds) { Milliseconds += milliseconds; } }

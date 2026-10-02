@@ -1,1 +1,1 @@
-Fix Pro Lite weekly quota placement and refresh plan labels.
+Keep the meter running during account switching and recover transient failures.

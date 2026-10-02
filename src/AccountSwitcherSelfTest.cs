@@ -21,6 +21,12 @@ namespace CodexUsageMeter
             Require(!SystemCodexDesktopProcessSource.IsCodexDesktopPath(
                     @"C:\Users\example\CodexUsageMeter\bin\CodexUsageMeter.exe"),
                 "미터기는 Codex 종료 대상으로 식별하면 안 됩니다.");
+            Require(SystemCodexDesktopProcessSource.IsCodexDesktopPath(
+                @"C:\Program Files\WindowsApps\OpenAI.Codex_99.123.45.0_x64__2p2nqsd0c76g0\app\RenamedDesktop.exe"),
+                "An updated executable name inside the same Codex package must be recognized.");
+            Require(!SystemCodexDesktopProcessSource.IsCodexDesktopPath(
+                @"C:\Untrusted\WindowsApps\OpenAI.Codex_fake\ChatGPT.exe"),
+                "A similar folder name is not an installed Codex package.");
 
             string root = Path.Combine(Path.GetTempPath(), "codex-meter-switch-order-" + Guid.NewGuid().ToString("N"));
             string defaultHome = Path.Combine(root, "default");

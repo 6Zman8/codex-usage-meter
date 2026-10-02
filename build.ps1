@@ -66,7 +66,8 @@ $updaterArguments = @(
     ('/reference:' + (Join-Path $frameworkRoot 'System.dll')),
     ('/reference:' + (Join-Path $frameworkRoot 'System.Core.dll')),
     ('/reference:' + (Join-Path $frameworkRoot 'System.Windows.Forms.dll')),
-    (Join-Path $sourceRoot 'Updater.cs')
+    (Join-Path $sourceRoot 'Updater.cs'),
+    (Join-Path $sourceRoot 'IndependentProcess.cs')
 )
 
 & $compiler $updaterArguments
@@ -100,6 +101,8 @@ $arguments += @(
     (Join-Path $sourceRoot 'AccountSwitchRegressionTests.cs'),
     (Join-Path $sourceRoot 'UpdateUiRegressionTests.cs'),
     (Join-Path $sourceRoot 'RateLimitRegressionTests.cs'),
+    (Join-Path $sourceRoot 'IndependentProcess.cs'),
+    (Join-Path $sourceRoot 'ProcessLifetimeTests.cs'),
     (Join-Path $sourceRoot 'CodexClient.cs'),
     (Join-Path $sourceRoot 'SystemMonitor.cs'),
     (Join-Path $sourceRoot 'UpdateClient.cs')

@@ -230,6 +230,15 @@ namespace CodexUsageMeter
                 }
 
                 _journal.Write("codex-start-confirmed", "target-account=" + targetAccountNumber.ToString());
+                CodexAuthRecord afterStart = _store.ReadDefault();
+                if (!String.Equals(afterStart.AccountId, target.AccountId, StringComparison.Ordinal))
+                {
+                    _journal.Write("start-account-mismatch", "target-account=" + targetAccountNumber.ToString());
+                    // Another login wrote a different account while starting. Preserve it;
+                    // a rollback would overwrite a concurrent user decision.
+                    return AccountSwitchResult.Failed(false,
+                        "Codex 재실행 중 다른 계정의 로그인이 감지되어 전환 완료로 처리하지 않았습니다. 현재 로그인은 보존했습니다.");
+                }
                 _journal.Write("switch-complete", "target-account=" + targetAccountNumber.ToString());
                 return AccountSwitchResult.Completed(false,
                     "선택한 계정으로 전환하고 Codex를 다시 열었습니다. 미터기는 계속 실행 중입니다.");
@@ -475,6 +484,7 @@ namespace CodexUsageMeter
 
     internal sealed class CodexDesktopLifecycle : ICodexDesktopLifecycle
     {
+        private bool _requireIndependent;
         private readonly ICodexDesktopProcessSource _processSource;
         private readonly ICodexDesktopStarter _starter;
         private readonly IDesktopLifecycleClock _clock;
@@ -489,6 +499,7 @@ namespace CodexUsageMeter
             : this(new SystemCodexDesktopProcessSource(), new SystemCodexDesktopStarter(),
                 new DesktopLifecycleClock(), journal)
         {
+            _requireIndependent = true;
         }
 
         internal CodexDesktopLifecycle(ICodexDesktopProcessSource processSource, ICodexDesktopStarter starter,
@@ -505,6 +516,23 @@ namespace CodexUsageMeter
         public bool TryStop(TimeSpan timeout, out string error)
         {
             error = null;
+            if (_requireIndependent)
+            {
+                try
+                {
+                    if (IndependentProcess.NeedsIsolation)
+                    {
+                        error = "미터기의 독립 실행을 확인하지 못했습니다. 미터기를 종료한 뒤 실행파일을 직접 열어 주세요.";
+                        _journal.Write("stop-blocked", "meter-not-independent");
+                        return false;
+                    }
+                }
+                catch
+                {
+                    error = "미터기 실행 상태를 확인하지 못해 Codex를 종료하지 않았습니다.";
+                    return false;
+                }
+            }
             long started = _clock.Milliseconds;
             long? emptySince = null;
             Dictionary<int, ICodexDesktopProcess> observed = new Dictionary<int, ICodexDesktopProcess>();
@@ -513,7 +541,7 @@ namespace CodexUsageMeter
                 while (_clock.Milliseconds - started < timeout.TotalMilliseconds)
                 {
                     // Retain handles to descendants even after their parent disappears from discovery.
-                    foreach (ICodexDesktopProcess process in _processSource.FindCodexProcesses())
+                    foreach (ICodexDesktopProcess process in ReadProcessesWithRetry())
                     {
                         ICodexDesktopProcess previous;
                         if (observed.TryGetValue(process.Id, out previous))
@@ -535,7 +563,7 @@ namespace CodexUsageMeter
                     else
                     {
                         emptySince = null;
-                        if (_clock.Milliseconds - started >= 750)
+                        if (_clock.Milliseconds - started >= 3000)
                         {
                             foreach (ICodexDesktopProcess process in active) process.TryTerminate();
                         }
@@ -560,19 +588,30 @@ namespace CodexUsageMeter
         public bool TryStart(TimeSpan timeout, out string error)
         {
             error = null;
-            if (!_starter.TryLaunch(out error)) return false;
-
             long started = _clock.Milliseconds;
+            int attempts = 1;
+            long lastLaunch = started;
+            bool activated = _starter.TryLaunch(out error);
+            _journal.Write("start-activation", "attempt=1 accepted=" + activated.ToString());
             long? stableSince = null;
             string stableProcesses = null;
             try
             {
                 while (_clock.Milliseconds - started < timeout.TotalMilliseconds)
                 {
-                    ICodexDesktopProcess[] processes = _processSource.FindCodexProcesses();
+                    ICodexDesktopProcess[] processes = ReadProcessesWithRetry();
                     try
                     {
                         ICodexDesktopProcess[] active = processes.Where(p => !p.HasExited).ToArray();
+                        // A lost activation or an exit during startup is safe to retry only
+                        // after the previous instance is absent. Never cycle authentication.
+                        if (active.Length == 0 && _clock.Milliseconds - lastLaunch >= 1500 && attempts < 3)
+                        {
+                            attempts++;
+                            lastLaunch = _clock.Milliseconds;
+                            activated = _starter.TryLaunch(out error);
+                            _journal.Write("start-activation", "attempt=" + attempts + " accepted=" + activated.ToString());
+                        }
                         bool windowReady = active.Any(p => p.HasMainWindow);
                         int[] backends = active.Where(p => p.IsAppServer).Select(p => p.Id).OrderBy(id => id).ToArray();
                         string identity = windowReady && backends.Length > 0
@@ -588,6 +627,7 @@ namespace CodexUsageMeter
                         if (stableSince.HasValue && _clock.Milliseconds - stableSince.Value >= 3000)
                         {
                             _journal.Write("start-processes-stable", "pids=" + identity);
+                            error = null;
                             return true;
                         }
                     }
@@ -605,10 +645,26 @@ namespace CodexUsageMeter
             error = "Codex의 창과 내부 실행 프로세스가 제한 시간 안에 안정적으로 시작되지 않았습니다.";
             return false;
         }
+
+        private ICodexDesktopProcess[] ReadProcessesWithRetry()
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                try { return _processSource.FindCodexProcesses(); }
+                catch (Win32Exception ex)
+                {
+                    // Snapshot races, not permission errors. A failed read is never empty.
+                    if (attempt >= 2 || (ex.NativeErrorCode != 299 && ex.NativeErrorCode != 87)) throw;
+                    _journal.Write("process-inspection-retry", "attempt=" + (attempt + 1));
+                    _clock.Delay(150);
+                }
+            }
+        }
     }
 
     internal sealed class SystemCodexDesktopStarter : ICodexDesktopStarter
     {
+        internal const string CodexPackageFamily = "OpenAI.Codex_2p2nqsd0c76g0";
         internal const string CodexApplicationUserModelId = "OpenAI.Codex_2p2nqsd0c76g0!App";
 
         public bool TryLaunch(out string error)
@@ -616,20 +672,41 @@ namespace CodexUsageMeter
             error = null;
             try
             {
-                using (Process process = Process.Start(new ProcessStartInfo {
-                    FileName = "explorer.exe",
-                    Arguments = "shell:AppsFolder\\" + CodexApplicationUserModelId,
-                    UseShellExecute = true
-                }))
+                object manager = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")));
+                try
                 {
+                    uint processId;
+                    int status = ((IApplicationActivationManager)manager).ActivateApplication(
+                        CodexApplicationUserModelId, null, 0, out processId);
+                    if (status < 0) Marshal.ThrowExceptionForHR(status);
                 }
+                finally { if (Marshal.IsComObject(manager)) Marshal.FinalReleaseComObject(manager); }
                 return true;
             }
             catch
             {
-                error = "Codex를 자동으로 다시 열지 못했습니다.";
-                return false;
+                // Older Desktop Bridge installations may not implement direct activation.
+                // Retain the registered shell entry as a fallback; TryStart still verifies
+                // an actual stable window/backend and never trusts this launch alone.
+                try
+                {
+                    using (Process shell = Process.Start(new ProcessStartInfo {
+                        FileName = "explorer.exe", Arguments = "shell:AppsFolder\\" + CodexApplicationUserModelId,
+                        UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden })) { }
+                    return true;
+                }
+                catch { error = "Codex를 자동으로 다시 열지 못했습니다."; return false; }
             }
+        }
+
+        [ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IApplicationActivationManager
+        {
+            [PreserveSig] int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string app,
+                [MarshalAs(UnmanagedType.LPWStr)] string arguments, uint options, out uint processId);
+            [PreserveSig] int ActivateForFile([MarshalAs(UnmanagedType.LPWStr)] string app, IntPtr items,
+                [MarshalAs(UnmanagedType.LPWStr)] string verb, out uint processId);
+            [PreserveSig] int ActivateForProtocol([MarshalAs(UnmanagedType.LPWStr)] string app, IntPtr items, out uint processId);
         }
     }
 
@@ -679,7 +756,7 @@ namespace CodexUsageMeter
 
         private static HashSet<int> FindCodexChatGptProcessIds()
         {
-            return FindCodexChatGptProcessIds(Process.GetProcessesByName("ChatGPT"));
+            return FindCodexChatGptProcessIds(Process.GetProcesses());
         }
 
         internal static HashSet<int> FindCodexChatGptProcessIds(Process[] processes)
@@ -691,9 +768,28 @@ namespace CodexUsageMeter
                 {
                     try
                     {
-                        if (process.HasExited) continue;
-                        string path = process.MainModule == null ? null : process.MainModule.FileName;
-                        if (IsCodexDesktopPath(path)) ids.Add(process.Id);
+                        using (SafeWaitHandle handle = OpenProcessForIdentity(0x1000, false, process.Id))
+                        {
+                            if (handle.IsInvalid)
+                            {
+                                // Unrelated protected system processes cannot belong to this UI.
+                                if (String.Equals(process.ProcessName, "ChatGPT", StringComparison.OrdinalIgnoreCase) && !process.HasExited)
+                                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                                continue;
+                            }
+                            uint length = 256;
+                            StringBuilder family = new StringBuilder((int)length);
+                            int result = GetPackageFamilyName(handle, ref length, family);
+                            if (result == 0 && String.Equals(family.ToString(), SystemCodexDesktopStarter.CodexPackageFamily, StringComparison.OrdinalIgnoreCase))
+                            {
+                                ids.Add(process.Id);
+                                continue;
+                            }
+                            // Compatibility with older Desktop Bridge builds lacking package identity.
+                            length = 32768;
+                            StringBuilder path = new StringBuilder((int)length);
+                            if (QueryFullProcessImageName(handle, 0, path, ref length) && IsCodexDesktopPath(path.ToString())) ids.Add(process.Id);
+                        }
                     }
                     catch (InvalidOperationException) { }
                     catch (Win32Exception)
@@ -713,10 +809,19 @@ namespace CodexUsageMeter
 
         internal static bool IsCodexDesktopPath(string path)
         {
-            return !String.IsNullOrWhiteSpace(path) &&
-                path.EndsWith("\\ChatGPT.exe", StringComparison.OrdinalIgnoreCase) &&
-                path.IndexOf("\\WindowsApps\\OpenAI.Codex_", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (String.IsNullOrWhiteSpace(path)) return false;
+            string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "WindowsApps");
+            return System.Text.RegularExpressions.Regex.IsMatch(path,
+                "^" + System.Text.RegularExpressions.Regex.Escape(root) + @"\\OpenAI\.Codex_\d+\.\d+\.\d+\.\d+_(x64|x86|arm64|neutral)__2p2nqsd0c76g0\\.+\.exe$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
+
+        [DllImport("kernel32.dll", EntryPoint = "OpenProcess", SetLastError = true)]
+        private static extern SafeWaitHandle OpenProcessForIdentity(uint access, bool inherit, int id);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetPackageFamilyName(SafeWaitHandle process, ref uint length, StringBuilder family);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool QueryFullProcessImageName(SafeWaitHandle process, uint flags, StringBuilder name, ref uint length);
 
         private static List<KeyValuePair<int, int>> ReadProcessTree()
         {
@@ -779,7 +884,7 @@ namespace CodexUsageMeter
             _isAppServer = desktopChild && String.Equals(process.ProcessName, "codex", StringComparison.OrdinalIgnoreCase);
             // Hold the native process handle: an exit request is not the same as exit completion,
             // and a later process reusing this PID must never become a termination target.
-            _exitHandle = OpenProcess(0x00100000, false, _processId); // SYNCHRONIZE only, not PROCESS_ALL_ACCESS
+            _exitHandle = OpenProcess(0x00100001, false, _processId); // SYNCHRONIZE | PROCESS_TERMINATE, not ALL_ACCESS
             if (_exitHandle.IsInvalid)
             {
                 int error = Marshal.GetLastWin32Error();
@@ -829,7 +934,7 @@ namespace CodexUsageMeter
         {
             try
             {
-                if (!HasExited) _process.Kill();
+                if (!HasExited && !TerminateProcess(_exitHandle, 0)) return HasExited;
                 return true;
             }
             catch { return false; }
@@ -842,5 +947,7 @@ namespace CodexUsageMeter
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern uint WaitForSingleObject(SafeWaitHandle handle, uint milliseconds);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool TerminateProcess(SafeWaitHandle handle, uint exitCode);
     }
 }

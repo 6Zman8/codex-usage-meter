@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.0.8.0")]
-[assembly: AssemblyFileVersion("1.0.8.0")]
+[assembly: AssemblyVersion("1.0.9.0")]
+[assembly: AssemblyFileVersion("1.0.9.0")]
 
 namespace CodexUsageMeter
 {
@@ -36,6 +36,14 @@ namespace CodexUsageMeter
         [STAThread]
         public static int Main(string[] args)
         {
+            if (args.Length == 1 && args[0] == "--lifetime-test-child") { Thread.Sleep(30000); return 0; }
+            if (args.Length == 2 && args[0] == "--lifetime-test-host") return ProcessLifetimeTests.Host(args[1]);
+            if (args.Length == 2 && args[0] == "--lifetime-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try { ProcessLifetimeTests.Run(line => report.AppendLine(line)); File.WriteAllText(args[1], report.ToString()); return 0; }
+                catch (Exception ex) { report.AppendLine("FAIL " + ex.Message); File.WriteAllText(args[1], report.ToString()); return 1; }
+            }
             if (args.Length > 1 && args[0] == "--rate-limit-self-test")
             {
                 StringBuilder report = new StringBuilder();
@@ -138,6 +146,21 @@ namespace CodexUsageMeter
             bool created = true;
             if (!uiSmoke)
             {
+                // Detach before acquiring the singleton, including when launched by an updater.
+                try
+                {
+                    if (IndependentProcess.NeedsIsolation && !args.Contains("--standalone"))
+                    {
+                        using (Process independent = IndependentProcess.Start(Assembly.GetExecutingAssembly().Location, "--standalone"))
+                        {
+                            // Older updaters observe this bootstrap PID for five seconds.
+                            if (independent.WaitForExit(6500) && independent.ExitCode != 0)
+                                throw new InvalidOperationException("독립 실행에 실패했습니다.");
+                        }
+                        return 0;
+                    }
+                }
+                catch (Exception ex) { new FileAccountSwitchJournal().Write("independent-launch-failed", "error-type=" + ex.GetType().Name); }
                 _singleInstance = new Mutex(true, "Local\\CodexUsageMeter.Singleton", out created);
                 if (!created)
                 {
@@ -152,6 +175,7 @@ namespace CodexUsageMeter
                 Application application = new Application();
                 application.ShutdownMode = ShutdownMode.OnMainWindowClose;
                 Window window = DashboardController.LoadWindow();
+                window.ShowActivated = false;
                 DashboardController controller = new DashboardController(window);
                 DispatcherTimer smokeTimer = null;
                 if (uiSmoke)
@@ -423,6 +447,7 @@ namespace CodexUsageMeter
         private readonly SemaphoreSlim _accountOperationGate = new SemaphoreSlim(1, 1);
         private bool _settingAutostart;
         private bool _updateChecking;
+        private bool _notificationRefreshPending;
         private bool _switchingAccount;
         private bool _disposed;
         private bool _compactMode;
@@ -997,6 +1022,12 @@ namespace CodexUsageMeter
 
         private void WindowClosing(object sender, CancelEventArgs e)
         {
+            if (_switchingAccount)
+            {
+                e.Cancel = true;
+                SetFooterText("계정 전환을 마친 뒤 미터기를 닫을 수 있습니다.");
+                return;
+            }
             _systemTimer.Stop();
             _accountTimer.Stop();
             _trayIcon.Visible = false;
@@ -1202,13 +1233,20 @@ namespace CodexUsageMeter
 
         private void AccountClientChanged(object sender, EventArgs e)
         {
+            if (_disposed || _window.Dispatcher.HasShutdownStarted) return;
             _window.Dispatcher.BeginInvoke(new Action(RefreshAccountsFromNotification));
         }
 
         private async void RefreshAccountsFromNotification()
         {
-            await Task.Delay(500);
-            await RefreshAccountsAsync();
+            if (_disposed || _notificationRefreshPending) return;
+            _notificationRefreshPending = true;
+            try
+            {
+                await Task.Delay(500);
+                if (!_disposed) await RefreshAccountsAsync();
+            }
+            finally { _notificationRefreshPending = false; }
         }
 
         private void TopmostButtonClick(object sender, RoutedEventArgs e)
@@ -1335,6 +1373,11 @@ namespace CodexUsageMeter
 
         private async void DownloadAndInstallUpdateAsync(UpdateReleaseInfo release)
         {
+            if (_switchingAccount || _disposed)
+            {
+                SetFooterText("계정 전환이 끝난 뒤 업데이트를 실행해 주세요.");
+                return;
+            }
             if (release == null)
             {
                 ShowModal("업데이트 실패", "새 버전 정보를 찾지 못했습니다.", null, "확인", null, null, null);
@@ -1551,7 +1594,7 @@ namespace CodexUsageMeter
 
         private async Task RefreshAccountsAsync(bool allowDuringSwitch = false)
         {
-            if (_refreshing || (_switchingAccount && !allowDuringSwitch))
+            if (_disposed || _refreshing || (_switchingAccount && !allowDuringSwitch))
             {
                 return;
             }
@@ -1865,7 +1908,7 @@ namespace CodexUsageMeter
 
         private void ConfirmCodexLoginChange(AccountView view)
         {
-            if (view == null || view.State == null || _switchingAccount) return;
+            if (view == null || view.State == null || _switchingAccount || _updateChecking) return;
             if (view.LastSnapshot == null || !view.LastSnapshot.IsAuthenticated)
             {
                 ShowModal("계정 전환 불가", "먼저 이 계정을 미터기에 연결해 주세요.", null,
@@ -1877,7 +1920,7 @@ namespace CodexUsageMeter
 
         private async void BeginCodexLoginChange(AccountView view)
         {
-            if (view == null || view.State == null || _switchingAccount) return;
+            if (view == null || view.State == null || _switchingAccount || _updateChecking) return;
             _switchingAccount = true;
             _accountTimer.Stop();
             SetCodexLoginButtonsEnabled(false);
@@ -1889,9 +1932,13 @@ namespace CodexUsageMeter
             CodexRpcClient targetClient = view.Client;
             SetFooterText(view.Label + "의 인증을 확인하는 중…");
             AccountSwitchResult result;
+            IAccountSwitchJournal journal = new FileAccountSwitchJournal();
+            journal.Write("preflight-start", "target-account=" + targetNumber);
             await _accountOperationGate.WaitAsync();
             try
             {
+                if (IndependentProcess.NeedsIsolation)
+                    throw new InvalidOperationException("미터기를 종료한 뒤 실행파일을 직접 열어 주세요. Codex와 분리된 실행 상태가 필요합니다.");
                 int? currentNumber = _activeCodexAccountNumber;
                 AccountState[] states = _accounts.ToArray();
                 await Task.Run(delegate
@@ -1905,26 +1952,36 @@ namespace CodexUsageMeter
                     finally { targetClient.Suspend(); }
                 });
                 SetFooterText(view.Label + "로 전환하기 위해 Codex만 완전히 다시 여는 중…");
+                journal.Write("preflight-complete", "target-account=" + targetNumber);
                 result = await Task.Run(delegate { return _accountSwitcher.SwitchTo(targetNumber, currentNumber); });
             }
             catch (InvalidOperationException ex)
             {
+                journal.Write("preflight-or-switch-failed", "error-type=" + ex.GetType().Name);
                 result = AccountSwitchResult.Failed(false, ex.Message);
             }
             catch
             {
+                journal.Write("preflight-or-switch-failed", "unexpected-error");
                 result = AccountSwitchResult.Failed(false,
                     "계정 전환 중 예상하지 못한 오류가 발생했습니다. 인증정보 내용은 표시하지 않았습니다.");
             }
             finally { _accountOperationGate.Release(); }
-            await RefreshAccountsAsync(true);
-            _switchingAccount = false;
-            _accountTimer.Start();
-            SetCodexLoginButtonsEnabled(true);
-            _refreshButton.IsEnabled = true;
-            _compactRefreshButton.IsEnabled = true;
-            _accountCountDecreaseButton.IsEnabled = _accountCount > 1;
-            _accountCountIncreaseButton.IsEnabled = _accountCount < 4;
+            try { await RefreshAccountsAsync(true); }
+            finally
+            {
+                _switchingAccount = false;
+                if (!_disposed)
+                {
+                    _accountTimer.Start();
+                    SetCodexLoginButtonsEnabled(true);
+                    _refreshButton.IsEnabled = true;
+                    _compactRefreshButton.IsEnabled = true;
+                    _accountCountDecreaseButton.IsEnabled = _accountCount > 1;
+                    _accountCountIncreaseButton.IsEnabled = _accountCount < 4;
+                }
+            }
+            if (_disposed) return;
             BindAccountPage();
             if (result.Success)
             {
@@ -1933,7 +1990,6 @@ namespace CodexUsageMeter
             else
             {
                 SetFooterText(result.Message);
-                _window.Activate();
                 ShowModal("Codex 계정 전환 실패", result.Message, null, "확인", null, null, null);
             }
             if (_disposed)
@@ -2723,6 +2779,11 @@ namespace CodexUsageMeter
 
         private void ExitApplication()
         {
+            if (_switchingAccount)
+            {
+                SetFooterText("계정 전환을 마친 뒤 미터기를 닫을 수 있습니다.");
+                return;
+            }
             _systemTimer.Stop();
             _accountTimer.Stop();
             _trayIcon.Visible = false;
