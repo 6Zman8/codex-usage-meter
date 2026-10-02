@@ -485,22 +485,13 @@ namespace CodexUsageMeter
         private void ParseRateLimits(Dictionary<string, object> result, AccountSnapshot snapshot)
         {
             ParseResetCredits(JsonValue.AsObject(JsonValue.Get(result, "rateLimitResetCredits")), snapshot);
-            Dictionary<string, object> bucket = JsonValue.AsObject(JsonValue.Get(result, "rateLimits"));
+            Dictionary<string, object> allBuckets = JsonValue.AsObject(JsonValue.Get(result, "rateLimitsByLimitId"));
+            Dictionary<string, object> bucket = JsonValue.AsObject(JsonValue.Get(allBuckets, "codex"));
             if (bucket == null)
             {
-                Dictionary<string, object> allBuckets = JsonValue.AsObject(JsonValue.Get(result, "rateLimitsByLimitId"));
-                if (allBuckets != null)
-                {
-                    object codexBucket;
-                    if (allBuckets.TryGetValue("codex", out codexBucket))
-                    {
-                        bucket = JsonValue.AsObject(codexBucket);
-                    }
-                    else if (allBuckets.Count > 0)
-                    {
-                        bucket = JsonValue.AsObject(allBuckets.First().Value);
-                    }
-                }
+                bucket = JsonValue.AsObject(JsonValue.Get(result, "rateLimits"));
+                string limitId = JsonValue.AsString(JsonValue.Get(bucket, "limitId"));
+                if (!String.IsNullOrEmpty(limitId) && limitId != "codex") bucket = null;
             }
 
             if (bucket == null)
@@ -509,12 +500,26 @@ namespace CodexUsageMeter
                 return;
             }
 
-            if (String.IsNullOrWhiteSpace(snapshot.PlanType))
+            // account/read may still reflect the plan cached at login time.
+            string currentPlan = JsonValue.AsString(JsonValue.Get(bucket, "planType"));
+            if (!String.IsNullOrWhiteSpace(currentPlan))
             {
-                snapshot.PlanType = JsonValue.AsString(JsonValue.Get(bucket, "planType"));
+                snapshot.PlanType = currentPlan;
             }
             snapshot.Primary = ParseWindow(JsonValue.AsObject(JsonValue.Get(bucket, "primary")), "단기 한도");
             snapshot.Secondary = ParseWindow(JsonValue.AsObject(JsonValue.Get(bucket, "secondary")), "장기 한도");
+            // These snapshot slots represent the UI's short/long windows, not wire order.
+            // Pro Lite currently returns its only (weekly) window as primary.
+            if (snapshot.Primary != null && snapshot.Primary.DurationMinutes >= 6 * 24 * 60 &&
+                (snapshot.Secondary == null || (snapshot.Secondary.DurationMinutes > 0 &&
+                    snapshot.Secondary.DurationMinutes < snapshot.Primary.DurationMinutes)))
+            {
+                RateWindow weekly = snapshot.Primary;
+                snapshot.Primary = snapshot.Secondary;
+                snapshot.Secondary = weekly;
+            }
+            if (snapshot.Primary == null && snapshot.Secondary == null)
+                snapshot.Error = "사용량 한도 정보가 비어 있습니다.";
         }
 
         private static void ParseResetCredits(Dictionary<string, object> source, AccountSnapshot snapshot)
@@ -584,7 +589,8 @@ namespace CodexUsageMeter
                 return null;
             }
 
-            double used = JsonValue.AsDouble(JsonValue.Get(source, "usedPercent"), 0.0);
+            double used = JsonValue.AsDouble(JsonValue.Get(source, "usedPercent"), Double.NaN);
+            if (Double.IsNaN(used) || Double.IsInfinity(used)) return null;
             used = Math.Max(0.0, Math.Min(100.0, used));
             int minutes = (int)JsonValue.AsDouble(JsonValue.Get(source, "windowDurationMins"), 0.0);
             DateTime? resetsAt = ParseUnixTime(JsonValue.Get(source, "resetsAt"));

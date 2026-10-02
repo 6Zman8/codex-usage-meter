@@ -38,6 +38,18 @@ jobs:
             throw 'Update UI verification failed'
           }
 
+      - name: Verify quota parsing and displays
+        shell: pwsh
+        run: |
+          $test = Start-Process -FilePath '.\bin\CodexUsageMeter.exe' -ArgumentList '--rate-limit-self-test rate-limit-self-test.txt' -WindowStyle Hidden -PassThru
+          if (-not $test.WaitForExit(30000)) {
+            throw 'Rate-limit verification timed out'
+          }
+          Get-Content -LiteralPath '.\rate-limit-self-test.txt'
+          if ($test.ExitCode -ne 0) {
+            throw 'Rate-limit verification failed'
+          }
+
       - name: Publish GitHub Release
         shell: pwsh
         env:

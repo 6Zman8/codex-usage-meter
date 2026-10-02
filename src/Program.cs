@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.0.7.0")]
-[assembly: AssemblyFileVersion("1.0.7.0")]
+[assembly: AssemblyVersion("1.0.8.0")]
+[assembly: AssemblyFileVersion("1.0.8.0")]
 
 namespace CodexUsageMeter
 {
@@ -36,6 +36,22 @@ namespace CodexUsageMeter
         [STAThread]
         public static int Main(string[] args)
         {
+            if (args.Length > 1 && args[0] == "--rate-limit-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try
+                {
+                    RateLimitRegressionTests.Run(line => report.AppendLine(line), args.Length > 2 ? args[2] : null);
+                    File.WriteAllText(Path.GetFullPath(args[1]), report.ToString());
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    report.AppendLine("FAIL " + ex.Message);
+                    File.WriteAllText(Path.GetFullPath(args[1]), report.ToString());
+                    return 1;
+                }
+            }
             if (args.Length > 1 && args[0] == "--update-ui-self-test")
             {
                 StringBuilder report = new StringBuilder();
@@ -2092,6 +2108,11 @@ namespace CodexUsageMeter
             UpdateCodexLoginButton(view);
             UpdateWindow(view.PrimaryName, view.PrimaryValue, view.PrimaryBar, view.PrimaryTimeBar, view.PrimaryReset, view.PrimaryRemaining, snapshot.Primary, "단기 한도", false);
             UpdateWindow(view.SecondaryName, view.SecondaryValue, view.SecondaryBar, view.SecondaryTimeBar, view.SecondaryReset, view.SecondaryRemaining, snapshot.Secondary, "장기 한도", true);
+            if (snapshot.Primary == null && snapshot.Secondary != null && String.IsNullOrEmpty(snapshot.Error))
+            {
+                view.PrimaryValue.Text = "미제공";
+                view.PrimaryReset.Text = "현재 계정 응답에 없는 한도";
+            }
             UpdateResetCredits(view, snapshot);
             UpdateUsage(view, snapshot);
             if (!String.IsNullOrWhiteSpace(snapshot.Error))
@@ -2132,6 +2153,13 @@ namespace CodexUsageMeter
             TextBlock primaryValue = first ? _compactAccount1PrimaryValue : _compactAccount2PrimaryValue;
             TextBlock secondaryValue = first ? _compactAccount1SecondaryValue : _compactAccount2SecondaryValue;
             TextBlock resetValue = first ? _compactAccount1ResetValue : _compactAccount2ResetValue;
+            string prefix = first ? "CompactAccount1" : "CompactAccount2";
+            string primaryLabel = snapshot == null || snapshot.Primary == null ? "단기" : snapshot.Primary.Name.Replace(" 한도", "");
+            string secondaryLabel = snapshot == null || snapshot.Secondary == null ? "주간" : snapshot.Secondary.Name.Replace(" 한도", "");
+            Find<TextBlock>(prefix + "PrimaryName").Text = primaryLabel;
+            Find<TextBlock>(prefix + "PrimaryTimeName").Text = primaryLabel;
+            Find<TextBlock>(prefix + "SecondaryName").Text = secondaryLabel;
+            Find<TextBlock>(prefix + "SecondaryTimeName").Text = secondaryLabel;
 
             if (snapshot == null || !snapshot.IsAuthenticated)
             {
@@ -2162,6 +2190,11 @@ namespace CodexUsageMeter
             UpdateCompactWindow(secondaryValue, view.CompactSecondaryRing, view.CompactSecondaryTimeBar,
                 view.CompactSecondaryTimeValue, view.CompactSecondaryRecommendationRing,
                 snapshot.Secondary, 46.0, new Point(60.0, 60.0), true);
+            if (snapshot.Primary == null && snapshot.Secondary != null && String.IsNullOrEmpty(snapshot.Error))
+            {
+                primaryValue.Text = "없음";
+                view.CompactPrimaryTimeValue.Text = "미제공";
+            }
 
             if (!snapshot.ResetCreditCount.HasValue)
             {
@@ -2663,6 +2696,7 @@ namespace CodexUsageMeter
 
         private static string PlanName(string plan)
         {
+            if (String.Equals(plan, "prolite", StringComparison.OrdinalIgnoreCase)) return "Pro Lite";
             if (String.IsNullOrWhiteSpace(plan))
             {
                 return String.Empty;
@@ -3137,6 +3171,7 @@ namespace CodexUsageMeter
                 window.Close();
                 lines.Add("PASS ui: Codex relogin buttons, shared modal, responsive layout, saved settings, and app icon enabled");
                 UpdateUiRegressionTests.Run(lines.Add, null);
+                RateLimitRegressionTests.Run(lines.Add);
 
                 UpdateClient.RunUpdaterSelfTest();
                 lines.Add("PASS updater: embedded helper replacement, SHA-256 verification, and rollback path enabled; current v" + UpdateClient.CurrentVersionText);
