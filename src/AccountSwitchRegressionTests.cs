@@ -28,6 +28,8 @@ namespace CodexUsageMeter
             SystemCodexDesktopProcessSource.IncludeDescendantsExceptMeter(ids, tree, 20);
             Require(ids.SetEquals(new int[] { 10, 11, 12 }), "Exclude meter, its descendants, and unrelated apps.");
             report("PASS process scope excludes meter and its children");
+            TestMeterLaunchedDesktop();
+            report("PASS meter-launched desktop is detected during startup and stopped before rollback while meter clients survive");
             TestStop();
             report("PASS orphaned backend exit, stop timeout, and inventory failure");
             TestStart();
@@ -50,6 +52,51 @@ namespace CodexUsageMeter
 
         private static CodexDesktopLifecycle Lifecycle(Source source, Clock clock)
         { return new CodexDesktopLifecycle(source, new Starter(), clock, NullAccountSwitchJournal.Instance); }
+
+        private static void TestMeterLaunchedDesktop()
+        {
+            foreach (int desktopParent in new int[] { 20, 40 })
+            {
+                Clock clock = new Clock();
+                State desktop = new State(clock, 10, false, true, 0);
+                State backend = new State(clock, 11, true, false, 1800);
+                State worker = new State(clock, 12, false, false, 0);
+                State meter = new State(clock, 20, false, true, 0);
+                State meterClient = new State(clock, 21, true, false, 0);
+                State meterWorker = new State(clock, 22, false, false, 0);
+                State unrelated = new State(clock, 30, false, true, 0);
+                State launcher = new State(clock, 40, false, false, 0);
+                State[] states = { desktop, backend, worker, meter, meterClient, meterWorker, unrelated, launcher };
+                List<KeyValuePair<int, int>> tree = new List<KeyValuePair<int, int>> {
+                    new KeyValuePair<int, int>(12, 11), new KeyValuePair<int, int>(22, 21),
+                    new KeyValuePair<int, int>(11, 10), new KeyValuePair<int, int>(21, 20),
+                    new KeyValuePair<int, int>(10, desktopParent), new KeyValuePair<int, int>(40, 20),
+                    new KeyValuePair<int, int>(20, 99), new KeyValuePair<int, int>(30, 99)
+                };
+                HashSet<int> detected = new HashSet<int> { 10 };
+                SystemCodexDesktopProcessSource.IncludeDescendantsExceptMeter(detected, tree, 20);
+                Require(detected.SetEquals(new int[] { 10, 11, 12 }),
+                    "A verified Codex desktop launched by the meter must remain visible; exclude only the meter and its other children.");
+
+                Source source = new Source(delegate {
+                    HashSet<int> ids = new HashSet<int>();
+                    if (!desktop.Exited) ids.Add(desktop.Id);
+                    SystemCodexDesktopProcessSource.IncludeDescendantsExceptMeter(ids, tree, meter.Id);
+                    return states.Where(state => ids.Contains(state.Id) && !state.Exited).ToArray();
+                });
+                string error;
+                Require(Lifecycle(source, clock).TryStart(TimeSpan.FromSeconds(6), out error),
+                    "A meter-launched desktop and its backend must satisfy startup verification: " + error);
+                Require(clock.Milliseconds >= 3000 && source.OpenHandles == 0,
+                    "Keep the startup stability interval and release snapshot handles.");
+                Require(Lifecycle(source, clock).TryStop(TimeSpan.FromSeconds(10), out error), error);
+                Require(desktop.Exited && backend.Exited && worker.Exited,
+                    "Startup-failure cleanup must stop the desktop and all observed children before auth rollback.");
+                Require(!meter.Exited && !meterClient.Exited && !meterWorker.Exited && !unrelated.Exited && !launcher.Exited,
+                    "Desktop cleanup must preserve the meter, its account clients, its launcher, and unrelated applications.");
+                Require(source.OpenHandles == 0, "Release all handles after meter-launched desktop cleanup.");
+            }
+        }
 
         private static void TestQueuedAccountTarget(string operation)
         {

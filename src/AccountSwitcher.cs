@@ -849,13 +849,18 @@ namespace CodexUsageMeter
         internal static void IncludeDescendantsExceptMeter(HashSet<int> ids,
             List<KeyValuePair<int, int>> processes, int meterId)
         {
+            // Activation can make the registered desktop a child of the meter.
+            // Its verified roots start a desktop branch, not a protected meter-client branch.
+            HashSet<int> desktopRoots = new HashSet<int>(ids);
+            desktopRoots.Remove(meterId);
             HashSet<int> protectedIds = new HashSet<int> { meterId };
-            IncludeDescendants(protectedIds, processes);
-            IncludeDescendants(ids, processes);
+            IncludeDescendants(protectedIds, processes, desktopRoots);
+            IncludeDescendants(ids, processes, null);
             ids.ExceptWith(protectedIds);
         }
 
-        private static void IncludeDescendants(HashSet<int> ids, List<KeyValuePair<int, int>> processes)
+        private static void IncludeDescendants(HashSet<int> ids, List<KeyValuePair<int, int>> processes,
+            HashSet<int> excludedRoots)
         {
             bool changed;
             do
@@ -863,7 +868,8 @@ namespace CodexUsageMeter
                 changed = false;
                 foreach (KeyValuePair<int, int> process in processes)
                 {
-                    if (ids.Contains(process.Value) && ids.Add(process.Key)) changed = true;
+                    if (ids.Contains(process.Value) && (excludedRoots == null || !excludedRoots.Contains(process.Key)) &&
+                        ids.Add(process.Key)) changed = true;
                 }
             }
             while (changed);

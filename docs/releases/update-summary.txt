@@ -1,1 +1,1 @@
-Keep the meter running during account switching and recover transient failures.
+Fix account-switch startup detection when Codex is launched by the meter.
