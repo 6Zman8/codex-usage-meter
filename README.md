@@ -4,7 +4,13 @@ Codex 계정 1~4개의 사용량과 Windows PC 자원 사용량을 한 화면에
 
 ## 실행
 
-`bin\CodexUsageMeter.exe`를 더블 클릭하면 됩니다. 실행 파일이 아직 없다면 PowerShell에서 `build.ps1`을 한 번 실행하세요.
+`bin\CodexUsageMeter.exe`를 더블 클릭하면 됩니다. 실행 파일이 아직 없거나 소스를 수정했다면 프로젝트 폴더의 `build.cmd`를 더블 클릭해 먼저 빌드하세요.
+
+## 다른 Windows PC에서 이어서 개발
+
+[다른 PC 작업 안내](docs/CROSS_PC.md)의 순서대로 GitHub Desktop에서 이 저장소를 복제한 뒤, 복제한 폴더를 Codex의 로컬 프로젝트로 여세요. 소스와 프로젝트 작업 지침은 GitHub를 통해 함께 전달됩니다. 작업 시작 전에는 최신 변경을 받고, 끝날 때는 변경을 저장해 GitHub로 올립니다.
+
+로그인·계정 연결·PC별 설정은 각 컴퓨터에서 따로 준비합니다. Codex 인증·대화·세션 폴더는 프로젝트 공유에 포함하지 않습니다.
 
 ## 업데이트
 

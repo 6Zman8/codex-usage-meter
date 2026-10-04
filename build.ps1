@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$OutputName = 'CodexUsageMeter.exe'
 )
@@ -9,8 +9,8 @@ $sourceRoot = Join-Path $projectRoot 'src'
 $assetsRoot = Join-Path $projectRoot 'assets'
 $outputRoot = Join-Path $projectRoot 'bin'
 $objectRoot = Join-Path $projectRoot 'obj'
-$compiler = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-$frameworkRoot = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319'
+$frameworkRoot = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
+$compiler = Join-Path $frameworkRoot 'csc.exe'
 $wpfRoot = Join-Path $frameworkRoot 'WPF'
 
 if (-not (Test-Path -LiteralPath $compiler)) {
