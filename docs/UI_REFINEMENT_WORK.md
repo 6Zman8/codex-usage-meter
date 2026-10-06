@@ -19,8 +19,8 @@
 - [x] 구독 입력 검증, 월말/윤년 반복 날짜, 정렬, 기존 설정 복원과 카드 렌더링을 확인했습니다.
 - [x] 1.2.0 검증 빌드의 전체 self-test·계정 전환·배치 검사가 종료 코드 0입니다. 전체 검사는 업데이트 안내와 한도 표시 검사도 포함합니다.
 - [x] 별도 리뷰에서 발견한 연속 드래그 누적과 미리보기의 실제 버튼/제목줄 입력 문제를 수정하고 재검토를 통과했습니다.
-- [ ] 정식 릴리스 및 이전 버전 업데이트 검색·다운로드 검증.
+- [x] GitHub v1.2.0 정식 릴리스와 CI 검사를 완료했습니다. 공개 실행파일의 전체 검사가 종료 코드 0이며 1.1.0의 내장 업데이트 검색·다운로드·SHA-256 검증도 통과했습니다.
 
 ## 재개 지점
 
-작업 브랜치 codex/fix-dark-scroll-quota-layout. 검증과 미리보기는 artifacts/ui-polish-20261006 안에 보관합니다. 최종 근거는 final-self-test.txt, final-account-switch-self-test.txt, final-layout-self-test.txt, final-previews 및 review 폴더입니다. 다음 단계는 검토한 소스의 커밋·푸시, v1.2.0 태그 게시, CI 배포 파일과 1.1.0 업데이트 검사입니다. 실행 중인 사용자 앱과 계정 자료는 유지했습니다.
+구현 커밋 d9011f4가 main과 v1.2.0 태그에 게시됐습니다. 검증과 미리보기는 artifacts/ui-polish-20261006 안에 보관합니다. 최종 근거는 final-self-test.txt, final-account-switch-self-test.txt, final-layout-self-test.txt, published-self-test.txt, v1.1.0-to-v1.2.0-update.txt, final-previews 및 review 폴더입니다. bin/CodexUsageMeter.exe는 공개 릴리스와 같은 실행파일입니다. 실행 중인 사용자 앱과 계정 자료는 유지했으며, 사용자는 기존 앱의 내장 업데이트로 적용합니다.
