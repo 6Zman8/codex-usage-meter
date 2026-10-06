@@ -12,6 +12,13 @@ namespace CodexUsageMeter
         public static void Run(Action<string> report)
         {
             List<string> failures = new List<string>();
+            Check("scheduled plan change is not mislabeled as renewal", delegate {
+                string body = Body("account-a", "plus", true, "2026-10-31T00:00:00Z", null, null, null)
+                    .Replace("\"renews_at\":", "\"scheduled_plan_change\":{\"changes_at\":\"2026-10-30T00:00:00Z\",\"plan_type\":\"prolite\"},\"renews_at\":");
+                AccountSubscriptionInfo change = Parse(body, Now());
+                Require(change.Kind == "change" && IsDate(change, 2026, 10, 30), "A scheduled plan change was displayed as renewal of the current plan.");
+                Require(AccountSubscription.Format(change, new DateTime(2026, 10, 6)).Contains("→ Pro 100"), "The destination plan was omitted.");
+            }, report, failures);
             Check("live renewal, cancellation and period semantics", delegate {
                 DateTime now = Now();
                 AccountSubscriptionInfo renewal = Parse(Body("account-a", "plus", true, "2026-10-31T00:00:00Z", null, null, null), now);
@@ -155,7 +162,7 @@ namespace CodexUsageMeter
         { return value.Date.HasValue && value.Date.Value.ToUniversalTime() == new DateTime(year, month, day, 0, 0, 0, DateTimeKind.Utc); }
         private static AccountSubscriptionResponse Response(int status, string body)
         { return new AccountSubscriptionResponse { StatusCode = status, Body = body, ContentType = status == 200 ? "application/json" : "text/html" }; }
-        private static string Body(string id, string plan, bool? renew, string renews, string cancels, string expires, string until)
+        internal static string Body(string id, string plan, bool? renew, string renews, string cancels, string expires, string until)
         {
             return new JavaScriptSerializer().Serialize(new { accounts = new Dictionary<string, object> { { id, new {
                 account = new { account_id = id, plan_type = plan },
@@ -163,9 +170,9 @@ namespace CodexUsageMeter
                 last_active_subscription = new { will_renew = renew, active_until = until }
             } } } });
         }
-        private static string Auth(string account, string user, string plan, string until, string checkedAt, string signature)
+        internal static string Auth(string account, string user, string plan, string until, string checkedAt, string signature)
         {
-            // These unsigned fixtures stay in memory and contain no real account or credential data.
+            // Unsigned synthetic fixtures contain no real account or credential data.
             Dictionary<string, object> subscription = new Dictionary<string, object> {
                 { "chatgpt_account_id", account }, { "chatgpt_user_id", user }, { "chatgpt_plan_type", plan } };
             if (until != null) subscription["chatgpt_subscription_active_until"] = until;

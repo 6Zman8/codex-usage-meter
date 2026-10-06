@@ -28,6 +28,7 @@ $outputPath = Join-Path $outputRoot $OutputName
 $iconPath = Join-Path $assetsRoot 'app-icon.ico'
 $iconPngPath = Join-Path $assetsRoot 'app-icon.png'
 $updaterPath = Join-Path $objectRoot 'CodexUsageMeter.Updater.exe'
+$webViewRoot = & (Join-Path $projectRoot 'build-webview2.ps1')
 
 if (-not (Test-Path -LiteralPath $iconPath)) {
     throw "앱 아이콘을 찾을 수 없습니다: $iconPath"
@@ -47,6 +48,7 @@ $references = @(
     (Join-Path $wpfRoot 'PresentationCore.dll'),
     (Join-Path $wpfRoot 'PresentationFramework.dll'),
     (Join-Path $frameworkRoot 'System.Xaml.dll')
+    (Join-Path $webViewRoot 'lib\net462\Microsoft.Web.WebView2.Core.dll')
 )
 
 foreach ($reference in $references) {
@@ -88,7 +90,12 @@ $arguments = @(
     ('/resource:' + (Join-Path $sourceRoot 'DarkTheme.xaml') + ',CodexUsageMeter.DarkTheme.xaml'),
     ('/resource:' + $iconPath + ',CodexUsageMeter.AppIcon.ico'),
     ('/resource:' + $iconPngPath + ',CodexUsageMeter.AppIcon.png'),
-    ('/resource:' + $updaterPath + ',CodexUsageMeter.Updater.exe')
+    ('/resource:' + $updaterPath + ',CodexUsageMeter.Updater.exe'),
+    ('/resource:' + (Join-Path $webViewRoot 'lib\net462\Microsoft.Web.WebView2.Core.dll') + ',CodexUsageMeter.WebView2.Microsoft.Web.WebView2.Core.dll'),
+    ('/resource:' + (Join-Path $webViewRoot 'runtimes\win-x64\native\WebView2Loader.dll') + ',CodexUsageMeter.WebView2.x64.WebView2Loader.dll'),
+    ('/resource:' + (Join-Path $webViewRoot 'runtimes\win-x86\native\WebView2Loader.dll') + ',CodexUsageMeter.WebView2.x86.WebView2Loader.dll'),
+    ('/resource:' + (Join-Path $webViewRoot 'runtimes\win-arm64\native\WebView2Loader.dll') + ',CodexUsageMeter.WebView2.arm64.WebView2Loader.dll'),
+    ('/resource:' + (Join-Path $webViewRoot 'LICENSE.txt') + ',CodexUsageMeter.WebView2.LICENSE.txt')
 )
 
 foreach ($reference in $references) {
@@ -111,6 +118,10 @@ $arguments += @(
     (Join-Path $sourceRoot 'SubscriptionRegressionTests.cs'),
     (Join-Path $sourceRoot 'AccountSubscription.cs'),
     (Join-Path $sourceRoot 'AccountSubscriptionRegressionTests.cs'),
+    (Join-Path $sourceRoot 'WebSubscriptionStore.cs'),
+    (Join-Path $sourceRoot 'WebSubscriptionWindow.cs'),
+    (Join-Path $sourceRoot 'WebViewRuntime.cs'),
+    (Join-Path $sourceRoot 'WebSubscriptionTests.cs'),
     (Join-Path $sourceRoot 'IndependentProcess.cs'),
     (Join-Path $sourceRoot 'ProcessLifetimeTests.cs'),
     (Join-Path $sourceRoot 'CodexClient.cs'),

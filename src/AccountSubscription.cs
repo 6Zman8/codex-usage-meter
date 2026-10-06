@@ -15,10 +15,11 @@ namespace CodexUsageMeter
     {
         public DateTime? Date { get; set; }
         public string Kind { get; set; }
+        public string NextPlan { get; set; }
         public string Error { get; set; }
         public DateTime CheckedAt { get; set; }
         internal AccountSubscriptionInfo Copy()
-        { return new AccountSubscriptionInfo { Date = Date, Kind = Kind, Error = Error, CheckedAt = CheckedAt }; }
+        { return new AccountSubscriptionInfo { Date = Date, Kind = Kind, NextPlan = NextPlan, Error = Error, CheckedAt = CheckedAt }; }
     }
 
     internal static class AccountSubscription
@@ -28,11 +29,16 @@ namespace CodexUsageMeter
         public static string Format(AccountSubscriptionInfo value, DateTime today)
         {
             if (value == null || !value.Date.HasValue || value.Date.Value.Date < today.Date) return "구독 날짜 조회 불가";
-            string label = value.Kind == "renewal" ? "구독 갱신 " : value.Kind == "end" ? "구독 종료 " : value.Kind == "period" ? "이용기간 " : null;
+            string label = value.Kind == "renewal" ? "구독 갱신 " : value.Kind == "end" ? "구독 종료 " : value.Kind == "period" ? "이용기간 " : value.Kind == "change" ? "플랜 변경 " : null;
             if (label == null) return "구독 날짜 조회 불가";
             int days = (value.Date.Value.Date - today.Date).Days;
-            return label + value.Date.Value.ToString("M/d", CultureInfo.InvariantCulture) + (value.Kind == "period" ? "까지" : "") +
+            return label + value.Date.Value.ToString("M/d", CultureInfo.InvariantCulture) + (value.Kind == "period" ? "까지" : value.Kind == "change" ? " → " + PlanName(value.NextPlan) : "") +
                 " · " + (days == 0 ? "오늘" : days.ToString(CultureInfo.InvariantCulture) + "일 남음");
+        }
+
+        internal static string PlanName(string plan)
+        {
+            switch (Plan(plan)) { case "plus": return "Plus"; case "prolite": return "Pro 100"; case "pro": return "Pro"; case "free": return "Free"; case "go": return "Go"; default: return "새 플랜"; }
         }
 
         public static DateTime? ReadFreshClaim(string profileRoot, string livePlan, DateTime now)
@@ -83,7 +89,12 @@ namespace CodexUsageMeter
                 object willRenewValue = Get(subscription, "will_renew");
                 bool? willRenew = willRenewValue is bool ? (bool?)willRenewValue : null;
                 DateTime? date = null; string kind = null;
-                if (willRenew == true) { date = renews; kind = "renewal"; }
+                Dictionary<string, object> change = Map(Get(entitlement, "scheduled_plan_change"));
+                DateTime? changeAt = Timestamp(Get(change, "changes_at"));
+                string nextPlan = Text(change, "plan_type");
+                if (changeAt.HasValue && changeAt.Value > now.ToUniversalTime() && !String.IsNullOrWhiteSpace(nextPlan) && Plan(nextPlan) != Plan(livePlan))
+                { date = changeAt; kind = "change"; }
+                else if (willRenew == true) { date = renews; kind = "renewal"; }
                 else if (willRenew == false && (renews.HasValue || (!expires.HasValue && cancels.HasValue)))
                 { date = renews ?? cancels; kind = "end"; }
                 else if (expires.HasValue) { date = expires; kind = "end"; }
@@ -92,7 +103,7 @@ namespace CodexUsageMeter
                 { date = Timestamp(Get(subscription, "active_until")); kind = "period"; }
                 if (!date.HasValue || date.Value <= now.ToUniversalTime())
                     return Unavailable("응답에 현재 유효한 구독 갱신일이나 종료일이 없습니다.", now);
-                return new AccountSubscriptionInfo { Date = date.Value.ToLocalTime(), Kind = kind, CheckedAt = now.ToUniversalTime() };
+                return new AccountSubscriptionInfo { Date = date.Value.ToLocalTime(), Kind = kind, NextPlan = kind == "change" ? Plan(nextPlan) : null, CheckedAt = now.ToUniversalTime() };
             }
             catch (Exception) { return Unavailable("구독 정보 응답 형식을 확인하지 못했습니다.", now); }
         }
@@ -150,6 +161,7 @@ namespace CodexUsageMeter
         private readonly Func<string> _readAuth;
         private readonly Func<HttpWebRequest, Task<AccountSubscriptionResponse>> _transport;
         private readonly Func<DateTime> _utcNow;
+        private readonly string _profileRoot;
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
         private AccountSubscriptionInfo _cached;
         private DateTime _cacheUntil;
@@ -157,7 +169,7 @@ namespace CodexUsageMeter
         private const string AccountUrl = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27";
 
         public AccountSubscriptionReader(string profileRoot)
-            : this(delegate { return AccountSubscription.ReadAuthJson(profileRoot); }, SendAsync, delegate { return DateTime.UtcNow; }) { }
+            : this(delegate { return AccountSubscription.ReadAuthJson(profileRoot); }, SendAsync, delegate { return DateTime.UtcNow; }) { _profileRoot = profileRoot; }
 
         internal AccountSubscriptionReader(Func<string> readAuth, Func<HttpWebRequest, Task<AccountSubscriptionResponse>> transport, Func<DateTime> utcNow)
         {
@@ -173,6 +185,16 @@ namespace CodexUsageMeter
                 DateTime now = _utcNow().ToUniversalTime(); string authError;
                 Credentials credentials = ReadCredentials(livePlan, expectedEmail, now, out authError);
                 if (credentials == null) { _cached = null; _cacheKey = null; return AccountSubscription.Unavailable(authError, now); }
+                if (!String.IsNullOrWhiteSpace(_profileRoot))
+                {
+                    WebSubscriptionRecord web = WebSubscriptionStore.Load(_profileRoot, credentials.AccountId, null);
+                    if (web != null)
+                    {
+                        WebSubscriptionService.QueueRefresh(_profileRoot, credentials.AccountId, expectedEmail, livePlan);
+                        AccountSubscriptionInfo fresh = AccountSubscription.Plan(web.Plan) == AccountSubscription.Plan(livePlan) ? WebSubscriptionStore.Fresh(web, now) : null;
+                        if (fresh != null) return fresh;
+                    }
+                }
                 if (_cached != null && _cacheKey == credentials.CacheKey && now < _cacheUntil &&
                     (!_cached.Date.HasValue || _cached.Date.Value.ToUniversalTime() > now)) return _cached.Copy();
                 AccountSubscriptionInfo result; bool allowClaimFallback = true, usedClaim = false;

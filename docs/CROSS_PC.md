@@ -43,6 +43,7 @@
 - `assets`: 앱 아이콘 원본
 - `build.cmd`: 더블클릭 빌드 진입점
 - `build.ps1`: 실제 빌드, `-OutputName`으로 별도 검사 실행파일 이름 지정 가능
+- `build-webview2.ps1`: 버전·해시를 고정한 Microsoft WebView2 SDK 구성 요소 준비. 첫 빌드에는 NuGet 다운로드를 위한 인터넷 연결이 필요합니다.
 - `docs/RELEASING.md`: 정식 버전 배포 절차
 - `AGENTS.md`: 다른 PC에서도 함께 읽을 프로젝트 작업 지침
 

@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.2.1.0")]
-[assembly: AssemblyFileVersion("1.2.1.0")]
+[assembly: AssemblyVersion("1.2.2.0")]
+[assembly: AssemblyFileVersion("1.2.2.0")]
 
 namespace CodexUsageMeter
 {
@@ -36,6 +36,9 @@ namespace CodexUsageMeter
         [STAThread]
         public static int Main(string[] args)
         {
+            WebViewRuntime.Register();
+            if (args.Length == 2 && args[0] == "--web-subscription-self-test") return WebSubscriptionTests.RunBrowser(args[1]);
+            if (args.Length == 2 && args[0] == "--web-subscription-online-probe") return WebSubscriptionTests.RunOnlineProbe(args[1]);
             if (args.Length == 2 && args[0] == "--layout-reload-check") return LayoutRegressionTests.CheckReload(args[1]);
             if (args.Length > 1 && args[0] == "--layout-self-test")
             {
@@ -739,6 +742,15 @@ namespace CodexUsageMeter
             view.CompactSecondaryTimeValue = Find<TextBlock>(compactPrefix + "SecondaryTimeValue");
             view.CompactSecondaryRecommendationRing = Find<System.Windows.Shapes.Path>(compactPrefix + "SecondaryRecommendationRing");
             view.CompactPaceValue = Find<TextBlock>(compactPrefix + "PaceValue");
+            foreach (TextBlock link in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
+            {
+                link.Cursor = Cursors.Hand; link.Focusable = true; link.TextDecorations = TextDecorations.Underline;
+                link.MouseLeftButtonUp += delegate(object sender, MouseButtonEventArgs e) { e.Handled = true; ConnectWebSubscription(view); };
+                link.KeyDown += delegate(object sender, KeyEventArgs e) {
+                    if (e.Key == Key.Enter || e.Key == Key.Space) { e.Handled = true; ConnectWebSubscription(view); }
+                };
+                System.Windows.Automation.AutomationProperties.SetHelpText(link, "웹 ChatGPT에 연결하여 구독 날짜를 자동 확인합니다.");
+            }
             return view;
         }
 
@@ -2364,6 +2376,21 @@ namespace CodexUsageMeter
             }
         }
 
+        private bool _webConnecting;
+        private async void ConnectWebSubscription(AccountView view)
+        {
+            if (_webConnecting || _switchingAccount || view.Client == null || view.LastSnapshot == null || !view.LastSnapshot.IsAuthenticated) return;
+            _webConnecting = true;
+            CodexRpcClient client = view.Client;
+            AccountSnapshot snapshot = view.LastSnapshot;
+            try
+            {
+                if (await WebSubscriptionService.ConnectAsync(_window, client.ProfileRoot, snapshot.Email, snapshot.PlanType)) await RefreshAccountsAsync();
+            }
+            catch (Exception error) { ShowModal("웹 구독 연결", error.Message, null, "확인", null, null, null); }
+            finally { _webConnecting = false; }
+        }
+
         private static void UpdateSubscription(AccountView view, AccountSnapshot snapshot)
         {
             AccountSubscriptionInfo subscription = snapshot == null ? null : snapshot.Subscription;
@@ -2375,7 +2402,7 @@ namespace CodexUsageMeter
             foreach (TextBlock label in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
             {
                 label.Text = text;
-                label.ToolTip = detail;
+                label.ToolTip = (detail ?? "") + "\n클릭하여 웹 ChatGPT 구독 연결 · 계정별 최초 1회 로그인";
             }
         }
 

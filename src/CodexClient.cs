@@ -90,6 +90,7 @@ namespace CodexUsageMeter
         private bool _disposed;
 
         public event EventHandler AccountChanged;
+        internal string ProfileRoot { get { return _profileRoot; } }
 
         public CodexRpcClient(string codexPath, string profileRoot)
             : this(delegate { return codexPath; }, profileRoot)

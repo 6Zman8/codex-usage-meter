@@ -30,6 +30,7 @@ namespace CodexUsageMeter
             CheckAccountAlignmentAndFit(report, previewDirectory);
             SubscriptionRegressionTests.Run(report);
             AccountSubscriptionRegressionTests.Run(report);
+            WebSubscriptionTests.RunData(report, evidenceDirectory);
             LayoutSettings saved = LayoutSettings.Defaults();
             LayoutSettings edit = saved.Copy();
             edit.Widget.UseSingleAccount(3, true);
@@ -284,7 +285,7 @@ namespace CodexUsageMeter
                 }
                 if (!(fixture.Window.FindName("Account1SubscriptionValue") is TextBlock) || !(fixture.Window.FindName("CompactAccount1SubscriptionValue") is TextBlock))
                     failures.Add("Subscription date is missing below the account credits.");
-                Require(fixture.First.SubscriptionValue.Text.Contains("종료") && fixture.Second.SubscriptionValue.Text.Contains("갱신") &&
+                Require(fixture.First.SubscriptionValue.Text.Contains("→ Plus") && fixture.Second.SubscriptionValue.Text.Contains("갱신") &&
                     fixture.First.SubscriptionValue.Text == fixture.First.CompactSubscriptionValue.Text, "Account subscription type/date does not follow the account across both views.");
                 fixture.Page(1);
                 Require(fixture.First.State.Number == 3 && fixture.First.SubscriptionValue.Text.Contains("조회 불가"), "Paging retained another account's subscription date.");
@@ -411,7 +412,7 @@ namespace CodexUsageMeter
                     AccountSnapshot snapshot = (AccountSnapshot)typeof(DashboardController).GetMethod("CreatePreviewSnapshot", BindingFlags.NonPublic | BindingFlags.Static)
                         .Invoke(null, new object[] { "예시 계정 " + n, n == 1 ? "prolite" : "plus", 75.0, 98.0, 2, 0 });
                     if (n == 1) snapshot.Primary = null;
-                    if (n <= 2) snapshot.Subscription = new AccountSubscriptionInfo { Date = DateTime.Today.AddDays(n == 1 ? 25 : 9), Kind = n == 1 ? "end" : "renewal", CheckedAt = DateTime.Now };
+                    if (n <= 2) snapshot.Subscription = new AccountSubscriptionInfo { Date = DateTime.Today.AddDays(n == 1 ? 25 : 9), Kind = n == 1 ? "change" : "renewal", NextPlan = n == 1 ? "plus" : null, CheckedAt = DateTime.Now };
                     Accounts.Add(new AccountState { Number = n, Label = "계정 " + n, LastSnapshot = snapshot });
                 }
                 Set("_layouts", LayoutSettings.Defaults());

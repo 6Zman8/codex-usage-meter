@@ -1,1 +1,1 @@
-Align account rows, fit dashboards without scrolling, and show account subscription status.
+Read subscription dates through web ChatGPT and show scheduled plan changes.
