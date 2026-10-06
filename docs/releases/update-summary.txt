@@ -1,1 +1,1 @@
-Read subscription dates through web ChatGPT and show scheduled plan changes.
+Connect web ChatGPT subscription dates and preserve local dates after restart.

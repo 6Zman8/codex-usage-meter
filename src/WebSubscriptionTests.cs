@@ -48,6 +48,13 @@ namespace CodexUsageMeter
                 !WebSubscriptionWindow.IsAccountResponse("https://chatgpt.com:8443/backend-api/accounts/check/v4-2023-04-27") &&
                 !WebSubscriptionWindow.IsAccountResponse("https://chatgpt.com/backend-api/payments"), "Unrelated response admitted.");
             report("PASS web date freshness, failure retry, authoritative no-date result and response origin filter");
+            DateTime boundary = new DateTime(2026, 11, 2, 23, 30, 0, DateTimeKind.Utc);
+            string overnight = AccountSubscriptionRegressionTests.Body("account-web", "prolite", true, boundary.ToString("o"), null, null, null);
+            Require(WebSubscriptionStore.TryAccept(root, "account-web", "web@example.invalid", "prolite", overnight, now, out info), "Timezone fixture rejected.");
+            AccountSubscriptionInfo reloaded = WebSubscriptionStore.Fresh(WebSubscriptionStore.Load(root, "account-web", "prolite"), now);
+            Require(reloaded.Date.Value == boundary.ToLocalTime() && reloaded.Date.Value.Kind == DateTimeKind.Local &&
+                AccountSubscription.Format(reloaded, now.ToLocalTime()).Contains(boundary.ToLocalTime().ToString("M/d", System.Globalization.CultureInfo.InvariantCulture)), "A persisted UTC timestamp changed the local subscription day.");
+            report("PASS persisted web date retains the local calendar day across UTC midnight");
         }
 
         internal static int RunOnlineProbe(string output)

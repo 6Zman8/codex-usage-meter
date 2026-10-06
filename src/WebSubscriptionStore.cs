@@ -61,6 +61,9 @@ namespace CodexUsageMeter
             DateTime checkedAt = value.CheckedAt.ToUniversalTime(); now = now.ToUniversalTime();
             if (checkedAt > now || now - checkedAt >= TimeSpan.FromHours(24) || (value.Date.HasValue && value.Date.Value.ToUniversalTime() <= now)) return null;
             AccountSubscriptionInfo result = value.Copy();
+            // JavaScriptSerializer restores persisted timestamps as UTC.
+            // Dashboard dates/countdowns are expressed in the PC's local calendar.
+            if (result.Date.HasValue) result.Date = result.Date.Value.ToLocalTime();
             result.Error = "웹 ChatGPT에서 " + checkedAt.ToLocalTime().ToString("M/d HH:mm") + " 확인" +
                 (record.WebProfileLinked ? "" : "\n자동 확인을 위해 날짜를 눌러 웹 구독을 연결해 주세요.") +
                 (String.IsNullOrWhiteSpace(value.Error) ? "" : "\n" + value.Error) +
