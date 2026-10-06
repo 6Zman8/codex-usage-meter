@@ -14,7 +14,7 @@
 - [x] 화면 연결: DashboardLayout.cs와 Program.cs/Dashboard.xaml. 표시 계정만 페이지에 배치, 빈 칸 회수, 내부 항목 가시성, PC 필터. 원래 클라이언트와 계정 전환 경로 유지.
 - [x] 검증: LayoutRegressionTests.cs와 --layout-self-test. 저장 후 새 프로세스 복원, 모드 독립성, 숨김 계정 복구, 취소, 손상 설정 복구, 좁은 창과 100~200% 글자. 실제 내장 XAML의 숨김 WPF 표면 렌더링과 드롭 이벤트 경로 확인. 물리 마우스 조작은 수행하지 않음.
 - [x] 기존 rate-limit/update-ui/account-switch/full/lifetime 검사, 빌드와 시각 확인. 실제 계정 전환 및 사용 중인 창 종료 없음.
-- [ ] README/릴리스 문서, 최종 실행파일과 다운로드 복사본 버전·SHA-256 일치 확인. 정식 배포는 docs/RELEASING.md 절차에 따라 검증 후 게시.
+- [x] README/릴리스 문서, 최종 실행파일과 다운로드 복사본 버전·SHA-256 일치 확인. 정식 배포는 docs/RELEASING.md 절차에 따라 검증 후 게시.
 
 ## 주의할 경계
 
@@ -30,4 +30,13 @@
 
 1.1.0 검사 실행파일에서 모든 검사가 종료 코드 0입니다. 증거는 artifacts/layout-20261006의 layout.txt, final-checks.json, final-*-self-test.txt, previews에 보관합니다. 실제 실행 중인 설치본은 변경하지 않았습니다.
 
-현재 재개 지점: 검증한 소스와 v1.1.0 태그 게시, GitHub 배포 파일 확인과 전달본 해시 대조.
+## 전달 완료
+
+- 소스 커밋: `91e4b577bc29cfea95fa03f0f0452d3f9b4fd0cc`, 태그 `v1.1.0`.
+- [정식 배포](https://github.com/6Zman8/codex-usage-meter/releases/tag/v1.1.0), [배포 워크플로 성공](https://github.com/6Zman8/codex-usage-meter/actions/runs/37450062169).
+- 공개 실행파일: 361,472바이트, SHA-256 `f60ea2eda40667d9ea8e237428dd9d9520971aaebfe4248bcbeee5ef02aefdac`.
+- 프로젝트 `bin/CodexUsageMeter.exe`와 다운로드 `CodexUsageMeter-v1.1.0.exe`가 공개 배포 파일과 동일함을 확인.
+- 공개 전달본의 숨김 전체 검사 및 기존 설치 v1.0.10의 업데이트 검색·다운로드·해시 검증 통과. 실제 설치본 교체나 Codex 종료는 하지 않았습니다. 사용자는 기존 앱의 설정 → 업데이트 확인 → 다운로드 및 재시작으로 적용합니다.
+- 이번 작업의 시험용 중복 실행파일, 중간 보고서, 컴파일 출력은 휴지통으로 이동하고 원래 경로에서 사라진 것과 복구 가능함을 확인. 최종본·원본 백업·필요한 검사 자료는 보존.
+
+현재 상태: 구현·검증·정식 배포·전달 완료. 실제 마우스 드래그/사용자 계정 전환과 다른 PC 설치는 검증 범위에 포함하지 않았습니다.
