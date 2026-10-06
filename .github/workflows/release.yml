@@ -26,6 +26,10 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME does not match executable version $actualTag"
           }
 
+      - name: Verify Chrome subscription userscript
+        shell: pwsh
+        run: node browser/subscription.test.cjs
+
       - name: Verify update dialog and Korean release notes
         shell: pwsh
         run: |

@@ -6,6 +6,8 @@
 
 ## 배포 순서
 
+v1.3.0의 Chrome 연결은 `node browser/subscription.test.cjs`와 `--chrome-subscription-self-test 결과파일`로 검사합니다. 후자는 layout/전체 검사에도 포함됩니다. 스크립트와 EXE의 호환성을 유지하며 실제 Tampermonkey 설치·웹 응답 후킹은 격리 VM/TCP 검사와 구분합니다. 상세 동작은 `docs/CHROME_SUBSCRIPTION.md`를 읽습니다.
+
 v1.1.0부터 `--layout-self-test 결과파일 [미리보기폴더]`도 실행합니다. 계정 자료를 열지 않는 숨김 WPF 표면에서 배치 저장·복원·취소·모드 분리·좁은 창을 검사합니다. `--self-test`에도 이 검사가 포함되며 GitHub 배포 워크플로가 별도로 재검증합니다. 결과파일 옆의 `layout-storage-fixture.json`은 가상 배치 복원 검사 자료입니다.
 
 v1.2.2의 웹 연결 변경은 WebView2 Runtime이 설치된 PC에서 `--web-subscription-self-test 결과파일`도 숨김 실행합니다. 가짜 계정·가로챈 시험 응답만 사용하며 실제 로그인에는 접근하지 않습니다. `--web-subscription-online-probe 결과파일`은 별도 익명 웹 프로필로 실제 로그인 화면 도달 여부만 확인합니다. 이 검사들은 실제 사용자 인증 후 자동 갱신 성공을 뜻하지 않습니다. SDK는 `build-webview2.ps1`에서 고정 버전·SHA-256을 검증합니다.

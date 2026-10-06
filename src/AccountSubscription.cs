@@ -18,8 +18,9 @@ namespace CodexUsageMeter
         public string NextPlan { get; set; }
         public string Error { get; set; }
         public DateTime CheckedAt { get; set; }
+        public bool IsStale { get; set; }
         internal AccountSubscriptionInfo Copy()
-        { return new AccountSubscriptionInfo { Date = Date, Kind = Kind, NextPlan = NextPlan, Error = Error, CheckedAt = CheckedAt }; }
+        { return new AccountSubscriptionInfo { Date = Date, Kind = Kind, NextPlan = NextPlan, Error = Error, CheckedAt = CheckedAt, IsStale = IsStale }; }
     }
 
     internal static class AccountSubscription
@@ -28,12 +29,12 @@ namespace CodexUsageMeter
 
         public static string Format(AccountSubscriptionInfo value, DateTime today)
         {
-            if (value == null || !value.Date.HasValue || value.Date.Value.Date < today.Date) return "구독 날짜 조회 불가";
+            if (value == null || !value.Date.HasValue || (!value.IsStale && value.Date.Value.Date < today.Date)) return "구독 날짜 조회 불가";
             string label = value.Kind == "renewal" ? "구독 갱신 " : value.Kind == "end" ? "구독 종료 " : value.Kind == "period" ? "이용기간 " : value.Kind == "change" ? "플랜 변경 " : null;
             if (label == null) return "구독 날짜 조회 불가";
             int days = (value.Date.Value.Date - today.Date).Days;
             return label + value.Date.Value.ToString("M/d", CultureInfo.InvariantCulture) + (value.Kind == "period" ? "까지" : value.Kind == "change" ? " → " + PlanName(value.NextPlan) : "") +
-                " · " + (days == 0 ? "오늘" : days.ToString(CultureInfo.InvariantCulture) + "일 남음");
+                " · " + (value.IsStale ? "재확인 필요" : days == 0 ? "오늘" : days.ToString(CultureInfo.InvariantCulture) + "일 남음");
         }
 
         internal static string PlanName(string plan)
@@ -187,12 +188,14 @@ namespace CodexUsageMeter
                 if (credentials == null) { _cached = null; _cacheKey = null; return AccountSubscription.Unavailable(authError, now); }
                 if (!String.IsNullOrWhiteSpace(_profileRoot))
                 {
+                    ChromeSubscriptionBridge.Register(_profileRoot, expectedEmail, livePlan);
                     WebSubscriptionRecord web = WebSubscriptionStore.Load(_profileRoot, credentials.AccountId, null);
                     if (web != null)
                     {
                         WebSubscriptionService.QueueRefresh(_profileRoot, credentials.AccountId, expectedEmail, livePlan);
                         AccountSubscriptionInfo fresh = AccountSubscription.Plan(web.Plan) == AccountSubscription.Plan(livePlan) ? WebSubscriptionStore.Fresh(web, now) : null;
                         if (fresh != null) return fresh;
+                        if (web.Source == "chrome") return AccountSubscription.Unavailable("플랜이 변경되었습니다. 날짜를 눌러 크롬에서 구독 정보를 다시 확인해 주세요.", now);
                     }
                 }
                 if (_cached != null && _cacheKey == credentials.CacheKey && now < _cacheUntil &&

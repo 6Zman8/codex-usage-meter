@@ -114,6 +114,24 @@ namespace CodexUsageMeter
             Rect codeBounds = code.TransformToAncestor(scroll).TransformBounds(new Rect(code.RenderSize));
             Require(codeBounds.Top >= 0 && codeBounds.Bottom <= scroll.ActualHeight + 0.5,
                 "The connection code must be reachable by scrolling.");
+            AccountView chromeView = new AccountView {
+                Client = (CodexRpcClient)FormatterServices.GetUninitializedObject(typeof(CodexRpcClient)),
+                LastSnapshot = new AccountSnapshot { IsAuthenticated = true, Email = "chrome@example.invalid", PlanType = "plus" }
+            };
+            typeof(DashboardController).GetMethod("ConnectWebSubscription", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(controller, new object[] { chromeView });
+            root.UpdateLayout();
+            Require((string)primary.Content == "크롬 열기" && (string)secondary.Content == "스크립트 설치" && secondary.Visibility == Visibility.Visible, "Chrome connection actions missing.");
+            foreach (Button button in new[] { primary, secondary })
+            {
+                Rect bounds = button.TransformToAncestor(root).TransformBounds(new Rect(button.RenderSize));
+                Require(bounds.Left >= 0 && bounds.Top >= 0 && bounds.Right <= width + 0.5 && bounds.Bottom <= height + 0.5, "Chrome connection button clipped.");
+            }
+            if (!String.IsNullOrWhiteSpace(previews))
+            {
+                RenderTargetBitmap bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+                bitmap.Render(root); PngBitmapEncoder encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                using (FileStream file = File.Create(Path.Combine(previews, "chrome-connect-" + width + "x" + height + ".png"))) encoder.Save(file);
+            }
             surface.RootVisual = null;
             }
         }

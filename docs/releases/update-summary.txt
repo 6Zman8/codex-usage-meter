@@ -1,1 +1,1 @@
-Connect web ChatGPT subscription dates and preserve local dates after restart.
+Use your regular Chrome login to check subscription dates with Tampermonkey.

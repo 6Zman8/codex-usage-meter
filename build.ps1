@@ -40,6 +40,7 @@ if (-not (Test-Path -LiteralPath $iconPngPath)) {
 $references = @(
     (Join-Path $frameworkRoot 'System.dll'),
     (Join-Path $frameworkRoot 'System.Core.dll'),
+    (Join-Path $frameworkRoot 'System.Security.dll'),
     (Join-Path $frameworkRoot 'System.Management.dll'),
     (Join-Path $frameworkRoot 'System.Web.Extensions.dll'),
     (Join-Path $frameworkRoot 'System.Drawing.dll'),
@@ -122,6 +123,8 @@ $arguments += @(
     (Join-Path $sourceRoot 'WebSubscriptionWindow.cs'),
     (Join-Path $sourceRoot 'WebViewRuntime.cs'),
     (Join-Path $sourceRoot 'WebSubscriptionTests.cs'),
+    (Join-Path $sourceRoot 'ChromeSubscriptionTests.cs'),
+    (Join-Path $sourceRoot 'ChromeSubscriptionBridge.cs'),
     (Join-Path $sourceRoot 'IndependentProcess.cs'),
     (Join-Path $sourceRoot 'ProcessLifetimeTests.cs'),
     (Join-Path $sourceRoot 'CodexClient.cs'),

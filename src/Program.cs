@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.2.3.0")]
-[assembly: AssemblyFileVersion("1.2.3.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 namespace CodexUsageMeter
 {
@@ -37,6 +37,12 @@ namespace CodexUsageMeter
         public static int Main(string[] args)
         {
             WebViewRuntime.Register();
+            if (args.Length == 2 && args[0] == "--chrome-subscription-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try { ChromeSubscriptionTests.Run(line => report.AppendLine(line), Path.GetDirectoryName(Path.GetFullPath(args[1]))); File.WriteAllText(args[1], report.ToString()); return 0; }
+                catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
+            }
             if (args.Length == 2 && args[0] == "--web-subscription-self-test") return WebSubscriptionTests.RunBrowser(args[1]);
             if (args.Length == 2 && args[0] == "--web-subscription-online-probe") return WebSubscriptionTests.RunOnlineProbe(args[1]);
             if (args.Length == 2 && args[0] == "--layout-reload-check") return LayoutRegressionTests.CheckReload(args[1]);
@@ -187,6 +193,7 @@ namespace CodexUsageMeter
                 Window window = DashboardController.LoadWindow();
                 window.ShowActivated = false;
                 DashboardController controller = new DashboardController(window);
+                if (!uiSmoke) ChromeSubscriptionBridge.StartIfConfigured();
                 DispatcherTimer smokeTimer = null;
                 if (uiSmoke)
                 {
@@ -254,6 +261,7 @@ namespace CodexUsageMeter
             }
             finally
             {
+                ChromeSubscriptionBridge.Stop();
                 if (_singleInstance != null)
                 {
                     try { _singleInstance.ReleaseMutex(); } catch { }
@@ -485,6 +493,7 @@ namespace CodexUsageMeter
         public DashboardController(Window window)
         {
             _window = window;
+            ChromeSubscriptionBridge.Changed += ChromeSubscriptionChanged;
             string localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             _accountsRoot = Path.Combine(localData, "CodexUsageMeter", "accounts");
             string defaultCodexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
@@ -2376,19 +2385,22 @@ namespace CodexUsageMeter
             }
         }
 
-        private bool _webConnecting;
-        private async void ConnectWebSubscription(AccountView view)
+        private void ChromeSubscriptionChanged()
         {
-            if (_webConnecting || _switchingAccount || view.Client == null || view.LastSnapshot == null || !view.LastSnapshot.IsAuthenticated) return;
-            _webConnecting = true;
-            CodexRpcClient client = view.Client;
-            AccountSnapshot snapshot = view.LastSnapshot;
-            try
-            {
-                if (await WebSubscriptionService.ConnectAsync(_window, client.ProfileRoot, snapshot.Email, snapshot.PlanType)) await RefreshAccountsAsync();
-            }
-            catch (Exception error) { ShowModal("웹 구독 연결", error.Message, null, "확인", null, null, null); }
-            finally { _webConnecting = false; }
+            if (_disposed || _window.Dispatcher.HasShutdownStarted) return;
+            _window.Dispatcher.BeginInvoke(new Action(async delegate { if (!_disposed) await RefreshAccountsAsync(); }));
+        }
+
+        private void ConnectWebSubscription(AccountView view)
+        {
+            if (_switchingAccount || view.Client == null || view.LastSnapshot == null || !view.LastSnapshot.IsAuthenticated) return;
+            ShowModal("크롬 구독 연결",
+                "평소 쓰시는 크롬의 로그인과 저장된 비밀번호를 그대로 이용합니다.\n\n처음 한 번 ‘스크립트 설치’를 눌러 탬퍼몽키에 추가하세요. 설치 후 미터기의 구독 날짜를 다시 눌러 ‘크롬 열기’을 선택하면 연결됩니다. 이후에는 크롬의 ChatGPT 구독 페이지를 열면 자동으로 반영됩니다.\n\n확인할 계정: " + view.LastSnapshot.Email,
+                null, "크롬 열기", "스크립트 설치",
+                delegate { try { ChromeSubscriptionBridge.Register(view.Client.ProfileRoot, view.LastSnapshot.Email, view.LastSnapshot.PlanType); ChromeSubscriptionBridge.OpenConnection(); }
+                    catch (Exception error) { ShowModal("크롬 연결", error.Message, null, "확인", null, null, null); } },
+                delegate { try { ChromeSubscriptionBridge.OpenChrome(ChromeSubscriptionBridge.ScriptUrl); }
+                    catch (Exception error) { ShowModal("스크립트 설치", error.Message, null, "확인", null, null, null); } });
         }
 
         private static void UpdateSubscription(AccountView view, AccountSnapshot snapshot)
@@ -2402,7 +2414,7 @@ namespace CodexUsageMeter
             foreach (TextBlock label in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
             {
                 label.Text = text;
-                label.ToolTip = (detail ?? "") + "\n클릭하여 웹 ChatGPT 구독 연결 · 계정별 최초 1회 로그인";
+                label.ToolTip = (detail ?? "") + "\n클릭하여 크롬 열기 · 탬퍼몽키 연결 스크립트 최초 1회 설치";
             }
         }
 
@@ -3068,6 +3080,7 @@ namespace CodexUsageMeter
 
         public void Dispose()
         {
+            ChromeSubscriptionBridge.Changed -= ChromeSubscriptionChanged;
             if (_disposed)
             {
                 return;

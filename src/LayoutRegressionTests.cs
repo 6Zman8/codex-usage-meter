@@ -31,6 +31,7 @@ namespace CodexUsageMeter
             SubscriptionRegressionTests.Run(report);
             AccountSubscriptionRegressionTests.Run(report);
             WebSubscriptionTests.RunData(report, evidenceDirectory);
+            ChromeSubscriptionTests.Run(report, evidenceDirectory);
             LayoutSettings saved = LayoutSettings.Defaults();
             LayoutSettings edit = saved.Copy();
             edit.Widget.UseSingleAccount(3, true);

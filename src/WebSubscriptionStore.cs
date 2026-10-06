@@ -14,6 +14,7 @@ namespace CodexUsageMeter
         public DateTime LastAttemptUtc { get; set; }
         public string LastError { get; set; }
         public bool WebProfileLinked { get; set; }
+        public string Source { get; set; }
     }
 
     internal static class WebSubscriptionStore
@@ -59,11 +60,21 @@ namespace CodexUsageMeter
             if (record == null || record.Subscription == null) return null;
             AccountSubscriptionInfo value = record.Subscription;
             DateTime checkedAt = value.CheckedAt.ToUniversalTime(); now = now.ToUniversalTime();
-            if (checkedAt > now || now - checkedAt >= TimeSpan.FromHours(24) || (value.Date.HasValue && value.Date.Value.ToUniversalTime() <= now)) return null;
+            if (checkedAt > now) return null;
+            bool stale = now - checkedAt >= TimeSpan.FromHours(24) || (value.Date.HasValue && value.Date.Value.ToUniversalTime() <= now);
+            if (stale && record.Source != "chrome") return null;
             AccountSubscriptionInfo result = value.Copy();
+            result.IsStale = stale;
             // JavaScriptSerializer restores persisted timestamps as UTC.
             // Dashboard dates/countdowns are expressed in the PC's local calendar.
             if (result.Date.HasValue) result.Date = result.Date.Value.ToLocalTime();
+            if (record.Source == "chrome")
+            {
+                result.Error = "Chrome에서 " + checkedAt.ToLocalTime().ToString("M/d HH:mm") + " 마지막 확인\n" +
+                    (stale ? "저장된 이전 정보입니다. 크롬에서 구독 페이지를 열어 재확인해 주세요." : "크롬에서 구독 페이지를 열면 새 정보가 반영됩니다.") +
+                    (String.IsNullOrWhiteSpace(value.Error) ? "" : "\n" + value.Error);
+                return result;
+            }
             result.Error = "웹 ChatGPT에서 " + checkedAt.ToLocalTime().ToString("M/d HH:mm") + " 확인" +
                 (record.WebProfileLinked ? "" : "\n자동 확인을 위해 날짜를 눌러 웹 구독을 연결해 주세요.") +
                 (String.IsNullOrWhiteSpace(value.Error) ? "" : "\n" + value.Error) +
@@ -73,7 +84,7 @@ namespace CodexUsageMeter
 
         internal static bool IsDue(WebSubscriptionRecord record, DateTime now, string currentPlan = null)
         {
-            if (record == null || !record.WebProfileLinked) return false;
+            if (record == null || record.Source == "chrome" || !record.WebProfileLinked) return false;
             DateTime attempt = record.LastAttemptUtc.ToUniversalTime(); now = now.ToUniversalTime();
             if (String.IsNullOrWhiteSpace(record.LastError) && ((currentPlan != null && AccountSubscription.Plan(currentPlan) != AccountSubscription.Plan(record.Plan)) ||
                 (record.Subscription != null && record.Subscription.Date.HasValue && record.Subscription.Date.Value.ToUniversalTime() <= now))) return true;
@@ -81,8 +92,10 @@ namespace CodexUsageMeter
             return now < attempt || now - attempt >= TimeSpan.FromHours(hours);
         }
 
-        internal static bool TryAccept(string root, string expectedAccount, string expectedEmail, string plan, string json, DateTime now, out AccountSubscriptionInfo value)
+        internal static bool TryAccept(string root, string expectedAccount, string expectedEmail, string plan, string json, DateTime now, out AccountSubscriptionInfo value, string source = null)
         {
+            lock (Gate)
+            {
             value = null;
             var accounts = AccountSubscription.Map(AccountSubscription.Get(AccountSubscription.ParseJson(json), "accounts"));
             var details = AccountSubscription.Map(AccountSubscription.Get(accounts, expectedAccount));
@@ -90,9 +103,13 @@ namespace CodexUsageMeter
             if (String.IsNullOrWhiteSpace(expectedAccount) || AccountId(root, expectedEmail) != expectedAccount ||
                 AccountSubscription.Text(account, "account_id") != expectedAccount ||
                 AccountSubscription.Plan(AccountSubscription.Text(account, "plan_type")) != AccountSubscription.Plan(plan)) return false;
+            WebSubscriptionRecord previous = Load(root, expectedAccount, null);
+            if (previous != null && previous.Source == "chrome" && source != "chrome") return false;
+            if (source == "chrome" && previous != null && previous.Subscription != null && previous.Subscription.CheckedAt.ToUniversalTime() > now.ToUniversalTime()) return false;
             value = AccountSubscription.ParseAccountResponse(json, expectedAccount, plan, now);
-            Save(root, new WebSubscriptionRecord { AccountId = expectedAccount, Plan = plan, Subscription = value, LastAttemptUtc = now.ToUniversalTime(), WebProfileLinked = true });
+            Save(root, new WebSubscriptionRecord { AccountId = expectedAccount, Plan = plan, Subscription = value, LastAttemptUtc = now.ToUniversalTime(), WebProfileLinked = source != "chrome", Source = source });
             return true;
+            }
         }
 
         internal static void Failed(string root, string accountId, string plan, string error, DateTime now)

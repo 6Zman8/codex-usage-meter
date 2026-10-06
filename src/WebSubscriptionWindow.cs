@@ -28,7 +28,8 @@ namespace CodexUsageMeter
                 await Gate.WaitAsync();
                 try
                 {
-                    if (WebSubscriptionStore.AccountId(root, email) != account) return;
+                    if (WebSubscriptionStore.AccountId(root, email) != account ||
+                        !WebSubscriptionStore.IsDue(WebSubscriptionStore.Load(root, account, null), DateTime.UtcNow, plan)) return;
                     using (WebSubscriptionWindow window = new WebSubscriptionWindow(root, account, email, plan, false)) await window.RunAsync(null);
                 }
                 catch { WebSubscriptionStore.Failed(root, account, plan, "웹 로그인 또는 연결 상태를 확인해 주세요.", DateTime.UtcNow); }
