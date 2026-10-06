@@ -67,7 +67,8 @@ namespace CodexUsageMeter
             Grid middle = new Grid(); Grid.SetRow(middle, 1); root.Children.Add(middle);
             middle.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(242) }); middle.ColumnDefinitions.Add(new ColumnDefinition());
             Border sidebar = new Border { Background = Brush("#1D1D20"), BorderBrush = Brush("#35353A"), BorderThickness = new Thickness(0, 0, 1, 0), Padding = new Thickness(16) };
-            sidebar.Child = new ScrollViewer { Content = _inspector, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }; middle.Children.Add(sidebar);
+            _inspector.Width = 209;
+            sidebar.Child = new Viewbox { Child = _inspector, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Left }; middle.Children.Add(sidebar);
             Grid stage = new Grid { Margin = new Thickness(18, 12, 18, 12) }; Grid.SetColumn(stage, 1); middle.Children.Add(stage);
             stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); stage.RowDefinitions.Add(new RowDefinition()); stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             DockPanel stageTools = new DockPanel { Margin = new Thickness(0, 0, 0, 10) }; stage.Children.Add(stageTools);
@@ -79,7 +80,7 @@ namespace CodexUsageMeter
             Grid.SetRow(previewFrame, 1); stage.Children.Add(previewFrame);
             Viewbox zoom = new Viewbox { Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, Child = _previewDecorator };
             previewFrame.Child = zoom;
-            TextBlock guide = new TextBlock { Text = "카드를 눌러 선택 · 위쪽을 끌어 이동 · 오른쪽 아래를 끌어 크기 조절\n폭은 열 단위, 높이는 3단계로 맞춰집니다. 좁은 창에서는 자동으로 줄바꿈됩니다.", Foreground = Brush("#A4A4AE"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0), FontSize = 12 };
+            TextBlock guide = new TextBlock { Text = "카드를 눌러 선택 · 위쪽을 끌어 이동 · 오른쪽 아래를 끌어 크기 조절\n폭은 열 단위, 높이는 3단계로 조절합니다. 모든 카드가 창 안에 맞춰 표시됩니다.", Foreground = Brush("#A4A4AE"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0), FontSize = 12 };
             Grid.SetRow(guide, 2); stage.Children.Add(guide);
             Border footer = new Border { Background = Brush("#1E1E21"), Padding = new Thickness(18, 10, 18, 10) }; Grid.SetRow(footer, 2); root.Children.Add(footer);
             DockPanel actions = new DockPanel(); footer.Child = actions;
@@ -131,7 +132,7 @@ namespace CodexUsageMeter
         private IEnumerable<LayoutCardSettings> Choices()
         { return Mode.Cards.Where(card => !card.Id.StartsWith("account") || Int32.Parse(card.Id.Substring(7)) <= _accountCount); }
         private static string CardName(string id)
-        { return id == "pc" ? "PC 상태" : id == "subscriptions" ? "구독 갱신일" : "계정 " + id.Substring(7); }
+        { return id == "pc" ? "PC 상태" : "계정 " + id.Substring(7); }
         private void SetViewport(int preset)
         {
             _dashboardRoot.Width = preset == 1 ? (_compact ? 320 : 900) : preset == 2 ? (_compact ? 900 : 1600) : (_compact ? 460 : 1280);
@@ -154,43 +155,39 @@ namespace CodexUsageMeter
         {
             _inspector.Children.Clear();
             Label("카드 표시", 15);
+            UniformGrid cards = new UniformGrid { Columns = 2 }; _inspector.Children.Add(cards);
             foreach (LayoutCardSettings card in Choices())
             {
-                DockPanel row = new DockPanel { Margin = new Thickness(0, 5, 0, 5) };
-                CheckBox visible = new CheckBox { IsChecked = card.Visible, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0), ToolTip = "카드 표시/숨김" };
+                DockPanel row = new DockPanel { Margin = new Thickness(0, 2, 0, 2) };
+                CheckBox visible = new CheckBox { IsChecked = card.Visible, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0), ToolTip = "카드 표시/숨김" };
                 visible.Click += delegate { card.Visible = visible.IsChecked == true; _selected = card.Id; RefreshInspector(); Preview(); FocusSelectedCard(); };
                 row.Children.Add(visible);
                 Button select = MakeButton(CardName(card.Id), delegate { _selected = card.Id; RefreshInspector(); Preview(); FocusSelectedCard(); });
-                select.HorizontalContentAlignment = HorizontalAlignment.Left; select.Background = Brush(card.Id == _selected ? "#255B4C" : "#292929"); row.Children.Add(select); _inspector.Children.Add(row);
+                select.Padding = new Thickness(5, 5, 5, 5);
+                select.HorizontalContentAlignment = HorizontalAlignment.Left; select.Background = Brush(card.Id == _selected ? "#255B4C" : "#292929"); row.Children.Add(select); cards.Children.Add(row);
             }
-            Label("최대 열 수", 13);
+            Label("열 수", 13);
             Segments(new[] { "1열", "2열", "3열" }, Mode.Columns - 1, n => { Mode.Columns = n + 1; if (n > 0) SetViewport(2); RefreshInspector(); Preview(); });
-            CheckBox hide = new CheckBox { Content = new TextBlock { Text = "제공하지 않는 한도 숨김", TextWrapping = TextWrapping.Wrap }, IsChecked = Mode.HideUnavailable, Margin = new Thickness(0, 12, 0, 10) };
-            hide.Click += delegate { Mode.HideUnavailable = hide.IsChecked == true; Preview(); }; _inspector.Children.Add(hide);
             LayoutCardSettings selected = Mode.Card(_selected);
             Label(CardName(_selected) + " 조절", 15);
-            if (selected.Id == "subscriptions")
-            {
-                _inspector.Children.Add(MakeButton("구독 서비스·갱신일 관리", delegate {
-                    SubscriptionEditor editor = new SubscriptionEditor(_draft.Subscriptions, entries => { _draft.Subscriptions = entries; selected.Visible = true; RefreshInspector(); Preview(); });
-                    editor.Owner = this; editor.ShowDialog();
-                }));
-            }
             Label("폭", 12); Segments(new[] { "1칸", "2칸", "3칸" }, selected.Span - 1, n => ResizeCard(selected.Id, n + 1, selected.Size));
             Label("높이", 12); Segments(new[] { "짧게", "보통", "길게" }, selected.Size, n => ResizeCard(selected.Id, selected.Span, n));
-            string[] keys = selected.Id == "pc" ? new[] { "cpu", "gpu", "ram", "disk", "network" } : selected.Id == "subscriptions" ? new string[0] : (_compact ? new[] { "short", "weekly", "credits" } : new[] { "short", "weekly", "credits", "stats", "calendar" });
-            string[] names = selected.Id == "pc" ? new[] { "CPU", "GPU", "RAM", "디스크", "네트워크" } : new[] { "5시간·단기 한도", "주간 한도", "초기화권", "사용 통계", "달력·최근 7일" };
+            string[] keys = selected.Id == "pc" ? new[] { "cpu", "gpu", "ram", "disk", "network" } : (_compact ? new[] { "short", "weekly", "credits" } : new[] { "short", "weekly", "credits", "stats", "calendar" });
+            string[] names = selected.Id == "pc" ? new[] { "CPU", "GPU", "RAM", "디스크", "네트워크" } : new[] { "5시간 한도", "주간 한도", "초기화권", "사용 통계", "달력·7일" };
+            UniformGrid sections = new UniformGrid { Columns = 2, Margin = new Thickness(0, 4, 0, 0) }; _inspector.Children.Add(sections);
             for (int n = 0; n < keys.Length; n++)
             {
-                string key = keys[n]; CheckBox section = new CheckBox { Content = names[n], IsChecked = selected.Shows(key), Margin = new Thickness(0, 9, 0, 0) };
-                section.Click += delegate { selected.SetSection(key, section.IsChecked == true); Preview(); }; _inspector.Children.Add(section);
+                string key = keys[n]; CheckBox section = new CheckBox { Content = names[n], IsChecked = selected.Shows(key), Margin = new Thickness(0, 6, 0, 0) };
+                section.Click += delegate { selected.SetSection(key, section.IsChecked == true); Preview(); }; sections.Children.Add(section);
             }
             Label("빠른 배치", 13);
-            _inspector.Children.Add(MakeButton("선택 계정 중심", delegate { int number = _selected.StartsWith("account") ? Int32.Parse(_selected.Substring(7)) : 1; Mode.UseSingleAccount(number, _compact); RefreshInspector(); Preview(); }));
-            _inspector.Children.Add(MakeButton("이 화면 기본 배치", delegate { if (_compact) _draft.Widget = LayoutSettings.DefaultMode(true); else _draft.Expanded = LayoutSettings.DefaultMode(false); RefreshInspector(); Preview(); }));
+            UniformGrid presets = new UniformGrid { Columns = 2 }; _inspector.Children.Add(presets);
+            presets.Children.Add(MakeButton("선택 계정 중심", delegate { int number = _selected.StartsWith("account") ? Int32.Parse(_selected.Substring(7)) : 1; Mode.UseSingleAccount(number, _compact); RefreshInspector(); Preview(); }));
+            presets.Children.Add(MakeButton("기본 배치", delegate { if (_compact) _draft.Widget = LayoutSettings.DefaultMode(true); else _draft.Expanded = LayoutSettings.DefaultMode(false); RefreshInspector(); Preview(); }));
+            foreach (Button button in presets.Children) { button.FontSize = 12; button.Padding = new Thickness(4, 7, 4, 7); }
         }
         private void Label(string text, double size)
-        { _inspector.Children.Add(new TextBlock { Text = text, FontSize = size, FontWeight = FontWeights.SemiBold, Foreground = Brush("#DADAE0"), Margin = new Thickness(0, 14, 0, 7) }); }
+        { _inspector.Children.Add(new TextBlock { Text = text, FontSize = size, FontWeight = FontWeights.SemiBold, Foreground = Brush("#DADAE0"), Margin = new Thickness(0, 6, 0, 4) }); }
         private void Segments(string[] names, int selected, Action<int> action)
         {
             UniformGrid group = new UniformGrid { Rows = 1 };
@@ -295,27 +292,12 @@ namespace CodexUsageMeter
                 if (span != _tile.Settings.Span || size != _tile.Settings.Size) _resizeCard(_tile.Settings.Id, span, size);
             };
             _visual.Children.Add(_resize); AddVisualChild(_visual);
-            PreviewMouseWheel += delegate(object sender, MouseWheelEventArgs e) {
-                ScrollViewer scroll = ParentScroll(_tile.Host);
-                if (scroll == null) return;
-                scroll.ScrollToVerticalOffset(scroll.VerticalOffset - e.Delta / 120.0 * 48);
-                e.Handled = true;
-            };
         }
         internal void Refresh(bool selected)
         {
             Thickness border = new Thickness(selected ? 2 : 1);
             if (_outline.BorderThickness != border) _outline.BorderThickness = border;
             _outline.BorderBrush = LayoutEditor.Brush(selected ? "#72D4B5" : "#505058"); _resize.Opacity = selected ? 1 : 0.55;
-            ScrollViewer scroll = ParentScroll(_tile.Host);
-            if (scroll != null && scroll.ActualWidth > 0)
-            {
-                Rect viewport = scroll.TransformToDescendant(_tile.Card).TransformBounds(new Rect(0, 0, Math.Max(0, scroll.ViewportWidth), Math.Max(0, scroll.ViewportHeight)));
-                Rect visible = Rect.Intersect(new Rect(_tile.Card.RenderSize), viewport);
-                // Assigning a fresh Clip on every LayoutUpdated invalidates arrangement again,
-                // preventing the adorner layer from settling its card-position transform.
-                if (Clip == null || Clip.Bounds != visible) Clip = visible.IsEmpty ? Geometry.Empty : new RectangleGeometry(visible);
-            }
             AdornerLayer layer = VisualTreeHelper.GetParent(this) as AdornerLayer;
             Visual parent = layer == null ? null : VisualTreeHelper.GetParent(layer) as Visual;
             if (parent != null && _tile.Card.IsVisible)
@@ -324,8 +306,6 @@ namespace CodexUsageMeter
                 if (bounds != _lastBounds) { _lastBounds = bounds; layer.Update(_tile.Card); }
             }
         }
-        private static ScrollViewer ParentScroll(DependencyObject item)
-        { while (item != null && !(item is ScrollViewer)) item = VisualTreeHelper.GetParent(item); return item as ScrollViewer; }
         protected override int VisualChildrenCount { get { return 1; } }
         protected override Visual GetVisualChild(int index) { return _visual; }
         protected override Size MeasureOverride(Size size) { _visual.Measure(AdornedElement.RenderSize); return AdornedElement.RenderSize; }

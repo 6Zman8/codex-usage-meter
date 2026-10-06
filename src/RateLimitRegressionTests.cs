@@ -88,7 +88,7 @@ namespace CodexUsageMeter
                 "expanded Pro Lite display is wrong");
             Require(((TextBlock)window.FindName("CompactAccount1SecondaryValue")).Text == "98%" &&
                 ((TextBlock)window.FindName("CompactAccount1PrimaryValue")).Text == "없음" &&
-                ((TextBlock)window.FindName("CompactAccount1PrimaryName")).Text == "단기" &&
+                ((TextBlock)window.FindName("CompactAccount1PrimaryName")).Text == "5시간" &&
                 first.CompactPrimaryTimeValue.Text == "미제공" && !first.CompactSecondaryRing.Data.IsEmpty(), "compact Pro Lite display is wrong");
             Require(second.PrimaryValue.Text == "75%" && second.SecondaryValue.Text == "98%" &&
                 ((TextBlock)window.FindName("CompactAccount2PrimaryName")).Text == "5시간", "Plus display regressed");

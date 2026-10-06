@@ -50,7 +50,6 @@ namespace CodexUsageMeter
             HideUnavailable = true;
             foreach (LayoutCardSettings card in Cards)
             {
-                if (card.Id == "subscriptions") continue;
                 card.Visible = card.Id == "pc" || card.Id == "account" + number;
                 card.Span = 1;
                 card.Size = 1;
@@ -81,7 +80,6 @@ namespace CodexUsageMeter
                     Sections = new List<string>(compact ? new[] { "short", "weekly", "credits" } :
                         new[] { "short", "weekly", "credits", "stats", "calendar" }) });
             mode.Cards.Add(new LayoutCardSettings { Id = "pc", Sections = new List<string>(new[] { "cpu", "gpu", "ram", "disk", "network" }) });
-            mode.Cards.Add(new LayoutCardSettings { Id = "subscriptions", Visible = false });
             return mode;
         }
         public static LayoutSettings Parse(string json)

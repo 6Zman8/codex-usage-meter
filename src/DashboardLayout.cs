@@ -12,13 +12,13 @@ namespace CodexUsageMeter
     {
         public Border Card;
         public Viewbox Host;
+        public Grid Content;
         public LayoutCardSettings Settings;
         public double MinimumHeight;
         public Rect Bounds;
     }
 
-    // The content keeps its readable design width when a window is extremely narrow.
-    // Normal windows reflow; very small windows scale the card and scroll vertically.
+    // Fit complete rows to the viewport; preserve card edges while scaling their contents.
     internal sealed class CardLayoutPanel : Panel
     {
         internal readonly List<LayoutTile> Tiles = new List<LayoutTile>();
@@ -29,17 +29,22 @@ namespace CodexUsageMeter
         internal LayoutTile Add(Border card)
         {
             card.Margin = new Thickness(0);
+            Grid content = (Grid)card.Child;
+            card.Child = null;
+            Viewbox contentHost = new Viewbox { Child = content, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
+            card.Child = contentHost;
             Viewbox host = new Viewbox { Child = card, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
-            LayoutTile tile = new LayoutTile { Card = card, Host = host };
+            LayoutTile tile = new LayoutTile { Card = card, Host = host, Content = content };
             Tiles.Add(tile); Children.Add(host); return tile;
         }
         protected override Size MeasureOverride(Size available)
         {
             double width = Double.IsInfinity(available.Width) ? MinimumCardWidth : Math.Max(1, available.Width);
             List<LayoutTile> visible = Tiles.Where(tile => tile.Settings != null && tile.Settings.Visible && tile.Card.Visibility == Visibility.Visible).ToList();
-            int columns = Math.Max(1, Math.Min(Columns, (int)Math.Floor((width + Gap) / (MinimumCardWidth + Gap))));
+            int columns = Math.Max(1, Columns);
             columns = Math.Max(1, Math.Min(columns, visible.Sum(tile => Math.Min(columns, tile.Settings.Span))));
-            double unit = Math.Max(1, (width - Gap * (columns - 1)) / columns);
+            double horizontalGap = Math.Min(Gap, width / (columns * 4));
+            double unit = (width - horizontalGap * (columns - 1)) / columns;
             List<List<LayoutTile>> rows = new List<List<LayoutTile>>();
             List<LayoutTile> row = null;
             int occupied = columns;
@@ -47,15 +52,14 @@ namespace CodexUsageMeter
             {
                 int span = Math.Min(columns, tile.Settings.Span);
                 if (occupied + span > columns) { row = new List<LayoutTile>(); rows.Add(row); occupied = 0; }
-                double cardWidth = unit * span + Gap * (span - 1);
+                double cardWidth = unit * span + horizontalGap * (span - 1);
                 double logicalWidth = Math.Max(MinimumCardWidth, cardWidth);
                 double scale = cardWidth / logicalWidth;
                 double height = tile.MinimumHeight * (tile.Settings.Size == 0 ? 1 : tile.Settings.Size == 2 ? 1.5 : 1.15) * scale;
-                tile.Bounds = new Rect(occupied * (unit + Gap), 0, cardWidth, height);
+                tile.Bounds = new Rect(occupied * (unit + horizontalGap), 0, cardWidth, height);
                 tile.Card.Width = logicalWidth;
                 row.Add(tile); occupied += span;
             }
-            double top = 0;
             foreach (List<LayoutTile> items in rows)
             {
                 foreach (IGrouping<int, LayoutTile> group in items.GroupBy(tile => tile.Settings.Size))
@@ -63,18 +67,33 @@ namespace CodexUsageMeter
                     double alignedHeight = group.Max(tile => tile.Bounds.Height);
                     foreach (LayoutTile tile in group) tile.Bounds = new Rect(tile.Bounds.X, 0, tile.Bounds.Width, alignedHeight);
                 }
-                double height = items.Max(tile => tile.Bounds.Height);
+            }
+            double naturalHeight = rows.Sum(items => items.Max(tile => tile.Bounds.Height));
+            double availableHeight = Double.IsInfinity(available.Height) ? naturalHeight + Gap * Math.Max(0, rows.Count - 1) : Math.Max(1, available.Height);
+            double gap = rows.Count < 2 ? 0 : Math.Min(Gap, availableHeight / (rows.Count * 4));
+            double fit = naturalHeight == 0 ? 1 : Math.Min(1, Math.Max(1, availableHeight - gap * Math.Max(0, rows.Count - 1)) / naturalHeight);
+            double top = 0;
+            foreach (List<LayoutTile> items in rows)
+            {
+                double height = items.Max(tile => tile.Bounds.Height) * fit;
                 foreach (LayoutTile tile in items)
                 {
-                    tile.Bounds = new Rect(tile.Bounds.X, top, tile.Bounds.Width, tile.Bounds.Height);
+                    tile.Bounds = new Rect(tile.Bounds.X, top, tile.Bounds.Width, tile.Bounds.Height * fit);
                     tile.Card.Height = tile.Bounds.Height * tile.Card.Width / tile.Bounds.Width;
+                    Thickness padding = tile.Card.Padding, border = tile.Card.BorderThickness;
+                    double innerWidth = Math.Max(1, tile.Card.Width - padding.Left - padding.Right - border.Left - border.Right);
+                    double innerHeight = Math.Max(1, tile.Card.Height - padding.Top - padding.Bottom - border.Top - border.Bottom);
+                    tile.Content.Width = innerWidth;
+                    tile.Content.Height = Double.NaN;
+                    tile.Content.Measure(new Size(innerWidth, Double.PositiveInfinity));
+                    tile.Content.Height = Math.Max(innerHeight, tile.Content.DesiredSize.Height);
                     tile.Host.Visibility = Visibility.Visible;
                     tile.Host.Measure(tile.Bounds.Size);
                 }
-                top += height + Gap;
+                top += height + gap;
             }
             foreach (LayoutTile tile in Tiles.Except(visible)) { tile.Host.Visibility = Visibility.Collapsed; tile.Host.Measure(new Size(0, 0)); }
-            return new Size(width, Math.Max(0, top - (rows.Count > 0 ? Gap : 0)));
+            return new Size(width, Math.Max(0, top - (rows.Count > 0 ? gap : 0)));
         }
         protected override Size ArrangeOverride(Size finalSize)
         {
@@ -87,9 +106,7 @@ namespace CodexUsageMeter
     {
         private readonly Window _window;
         private readonly CardLayoutPanel[] _panels = new CardLayoutPanel[2];
-        private readonly LayoutTile[,] _tiles = new LayoutTile[2, 4];
-        private readonly SubscriptionCardView[] _subscriptions = new SubscriptionCardView[2];
-        internal event Action ManageSubscriptions;
+        private readonly LayoutTile[,] _tiles = new LayoutTile[2, 3];
         internal DateTime RenderDate { get; private set; }
         private readonly TextBlock[] _empty = new TextBlock[2];
         private readonly Grid[] _compactQuotas = new Grid[2];
@@ -110,16 +127,13 @@ namespace CodexUsageMeter
                 CardLayoutPanel panel = new CardLayoutPanel { MinimumCardWidth = mode == 1 ? 390 : 400 };
                 _panels[mode] = panel;
                 _tiles[mode, 0] = panel.Add(first); _tiles[mode, 1] = panel.Add(second); _tiles[mode, 2] = panel.Add(pc);
-                _subscriptions[mode] = new SubscriptionCardView(mode == 1, delegate { if (ManageSubscriptions != null) ManageSubscriptions(); });
-                _tiles[mode, 3] = panel.Add(_subscriptions[mode].Card);
-                ScrollViewer scroll = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, CanContentScroll = false, Padding = new Thickness(0) };
-                body.Children.Add(scroll);
+                body.Children.Add(panel);
                 _empty[mode] = new TextBlock { Text = "표시할 카드가 없습니다.\n⚙ 설정 → 배치 편집에서 카드를 켜 주세요.", TextAlignment = TextAlignment.Center, TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Color.FromRgb(170, 170, 175)), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(20), Visibility = Visibility.Collapsed };
                 body.Children.Add(_empty[mode]);
             }
             for (int slot = 0; slot < 2; slot++)
             {
-                Grid card = (Grid)_tiles[1, slot].Card.Child;
+                Grid card = _tiles[1, slot].Content;
                 Grid quota = card.Children.OfType<Grid>().Single(item => Grid.GetRow(item) == 1);
                 card.Children.Remove(quota);
                 Viewbox host = new Viewbox { Child = quota, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
@@ -143,22 +157,12 @@ namespace CodexUsageMeter
                     tile.Settings = layout.Card("account" + (view.State == null ? slot + 1 : view.State.Number));
                     tile.Card.Visibility = view.State != null && tile.Settings.Visible ? Visibility.Visible : Visibility.Collapsed;
                     bool shortQuota = tile.Settings.Shows("short"), weekly = tile.Settings.Shows("weekly");
-                    AccountSnapshot snapshot = view.LastSnapshot;
-                    if (layout.HideUnavailable && snapshot != null && snapshot.IsAuthenticated && String.IsNullOrEmpty(snapshot.Error))
-                    {
-                        if (snapshot.Secondary != null && snapshot.Primary == null) shortQuota = false;
-                        if (snapshot.Primary != null && snapshot.Secondary == null) weekly = false;
-                    }
                     if (mode == 0) ApplyExpandedAccount(tile, shortQuota, weekly, fontScale);
                     else ApplyCompactAccount(slot, tile, shortQuota, weekly, fontScale);
                 }
                 LayoutTile pc = _tiles[mode, 2]; pc.Settings = layout.Card("pc");
                 pc.Card.Visibility = pc.Settings.Visible ? Visibility.Visible : Visibility.Collapsed;
                 if (mode == 0) ApplyExpandedPc(pc, fontScale); else ApplyCompactPc(pc, fontScale);
-                LayoutTile subscription = _tiles[mode, 3]; subscription.Settings = layout.Card("subscriptions");
-                subscription.Card.Visibility = subscription.Settings.Visible ? Visibility.Visible : Visibility.Collapsed;
-                subscription.MinimumHeight = (mode == 1 ? 245 : 320) * Math.Max(1, fontScale / 1.5);
-                _subscriptions[mode].Update(settings.Subscriptions, RenderDate, fontScale);
                 panel.Tiles.Sort((a, b) => layout.Cards.IndexOf(a.Settings).CompareTo(layout.Cards.IndexOf(b.Settings)));
                 _empty[mode].Visibility = panel.Tiles.Any(tile => tile.Card.Visibility == Visibility.Visible) ? Visibility.Collapsed : Visibility.Visible;
                 panel.InvalidateMeasure();
@@ -166,14 +170,14 @@ namespace CodexUsageMeter
         }
         private static void ApplyExpandedAccount(LayoutTile tile, bool shortQuota, bool weekly, double fontScale)
         {
-            Grid body = (Grid)tile.Card.Child;
+            Grid body = tile.Content;
             bool[] show = { true, shortQuota, weekly, tile.Settings.Shows("credits"), tile.Settings.Shows("stats"), tile.Settings.Shows("calendar") };
             for (int row = 1; row <= 5; row++)
             {
                 foreach (UIElement child in body.Children) if (Grid.GetRow(child) == row) child.Visibility = show[row] ? Visibility.Visible : Visibility.Collapsed;
                 body.RowDefinitions[row].Height = !show[row] ? new GridLength(0) : row == 5 ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
             }
-            tile.MinimumHeight = (95 + (shortQuota ? 82 : 0) + (weekly ? 82 : 0) + (show[3] ? 60 : 0) + (show[4] ? 62 : 0)) * Math.Max(1, fontScale / 1.3) + (show[5] ? 235 : 0);
+            tile.MinimumHeight = (95 + (shortQuota ? 82 : 0) + (weekly ? 82 : 0) + (show[3] ? 82 : 0) + (show[4] ? 62 : 0)) * Math.Max(1, fontScale / 1.3) + (show[5] ? 235 : 0);
         }
         private void ApplyCompactAccount(int slot, LayoutTile tile, bool shortQuota, bool weekly, double fontScale)
         {
@@ -194,21 +198,15 @@ namespace CodexUsageMeter
             {
                 double ringScale = single ? 132 / canvas.Width : 1;
                 canvas.LayoutTransform = new ScaleTransform(ringScale, ringScale);
-                StackPanel labels = canvas.Children.OfType<StackPanel>().FirstOrDefault();
-                if (labels != null)
-                {
-                    labels.Measure(new Size(labels.Width, Double.PositiveInfinity));
-                    Canvas.SetTop(labels, Math.Max(0, (canvas.Height - labels.DesiredSize.Height) / 2));
-                }
             }
             _compactQuotaHosts[slot].Visibility = shortQuota || weekly ? Visibility.Visible : Visibility.Collapsed;
             string prefix = "CompactAccount" + (slot + 1);
             ((FrameworkElement)Find<ProgressBar>(prefix + "PrimaryTimeBar").Parent).Visibility = shortQuota ? Visibility.Visible : Visibility.Collapsed;
             ((FrameworkElement)Find<ProgressBar>(prefix + "SecondaryTimeBar").Parent).Visibility = weekly ? Visibility.Visible : Visibility.Collapsed;
             Find<TextBlock>(prefix + "ResetValue").Visibility = tile.Settings.Shows("credits") ? Visibility.Visible : Visibility.Collapsed;
-            Grid body = (Grid)tile.Card.Child;
+            Grid body = tile.Content;
             body.RowDefinitions[1].Height = shortQuota || weekly ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-            tile.MinimumHeight = (65 + (tile.Settings.Shows("credits") ? 23 : 0)) * Math.Max(1, fontScale / 1.5) + (shortQuota || weekly ? 132 : 0);
+            tile.MinimumHeight = (85 + (tile.Settings.Shows("credits") ? 23 : 0)) * Math.Max(1, fontScale / 1.5) + (shortQuota || weekly ? 132 : 0);
         }
         private void ApplyExpandedPc(LayoutTile tile, double fontScale)
         {
@@ -225,7 +223,7 @@ namespace CodexUsageMeter
         }
         private void ApplyCompactPc(LayoutTile tile, double fontScale)
         {
-            Grid body = (Grid)tile.Card.Child;
+            Grid body = tile.Content;
             UniformGrid items = body.Children.OfType<UniformGrid>().Single();
             string[] keys = { "cpu", "gpu", "ram", "disk" };
             for (int n = 0; n < keys.Length; n++) items.Children[n].Visibility = tile.Settings.Shows(keys[n]) ? Visibility.Visible : Visibility.Collapsed;

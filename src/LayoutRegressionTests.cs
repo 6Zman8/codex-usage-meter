@@ -27,8 +27,9 @@ namespace CodexUsageMeter
 
         public static void Run(Action<string> report, string previewDirectory, string evidenceDirectory)
         {
-            CheckQuotaSizingAndScrollTheme(report, previewDirectory);
+            CheckAccountAlignmentAndFit(report, previewDirectory);
             SubscriptionRegressionTests.Run(report);
+            AccountSubscriptionRegressionTests.Run(report);
             LayoutSettings saved = LayoutSettings.Defaults();
             LayoutSettings edit = saved.Copy();
             edit.Widget.UseSingleAccount(3, true);
@@ -51,15 +52,14 @@ namespace CodexUsageMeter
             report("PASS persisted layout reloads with identical selections in a fresh executable process");
             Require(LayoutSettings.Parse("broken").Widget.VisibleAccounts(4).Length == 4, "Damaged storage did not fall back safely.");
             LayoutSettings broken = LayoutSettings.Parse("{\"Version\":1,\"Widget\":{\"Columns\":-7,\"Cards\":[null,{\"Id\":\"account1\",\"Visible\":true,\"Span\":99,\"Size\":-4,\"Sections\":[\"weekly\",\"bad\"]},{\"Id\":\"account1\"},{\"Id\":\"bad\"}]}}");
-            Require(broken.Widget.Columns == 1 && broken.Widget.Cards.Count == 6 && broken.Widget.Card("account1").Span == 3 && broken.Widget.Card("account1").Size == 0 && broken.Widget.Card("account1").Sections.SequenceEqual(new[] { "weekly" }), "Invalid or duplicate settings were not normalized.");
-            Require(!broken.Widget.Card("subscriptions").Visible && broken.Subscriptions.Count == 0, "Old layouts unexpectedly enabled the new card.");
+            Require(broken.Widget.Columns == 1 && broken.Widget.Cards.Count == 5 && broken.Widget.Card("account1").Span == 3 && broken.Widget.Card("account1").Size == 0 && broken.Widget.Card("account1").Sections.SequenceEqual(new[] { "weekly" }), "Invalid or duplicate settings were not normalized.");
             LayoutSettings reminders = LayoutSettings.Defaults();
             reminders.Subscriptions.Add(new SubscriptionEntry { Name = "예시 구독", AnchorDate = "2026-01-31", Cycle = "monthly" });
-            reminders.Widget.Card("subscriptions").Visible = true;
+            reminders.Widget.Cards.Add(new LayoutCardSettings { Id = "subscriptions", Visible = true });
             LayoutSettings remindersReloaded = LayoutSettings.Parse(reminders.ToJson());
             Require(remindersReloaded.Subscriptions.Count == 1 && remindersReloaded.Subscriptions[0].NextRenewal(new DateTime(2026, 3, 1)) == new DateTime(2026, 3, 31) && remindersReloaded.Widget.VisibleAccounts(4).Length == 4, "Subscription storage broke recurrence or account selection.");
             remindersReloaded.Widget.UseSingleAccount(1, true);
-            Require(remindersReloaded.Widget.Card("subscriptions").Visible && remindersReloaded.Subscriptions.Count == 1, "Single-account preset discarded subscription visibility or data.");
+            Require(!remindersReloaded.Widget.Cards.Any(card => card.Id == "subscriptions") && remindersReloaded.Subscriptions.Count == 1, "Legacy service data was erased or its removed card reappeared.");
             report("PASS corrupt/partial settings recover without duplicate cards or invalid dimensions");
 
             using (Fixture fixture = new Fixture())
@@ -96,7 +96,7 @@ namespace CodexUsageMeter
                 layout.Widget.Card("account1").SetSection("short", true);
                 fixture.Accounts[0].LastSnapshot.Primary = null;
                 fixture.Layout(layout, true); fixture.Render(460, 780);
-                Require(Ancestor<Canvas>((FrameworkElement)fixture.Window.FindName("CompactAccount1PrimaryTrack")).Visibility == Visibility.Collapsed, "Unavailable short quota was not hidden.");
+                Require(Ancestor<Canvas>((FrameworkElement)fixture.Window.FindName("CompactAccount1PrimaryTrack")).Visibility == Visibility.Visible, "Unavailable short quota lost its reserved place.");
                 Require(fixture.First.CompactSecondaryRing.Data != null && !fixture.First.CompactSecondaryRing.Data.IsEmpty(), "Weekly quota disappeared.");
                 if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "widget-single.png"));
                 fixture.Accounts[0].LastSnapshot.Error = "temporary query error";
@@ -125,9 +125,9 @@ namespace CodexUsageMeter
                 Require(fixture.Accounts.Count == 4, "Empty layout changed account data.");
                 report("PASS unavailable-quota rules, PC visibility, empty-state recovery and 100-200% narrow-window rendering");
                 layout = LayoutSettings.Defaults(); layout.Widget.UseSingleAccount(1, true); layout.Widget.Card("pc").Visible = false;
-                fixture.Layout(layout, true); fixture.FontScale(1.5); fixture.Render(460, 250);
+                fixture.Layout(layout, true); fixture.FontScale(1.5); fixture.Render(460, 780);
                 Rect normal = fixture.First.CompactContainer.TransformToAncestor(fixture.Root).TransformBounds(new Rect(fixture.First.CompactContainer.RenderSize));
-                layout.Widget.Card("account1").Size = 0; fixture.Layout(layout, true); fixture.Render(460, 250);
+                layout.Widget.Card("account1").Size = 0; fixture.Layout(layout, true); fixture.Render(460, 780);
                 Rect shortCard = fixture.First.CompactContainer.TransformToAncestor(fixture.Root).TransformBounds(new Rect(fixture.First.CompactContainer.RenderSize));
                 bool fixedWidth = Math.Abs(normal.Width - shortCard.Width) < 1 && shortCard.Height < normal.Height;
                 fixture.FontScale(2);
@@ -140,14 +140,8 @@ namespace CodexUsageMeter
                 if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "settings-small-200.png"));
                 report("PASS independent card height preserves width and editor entry stays accessible in small settings");
                 ((Grid)fixture.Window.FindName("SettingsOverlay")).Visibility = Visibility.Collapsed;
-                LayoutSettings subscriptionLayout = LayoutSettings.Defaults();
-                subscriptionLayout.Subscriptions.Add(new SubscriptionEntry { Name = "예시 구독 A", AnchorDate = DateTime.Today.AddDays(2).ToString("yyyy-MM-dd"), Cycle = "monthly" });
-                subscriptionLayout.Subscriptions.Add(new SubscriptionEntry { Name = "예시 구독 B", AnchorDate = DateTime.Today.AddDays(12).ToString("yyyy-MM-dd"), Cycle = "yearly" });
-                subscriptionLayout.Widget.UseSingleAccount(1, true); subscriptionLayout.Widget.Card("pc").Visible = false;
-                subscriptionLayout.Widget.Card("subscriptions").Visible = true;
-                fixture.FontScale(1.5); fixture.Layout(subscriptionLayout, true); fixture.Render(460, 780);
-                Require(Descendants<TextBlock>(fixture.Root).Any(text => text.IsVisible && text.Text == "예시 구독 A"), "Enabled subscription card did not render in the dashboard.");
-                if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "widget-subscriptions.png"));
+                fixture.FontScale(1.5); fixture.Layout(remindersReloaded, true); fixture.Render(460, 780);
+                Require(!Descendants<TextBlock>(fixture.Root).Any(text => text.IsVisible && text.Text == "예시 구독"), "Removed generic subscription card is still displayed.");
             }
             using (Fixture fixture = new Fixture())
             {
@@ -183,11 +177,9 @@ namespace CodexUsageMeter
                     root.UpdateLayout();
                     Require(previewed.Widget.Card("pc").Size == 2 && previewed.Expanded.Card("pc").Size == 1 && pcTile.Bounds.Height > beforeHeight, "Dragging a size handle did not resize only the edited mode.");
                     CheckAdornerAlignment(root);
-                    ScrollViewer scroll = Descendants<ScrollViewer>(root).First(item => item.IsVisible && item.Content is CardLayoutPanel);
-                    scroll.ScrollToTop(); root.UpdateLayout();
-                    MouseWheelEventArgs wheel = new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = Mouse.PreviewMouseWheelEvent };
-                    pcAdorner.RaiseEvent(wheel); root.UpdateLayout();
-                    Require(wheel.Handled && scroll.VerticalOffset > 0, "Mouse wheel over a preview card did not scroll the dashboard.");
+                    Require(!Descendants<ScrollViewer>(root).Any(item => item.IsVisible && item.Content is CardLayoutPanel), "Layout preview still requires scrolling after a card resize.");
+                    foreach (CardLayoutPanel panel in Descendants<CardLayoutPanel>(root).Where(item => item.IsVisible))
+                        Require(panel.Tiles.Where(item => item.Card.IsVisible).All(item => item.Bounds.Bottom <= panel.ActualHeight + 1), "Resizing a preview card pushed another card below the viewport.");
                     CheckAdornerAlignment(root);
                     Button thirdAccount = Descendants<Button>(root).Single(button => Convert.ToString(button.Content) == "계정 3");
                     thirdAccount.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); root.UpdateLayout();
@@ -226,43 +218,107 @@ namespace CodexUsageMeter
                 try { fixture.Editor(saved, true, state => { throw new IOException("fixture preview failure"); }, state => { }); }
                 catch (IOException) { initializationFailed = true; }
                 Require(initializationFailed && Object.ReferenceEquals(fixture.Window.Content, fixture.Root), "Preview initialization failure did not restore the live dashboard.");
-                report("PASS real preview, routed drag/drop/resize/wheel, handle alignment, account/mode/viewport changes, save/cancel and failure restoration");
+                report("PASS real preview, routed drag/drop/resize without overflow, handle alignment, account/mode/viewport changes, save/cancel and failure restoration");
             }
         }
 
-        private static void CheckQuotaSizingAndScrollTheme(Action<string> report, string previewDirectory)
+        private static void CheckAccountAlignmentAndFit(Action<string> report, string previewDirectory)
         {
             List<string> failures = new List<string>();
             using (Fixture fixture = new Fixture())
             {
-                LayoutSettings layout = LayoutSettings.Defaults();
-                fixture.Accounts[0].LastSnapshot.Primary = null;
-                fixture.Layout(layout, false); fixture.Render(1280, 820);
-                if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "expanded-mixed-quotas.png"));
-                double firstHeight = fixture.First.Container.ActualHeight, secondHeight = fixture.Second.Container.ActualHeight;
-                if (Math.Abs(firstHeight - secondHeight) > 1)
-                    failures.Add("Equal-size account cards have unequal heights after hiding a quota: " + firstHeight + " / " + secondHeight);
-                fixture.Layout(layout, true); fixture.Render(460, 780);
-                FrameworkElement weekly = Ancestor<Canvas>((FrameworkElement)fixture.Window.FindName("CompactAccount1SecondaryTrack"));
-                FrameworkElement otherWeekly = Ancestor<Canvas>((FrameworkElement)fixture.Window.FindName("CompactAccount2SecondaryTrack"));
-                if (((FrameworkElement)weekly.Parent).ActualWidth < ((FrameworkElement)otherWeekly.Parent).ActualWidth - 1)
-                    failures.Add("Single quota shrinks the content group instead of using the available card width.");
-                fixture.Render(320, 480);
-                if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "widget-scroll.png"));
-                ScrollBar bar = Descendants<ScrollBar>(fixture.Root).FirstOrDefault(item => item.IsVisible && item.Orientation == Orientation.Vertical && item.ActualHeight > 50);
-                Require(bar != null, "Small widget did not reproduce a scrollable dashboard.");
-                Rect barBounds = bar.TransformToAncestor(fixture.Root).TransformBounds(new Rect(bar.RenderSize));
-                RenderTargetBitmap bitmap = new RenderTargetBitmap(320, 480, 96, 96, PixelFormats.Pbgra32);
-                bitmap.Render(fixture.Root);
-                Int32Rect crop = new Int32Rect((int)barBounds.X, (int)barBounds.Y, (int)barBounds.Width, (int)barBounds.Height);
-                byte[] pixels = new byte[crop.Width * crop.Height * 4]; bitmap.CopyPixels(crop, pixels, crop.Width * 4, 0);
-                int light = 0;
-                for (int n = 0; n < pixels.Length; n += 4) if (pixels[n + 3] > 200 && pixels[n] > 160 && pixels[n + 1] > 160 && pixels[n + 2] > 160) light++;
-                if (light > crop.Width * crop.Height / 10) failures.Add("Scrollbar contains a light Windows theme surface.");
+                LayoutSettings settings = LayoutSettings.Defaults();
+                fixture.Layout(settings, false); fixture.Render(1280, 820);
+                foreach (string suffix in new[] { "PrimaryValue", "SecondaryValue", "ResetCreditsValue", "LifetimeValue" })
+                {
+                    FrameworkElement first = (FrameworkElement)fixture.Window.FindName("Account1" + suffix);
+                    FrameworkElement second = (FrameworkElement)fixture.Window.FindName("Account2" + suffix);
+                    if (!first.IsVisible || Math.Abs(first.TransformToAncestor(fixture.Root).Transform(new Point()).Y - second.TransformToAncestor(fixture.Root).Transform(new Point()).Y) > 1)
+                        failures.Add("Missing 5-hour limit shifts the account row: " + suffix);
+                }
+                fixture.Accounts[0].LastSnapshot.UsageError = "fixture usage failure";
+                fixture.Layout(settings, false); fixture.Render(1280, 820);
+                foreach (string suffix in new[] { "PrimaryValue", "SecondaryValue", "ResetCreditsValue", "LifetimeValue", "CalendarTitle" })
+                {
+                    FrameworkElement first = (FrameworkElement)fixture.Window.FindName("Account1" + suffix);
+                    FrameworkElement second = (FrameworkElement)fixture.Window.FindName("Account2" + suffix);
+                    if (Math.Abs(first.TransformToAncestor(fixture.Root).Transform(new Point()).Y - second.TransformToAncestor(fixture.Root).Transform(new Point()).Y) > 1)
+                        failures.Add("An account status message shifts the aligned rows: " + suffix);
+                }
+                fixture.Accounts[0].LastSnapshot.UsageError = null;
+                foreach (bool compact in new[] { false, true })
+                {
+                    fixture.Layout(settings, compact);
+                    foreach (double scale in new[] { 1.0, 1.5, 2.0 })
+                    {
+                        fixture.FontScale(scale);
+                        foreach (int[] size in compact ? new[] { new[] { 460, 780 }, new[] { 320, 480 } } : new[] { new[] { 1280, 820 }, new[] { 900, 620 } })
+                        {
+                            fixture.Render(size[0], size[1]);
+                            CardLayoutPanel panel = Descendants<CardLayoutPanel>(fixture.Root).Single(item => item.IsVisible);
+                            Rect viewport = panel.TransformToAncestor(fixture.Root).TransformBounds(new Rect(panel.RenderSize));
+                            foreach (LayoutTile tile in panel.Tiles.Where(item => item.Card.IsVisible))
+                            {
+                                Rect bounds = tile.Card.TransformToAncestor(fixture.Root).TransformBounds(new Rect(tile.Card.RenderSize));
+                                if (bounds.Left < viewport.Left - 1 || bounds.Right > viewport.Right + 1 || bounds.Top < viewport.Top - 1 || bounds.Bottom > Math.Min(viewport.Bottom, size[1] - (compact ? 32 : 42)) + 1)
+                                    failures.Add("A dashboard card is outside the visible viewport: " + compact + ", " + size[0] + "x" + size[1] + ", " + scale);
+                                foreach (TextBlock text in Descendants<TextBlock>(tile.Card).Where(item => item.IsVisible && item.ActualWidth > 0 && item.ActualHeight > 0))
+                                {
+                                    Rect textBounds = text.TransformToAncestor(fixture.Root).TransformBounds(new Rect(text.RenderSize));
+                                    if (textBounds.Top < bounds.Top - 1 || textBounds.Bottom > bounds.Bottom + 1)
+                                        failures.Add("A card hides overflowing text: " + text.Name + ", " + compact + ", " + size[0] + ", " + scale);
+                                }
+                            }
+                            if (!compact)
+                                foreach (string suffix in new[] { "PrimaryValue", "SecondaryValue", "ResetCreditsValue", "SubscriptionValue", "LifetimeValue", "CalendarTitle" })
+                                {
+                                    FrameworkElement first = (FrameworkElement)fixture.Window.FindName("Account1" + suffix);
+                                    FrameworkElement second = (FrameworkElement)fixture.Window.FindName("Account2" + suffix);
+                                    if (Math.Abs(first.TransformToAncestor(fixture.Root).Transform(new Point()).Y - second.TransformToAncestor(fixture.Root).Transform(new Point()).Y) > 1)
+                                        failures.Add("Account rows lost alignment at font scale " + scale + ": " + suffix);
+                                }
+                            if (Descendants<ScrollViewer>(fixture.Root).Any(item => item.IsVisible && item.Content is CardLayoutPanel)) failures.Add("Dashboard still scrolls.");
+                            if (previewDirectory != null && scale == 1.5) fixture.Capture(Path.Combine(previewDirectory, (compact ? "widget" : "expanded") + "-fit-" + size[0] + ".png"));
+                        }
+                    }
+                }
+                if (!(fixture.Window.FindName("Account1SubscriptionValue") is TextBlock) || !(fixture.Window.FindName("CompactAccount1SubscriptionValue") is TextBlock))
+                    failures.Add("Subscription date is missing below the account credits.");
+                Require(fixture.First.SubscriptionValue.Text.Contains("종료") && fixture.Second.SubscriptionValue.Text.Contains("갱신") &&
+                    fixture.First.SubscriptionValue.Text == fixture.First.CompactSubscriptionValue.Text, "Account subscription type/date does not follow the account across both views.");
+                fixture.Page(1);
+                Require(fixture.First.State.Number == 3 && fixture.First.SubscriptionValue.Text.Contains("조회 불가"), "Paging retained another account's subscription date.");
+                fixture.Accounts[2].LastSnapshot.Subscription = new AccountSubscriptionInfo { Date = DateTime.Today.AddDays(2), Kind = "period", Error = "최근 24시간 이내 확인 · HTTP 403", CheckedAt = DateTime.Now };
+                fixture.Page(1);
+                Require(Convert.ToString(fixture.First.SubscriptionValue.ToolTip).Contains("HTTP 403") &&
+                    Convert.ToString(fixture.First.CompactSubscriptionValue.ToolTip).Contains("24시간"), "A cached period hides the automatic billing lookup failure.");
+                settings.Widget.UseSingleAccount(2, true); settings.Widget.Card("pc").Visible = false;
+                fixture.Accounts[1].LastSnapshot.Primary.RemainingPercent = 100;
+                fixture.Accounts[1].LastSnapshot.Secondary.RemainingPercent = 100;
+                fixture.Layout(settings, true); fixture.FontScale(2); fixture.Render(460, 780);
+                foreach (string name in new[] { "CompactAccount1PrimaryValue", "CompactAccount1SecondaryValue" })
+                {
+                    TextBlock value = (TextBlock)fixture.Window.FindName(name);
+                    Geometry clip = LayoutInformation.GetLayoutClip(value);
+                    Require(value.Text == "100%" && (clip == null || clip.Bounds.Width >= value.ActualWidth - 1), "The full 100% quota text is clipped at 200% fonts: " + name);
+                    Canvas canvas = Ancestor<Canvas>(value);
+                    Rect labelBounds = value.TransformToAncestor(canvas).TransformBounds(new Rect(value.RenderSize));
+                    Require(labelBounds.Left >= 0 && labelBounds.Right <= canvas.ActualWidth && labelBounds.Top >= 0 && labelBounds.Bottom <= canvas.ActualHeight,
+                        "A quota percentage leaves its circle at 200% fonts: " + name);
+                }
+                foreach (string period in new[] { "Primary", "Secondary" })
+                {
+                    TextBlock name = (TextBlock)fixture.Window.FindName("CompactAccount1" + period + "TimeName");
+                    TextBlock value = (TextBlock)fixture.Window.FindName("CompactAccount1" + period + "TimeValue");
+                    Rect nameBounds = name.TransformToAncestor(fixture.Root).TransformBounds(new Rect(name.RenderSize));
+                    Rect valueBounds = value.TransformToAncestor(fixture.Root).TransformBounds(new Rect(value.RenderSize));
+                    Require(nameBounds.Right + 1 < valueBounds.Left, "Quota name overlaps its countdown at 200% fonts: " + period);
+                }
+                if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "widget-quota-100-200.png"));
             }
-            foreach (string failure in failures) report("FAIL " + failure);
-            Require(failures.Count == 0, "Dashboard sizing/theme regressions: " + failures.Count);
-            report("PASS mixed quota card alignment, single quota width and dark rendered scrollbar");
+            foreach (string failure in failures.Distinct()) report("FAIL " + failure);
+            Require(failures.Count == 0, "Account row/viewport regressions: " + failures.Count);
+            report("PASS missing-quota row alignment, account subscription line and complete dashboards without scrolling at 100-200% fonts");
         }
 
         private static T Ancestor<T>(FrameworkElement element) where T : FrameworkElement
@@ -355,6 +411,7 @@ namespace CodexUsageMeter
                     AccountSnapshot snapshot = (AccountSnapshot)typeof(DashboardController).GetMethod("CreatePreviewSnapshot", BindingFlags.NonPublic | BindingFlags.Static)
                         .Invoke(null, new object[] { "예시 계정 " + n, n == 1 ? "prolite" : "plus", 75.0, 98.0, 2, 0 });
                     if (n == 1) snapshot.Primary = null;
+                    if (n <= 2) snapshot.Subscription = new AccountSubscriptionInfo { Date = DateTime.Today.AddDays(n == 1 ? 25 : 9), Kind = n == 1 ? "end" : "renewal", CheckedAt = DateTime.Now };
                     Accounts.Add(new AccountState { Number = n, Label = "계정 " + n, LastSnapshot = snapshot });
                 }
                 Set("_layouts", LayoutSettings.Defaults());

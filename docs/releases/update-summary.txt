@@ -1,1 +1,1 @@
-Visual layout editing, subscription renewal dates, and dark scrollbar and quota layout fixes.
+Align account rows, fit dashboards without scrolling, and show account subscription status.

@@ -109,6 +109,8 @@ $arguments += @(
     (Join-Path $sourceRoot 'DarkTheme.cs'),
     (Join-Path $sourceRoot 'SubscriptionCard.cs'),
     (Join-Path $sourceRoot 'SubscriptionRegressionTests.cs'),
+    (Join-Path $sourceRoot 'AccountSubscription.cs'),
+    (Join-Path $sourceRoot 'AccountSubscriptionRegressionTests.cs'),
     (Join-Path $sourceRoot 'IndependentProcess.cs'),
     (Join-Path $sourceRoot 'ProcessLifetimeTests.cs'),
     (Join-Path $sourceRoot 'CodexClient.cs'),

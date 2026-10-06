@@ -28,6 +28,7 @@ namespace CodexUsageMeter
         public RateWindow Secondary { get; set; }
         public int? ResetCreditCount { get; set; }
         public List<ResetCreditInfo> ResetCredits { get; set; }
+        public AccountSubscriptionInfo Subscription { get; set; }
         public UsageSummary Usage { get; set; }
         public List<DailyUsageBucket> DailyUsage { get; set; }
         public string Error { get; set; }
@@ -74,6 +75,7 @@ namespace CodexUsageMeter
     {
         private readonly Func<string> _codexPathResolver;
         private readonly string _profileRoot;
+        private readonly AccountSubscriptionReader _subscriptionReader;
         private readonly JavaScriptSerializer _json;
         private readonly Dictionary<int, TaskCompletionSource<Dictionary<string, object>>> _pending;
         private readonly object _pendingLock;
@@ -99,6 +101,7 @@ namespace CodexUsageMeter
             if (codexPathResolver == null) throw new ArgumentNullException("codexPathResolver");
             _codexPathResolver = codexPathResolver;
             _profileRoot = profileRoot;
+            _subscriptionReader = new AccountSubscriptionReader(profileRoot);
             _json = new JavaScriptSerializer();
             _pending = new Dictionary<int, TaskCompletionSource<Dictionary<string, object>>>();
             _pendingLock = new object();
@@ -168,6 +171,7 @@ namespace CodexUsageMeter
                     snapshot.Error = FriendlyError(ex);
                 }
 
+                Task<AccountSubscriptionInfo> subscription = _subscriptionReader.ReadAsync(snapshot.PlanType, snapshot.Email);
                 try
                 {
                     Dictionary<string, object> usageResult = await ReadWithReconnectAsync(
@@ -179,6 +183,7 @@ namespace CodexUsageMeter
                 {
                     snapshot.UsageError = FriendlyError(ex);
                 }
+                snapshot.Subscription = await subscription;
             }
             catch (Exception ex)
             {

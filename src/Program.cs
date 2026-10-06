@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.2.1.0")]
+[assembly: AssemblyFileVersion("1.2.1.0")]
 
 namespace CodexUsageMeter
 {
@@ -299,6 +299,8 @@ namespace CodexUsageMeter
         public TextBlock SecondaryRemaining;
         public TextBlock ResetCreditsValue;
         public TextBlock ResetCreditsDetail;
+        public TextBlock SubscriptionValue;
+        public TextBlock CompactSubscriptionValue;
         public TextBlock LifetimeValue;
         public TextBlock PeakValue;
         public TextBlock StreakValue;
@@ -630,7 +632,6 @@ namespace CodexUsageMeter
 
             _layouts = LayoutSettingsStore.Load();
             _layoutView = new DashboardLayoutView(_window);
-            _layoutView.ManageSubscriptions += EditSubscriptions;
             Find<Button>("LayoutEditButton").Click += delegate { EditLayout(); };
             foreach (Border bar in new[] { _titleBar, _compactTitleBar })
             {
@@ -713,6 +714,8 @@ namespace CodexUsageMeter
             view.SecondaryRemaining = Find<TextBlock>(prefix + "SecondaryRemaining");
             view.ResetCreditsValue = Find<TextBlock>(prefix + "ResetCreditsValue");
             view.ResetCreditsDetail = Find<TextBlock>(prefix + "ResetCreditsDetail");
+            view.SubscriptionValue = Find<TextBlock>(prefix + "SubscriptionValue");
+            view.CompactSubscriptionValue = Find<TextBlock>("Compact" + prefix + "SubscriptionValue");
             view.LifetimeValue = Find<TextBlock>(prefix + "LifetimeValue");
             view.PeakValue = Find<TextBlock>(prefix + "PeakValue");
             view.StreakValue = Find<TextBlock>(prefix + "StreakValue");
@@ -1379,16 +1382,6 @@ namespace CodexUsageMeter
                 _expandedLayout.Visibility = beforeMode ? Visibility.Collapsed : Visibility.Visible;
                 BindAccountPage();
             }
-        }
-
-        private void EditSubscriptions()
-        {
-            if (_switchingAccount || _updateChecking) return;
-            SubscriptionEditor editor = new SubscriptionEditor(_layouts.Subscriptions, entries => {
-                LayoutSettings changed = _layouts.Copy(); changed.Subscriptions = entries;
-                LayoutSettingsStore.Save(changed); _layouts = changed; ApplyLayout();
-            });
-            editor.Owner = _window; editor.ShowDialog();
         }
 
         private int[] VisibleLayoutAccounts()
@@ -2256,6 +2249,7 @@ namespace CodexUsageMeter
             UpdateWindow(view.SecondaryName, view.SecondaryValue, view.SecondaryBar, view.SecondaryTimeBar, view.SecondaryReset, view.SecondaryRemaining, snapshot.Secondary, "장기 한도", true);
             if (snapshot.Primary == null && snapshot.Secondary != null && String.IsNullOrEmpty(snapshot.Error))
             {
+                view.PrimaryName.Text = "5시간 한도";
                 view.PrimaryValue.Text = "미제공";
                 view.PrimaryReset.Text = "현재 계정 응답에 없는 한도";
             }
@@ -2274,7 +2268,7 @@ namespace CodexUsageMeter
             else
             {
                 view.Status.Text = snapshot.UpdatedAt.ToString("HH:mm:ss") + " · 모든 데이터 갱신";
-                view.Status.Visibility = Visibility.Collapsed;
+                view.Status.Visibility = Visibility.Hidden;
             }
             UpdateCompactAccount(view, snapshot);
         }
@@ -2294,13 +2288,14 @@ namespace CodexUsageMeter
 
         private void UpdateCompactAccount(AccountView view, AccountSnapshot snapshot)
         {
+            UpdateSubscription(view, snapshot);
             bool first = Object.ReferenceEquals(view, _account1);
             TextBlock identity = first ? _compactAccount1Identity : _compactAccount2Identity;
             TextBlock primaryValue = first ? _compactAccount1PrimaryValue : _compactAccount2PrimaryValue;
             TextBlock secondaryValue = first ? _compactAccount1SecondaryValue : _compactAccount2SecondaryValue;
             TextBlock resetValue = first ? _compactAccount1ResetValue : _compactAccount2ResetValue;
             string prefix = first ? "CompactAccount1" : "CompactAccount2";
-            string primaryLabel = snapshot == null || snapshot.Primary == null ? "단기" : snapshot.Primary.Name.Replace(" 한도", "");
+            string primaryLabel = snapshot == null || snapshot.Primary == null ? "5시간" : snapshot.Primary.Name.Replace(" 한도", "");
             string secondaryLabel = snapshot == null || snapshot.Secondary == null ? "주간" : snapshot.Secondary.Name.Replace(" 한도", "");
             Find<TextBlock>(prefix + "PrimaryName").Text = primaryLabel;
             Find<TextBlock>(prefix + "PrimaryTimeName").Text = primaryLabel;
@@ -2366,6 +2361,21 @@ namespace CodexUsageMeter
                 }
                 resetValue.Text = "초기화권 " + snapshot.ResetCreditCount.Value.ToString() + "개" +
                     (nearestExpiry.HasValue ? " · " + FormatRemaining(nearestExpiry.Value) : String.Empty);
+            }
+        }
+
+        private static void UpdateSubscription(AccountView view, AccountSnapshot snapshot)
+        {
+            AccountSubscriptionInfo subscription = snapshot == null ? null : snapshot.Subscription;
+            string text = snapshot == null || !snapshot.IsAuthenticated ? "구독 날짜 --" : AccountSubscription.Format(subscription, DateTime.Today);
+            string detail = subscription == null ? "계정의 구독 정보를 확인한 뒤 표시합니다." : subscription.Error;
+            if (subscription != null && subscription.Date.HasValue)
+                detail = subscription.Date.Value.ToString("yyyy-MM-dd HH:mm") + " · " + (subscription.Kind == "period" ? "확인된 이용 기간이며 자동 갱신 여부는 미확인입니다." : "계정의 결제 정보에서 확인한 날짜입니다.") +
+                    (String.IsNullOrWhiteSpace(subscription.Error) ? "" : "\n" + subscription.Error);
+            foreach (TextBlock label in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
+            {
+                label.Text = text;
+                label.ToolTip = detail;
             }
         }
 
@@ -3203,12 +3213,12 @@ namespace CodexUsageMeter
                     "Account1Identity", "Account1LoginButton", "Account1CodexLoginButton", "Account1LogoutButton",
                     "Account1Card", "Account1TitleText", "Account1BadgeText", "Account1PrimaryName", "Account1PrimaryValue", "Account1PrimaryBar", "Account1PrimaryTimeBar", "Account1PrimaryReset", "Account1PrimaryRemaining",
                     "Account1SecondaryName", "Account1SecondaryValue", "Account1SecondaryBar", "Account1SecondaryTimeBar", "Account1SecondaryReset", "Account1SecondaryRemaining",
-                    "Account1ResetCreditsValue", "Account1ResetCreditsDetail", "Account1LifetimeValue", "Account1PeakValue",
+                    "Account1ResetCreditsValue", "Account1ResetCreditsDetail", "Account1SubscriptionValue", "CompactAccount1SubscriptionValue", "Account1LifetimeValue", "Account1PeakValue",
                     "Account1StreakValue", "Account1LongestTurnValue", "Account1CalendarTitle", "Account1CalendarPreviousButton", "Account1CalendarNextButton", "Account1WeeklyUsageValue", "Account1WeeklyUsageGrid", "Account1WeekdayHeader", "Account1UsageGrid", "Account1UsageEmpty", "Account1Status",
                     "Account2Identity", "Account2LoginButton", "Account2CodexLoginButton", "Account2LogoutButton",
                     "Account2Card", "Account2TitleText", "Account2BadgeText", "Account2PrimaryName", "Account2PrimaryValue", "Account2PrimaryBar", "Account2PrimaryTimeBar", "Account2PrimaryReset", "Account2PrimaryRemaining",
                     "Account2SecondaryName", "Account2SecondaryValue", "Account2SecondaryBar", "Account2SecondaryTimeBar", "Account2SecondaryReset", "Account2SecondaryRemaining",
-                    "Account2ResetCreditsValue", "Account2ResetCreditsDetail", "Account2LifetimeValue", "Account2PeakValue",
+                    "Account2ResetCreditsValue", "Account2ResetCreditsDetail", "Account2SubscriptionValue", "CompactAccount2SubscriptionValue", "Account2LifetimeValue", "Account2PeakValue",
                     "Account2StreakValue", "Account2LongestTurnValue", "Account2CalendarTitle", "Account2CalendarPreviousButton", "Account2CalendarNextButton", "Account2WeeklyUsageValue", "Account2WeeklyUsageGrid", "Account2WeekdayHeader", "Account2UsageGrid", "Account2UsageEmpty", "Account2Status",
                     "PerformanceItemsPanel", "PerformanceCountText", "SystemStatus",
                     "CompactAccountSummaryText", "CompactAccountPageButton", "CompactAccount1Card", "CompactAccount1TitleText", "CompactAccount1BadgeText", "CompactAccount1Identity", "CompactAccount1CodexLoginButton", "CompactAccount1PrimaryValue",
