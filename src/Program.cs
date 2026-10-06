@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 namespace CodexUsageMeter
 {
@@ -630,6 +630,7 @@ namespace CodexUsageMeter
 
             _layouts = LayoutSettingsStore.Load();
             _layoutView = new DashboardLayoutView(_window);
+            _layoutView.ManageSubscriptions += EditSubscriptions;
             Find<Button>("LayoutEditButton").Click += delegate { EditLayout(); };
             foreach (Border bar in new[] { _titleBar, _compactTitleBar })
             {
@@ -658,6 +659,7 @@ namespace CodexUsageMeter
                 {
                     throw new InvalidOperationException("UI 리소스를 읽지 못했습니다.");
                 }
+                DarkTheme.Apply(window);
                 WindowChrome.SetWindowChrome(window, new WindowChrome {
                     CaptionHeight = 0.0,
                     ResizeBorderThickness = new Thickness(0.0),
@@ -1059,6 +1061,7 @@ namespace CodexUsageMeter
         private async void SystemTimerTick(object sender, EventArgs e)
         {
             UpdateCountdowns();
+            if (_layoutView != null && _layoutView.RenderDate != DateTime.Today) ApplyLayout();
             await RefreshSystemAsync();
         }
 
@@ -1346,14 +1349,46 @@ namespace CodexUsageMeter
             _settingsOverlay.Visibility = Visibility.Collapsed;
             LayoutSettings before = _layouts.Copy();
             int beforePage = _accountPage;
+            bool beforeMode = _compactMode;
             SaveVisibleCalendarOffsets();
-            LayoutEditor editor = new LayoutEditor(_layouts, _compactMode, _accountCount,
-                delegate(LayoutSettings draft) { SaveVisibleCalendarOffsets(); _layouts = draft; _accountPage = 0; BindAccountPage(); },
+            LayoutEditor editor = null;
+            try
+            {
+                editor = new LayoutEditor(_layouts, _compactMode, _accountCount, _window, _layoutView,
+                delegate(LayoutSettings draft, bool compact, string selected) {
+                    SaveVisibleCalendarOffsets(); _layouts = draft; _compactMode = compact;
+                    if (selected != null && selected.StartsWith("account"))
+                    {
+                        int index = Array.IndexOf(draft.Mode(compact).VisibleAccounts(_accountCount), Int32.Parse(selected.Substring(7)));
+                        if (index >= 0) _accountPage = index / 2;
+                    }
+                    _compactLayout.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+                    _expandedLayout.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+                    BindAccountPage();
+                },
                 delegate(LayoutSettings saved) { LayoutSettingsStore.Save(saved); _layouts = saved; });
-            editor.Owner = _window;
-            editor.ShowDialog();
-            if (!editor.Saved) { _layouts = before; _accountPage = beforePage; }
-            BindAccountPage();
+                editor.Owner = _window; editor.ShowDialog();
+            }
+            catch (Exception ex) { SetFooterText("배치 편집을 열지 못했습니다: " + ex.Message); }
+            finally
+            {
+                if (editor != null) editor.RestoreDashboard();
+                if (editor == null || !editor.Saved) { _layouts = before; _accountPage = beforePage; }
+                _compactMode = beforeMode;
+                _compactLayout.Visibility = beforeMode ? Visibility.Visible : Visibility.Collapsed;
+                _expandedLayout.Visibility = beforeMode ? Visibility.Collapsed : Visibility.Visible;
+                BindAccountPage();
+            }
+        }
+
+        private void EditSubscriptions()
+        {
+            if (_switchingAccount || _updateChecking) return;
+            SubscriptionEditor editor = new SubscriptionEditor(_layouts.Subscriptions, entries => {
+                LayoutSettings changed = _layouts.Copy(); changed.Subscriptions = entries;
+                LayoutSettingsStore.Save(changed); _layouts = changed; ApplyLayout();
+            });
+            editor.Owner = _window; editor.ShowDialog();
         }
 
         private int[] VisibleLayoutAccounts()

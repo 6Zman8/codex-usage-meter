@@ -85,6 +85,7 @@ $arguments = @(
     ('/out:' + $outputPath),
     ('/win32icon:' + $iconPath),
     ('/resource:' + (Join-Path $sourceRoot 'Dashboard.xaml') + ',CodexUsageMeter.Dashboard.xaml'),
+    ('/resource:' + (Join-Path $sourceRoot 'DarkTheme.xaml') + ',CodexUsageMeter.DarkTheme.xaml'),
     ('/resource:' + $iconPath + ',CodexUsageMeter.AppIcon.ico'),
     ('/resource:' + $iconPngPath + ',CodexUsageMeter.AppIcon.png'),
     ('/resource:' + $updaterPath + ',CodexUsageMeter.Updater.exe')
@@ -105,6 +106,9 @@ $arguments += @(
     (Join-Path $sourceRoot 'LayoutSettings.cs'),
     (Join-Path $sourceRoot 'LayoutEditor.cs'),
     (Join-Path $sourceRoot 'DashboardLayout.cs'),
+    (Join-Path $sourceRoot 'DarkTheme.cs'),
+    (Join-Path $sourceRoot 'SubscriptionCard.cs'),
+    (Join-Path $sourceRoot 'SubscriptionRegressionTests.cs'),
     (Join-Path $sourceRoot 'IndependentProcess.cs'),
     (Join-Path $sourceRoot 'ProcessLifetimeTests.cs'),
     (Join-Path $sourceRoot 'CodexClient.cs'),

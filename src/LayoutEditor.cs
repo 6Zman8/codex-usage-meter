@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -9,157 +12,323 @@ namespace CodexUsageMeter
 {
     internal sealed class LayoutEditor : Window
     {
-        private readonly LayoutSettings _draft;
-        private readonly bool _compact;
+        private readonly LayoutSettings _draft, _original;
         private readonly int _accountCount;
-        private readonly Action<LayoutSettings> _preview;
+        private readonly Action<LayoutSettings, bool, string> _preview;
         private readonly Action<LayoutSettings> _save;
-        private readonly StackPanel _cards = new StackPanel();
+        private readonly Window _dashboard;
+        private readonly DashboardLayoutView _layoutView;
+        private readonly FrameworkElement _dashboardRoot;
+        private readonly AdornerDecorator _previewDecorator = new AdornerDecorator();
+        private readonly StackPanel _inspector = new StackPanel();
+        private readonly Grid _editorRoot;
         private readonly TextBlock _status = new TextBlock { TextWrapping = TextWrapping.Wrap };
-        private readonly ComboBox _columns;
-        private readonly CheckBox _hideUnavailable;
-        private bool _building;
+        private readonly TextBlock _previewSize = new TextBlock();
+        private readonly Dictionary<Border, LayoutCardAdorner> _adorners = new Dictionary<Border, LayoutCardAdorner>();
+        private readonly Dictionary<UIElement, bool> _previewHitTests = new Dictionary<UIElement, bool>();
+        private readonly Dictionary<Button, bool> _buttonFocus = new Dictionary<Button, bool>();
+        private readonly double _originalWidth, _originalHeight;
+        private readonly bool _originalCompact;
+        private readonly object _originalForeground, _originalFont;
+        private bool _compact, _restored, _refreshing, _addedResources;
+        private string _selected;
+        private Button _expandedTab, _widgetTab;
         internal bool Saved { get; private set; }
         internal LayoutSettings Draft { get { return _draft; } }
+        internal bool Compact { get { return _compact; } }
         private LayoutModeSettings Mode { get { return _draft.Mode(_compact); } }
 
-        internal LayoutEditor(LayoutSettings settings, bool compact, int accountCount,
-            Action<LayoutSettings> preview, Action<LayoutSettings> save)
+        internal LayoutEditor(LayoutSettings settings, bool compact, int accountCount, Window dashboard,
+            DashboardLayoutView layoutView, Action<LayoutSettings, bool, string> preview, Action<LayoutSettings> save)
         {
-            _draft = settings.Copy(); _compact = compact; _accountCount = accountCount; _preview = preview; _save = save;
-            LayoutSettings original = settings.Copy();
-            Closed += delegate { if (!Saved) _preview(original.Copy()); };
-            Title = (compact ? "위젯" : "전체 화면") + " 배치 편집";
-            Width = 550; Height = Math.Min(820, SystemParameters.WorkArea.Height - 40);
-            MinWidth = 430; MinHeight = 360;
-            Background = Brush("#181818"); Foreground = Brush("#F4F4F5"); FontFamily = new FontFamily("Malgun Gothic"); FontSize = 13;
-            WindowStartupLocation = WindowStartupLocation.CenterOwner;
-            StyleControls();
-            Grid root = new Grid { Margin = new Thickness(20) };
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            root.RowDefinitions.Add(new RowDefinition());
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            Content = root;
-            StackPanel top = new StackPanel(); root.Children.Add(top);
-            top.Children.Add(new TextBlock { Text = Title, FontSize = 22, FontWeight = FontWeights.Bold });
-            top.Children.Add(new TextBlock { Text = "변경 내용은 미터기에 바로 미리 표시됩니다. ☰를 끌어 순서를 바꾸세요.\n계정을 숨겨도 연결은 유지됩니다. 다른 화면의 배치는 따로 저장됩니다.", Foreground = Brush("#AAAAAF"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 12) });
-            WrapPanel options = new WrapPanel(); top.Children.Add(options);
-            options.Children.Add(new TextBlock { Text = "최대 열 수", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
-            _columns = Choice(new[] { "1열", "2열", "3열" }, Mode.Columns - 1);
-            _columns.SelectionChanged += delegate { if (!_building) { Mode.Columns = _columns.SelectedIndex + 1; Preview(); } };
-            options.Children.Add(_columns);
-            options.Children.Add(new TextBlock { Text = "좁은 창은 자동 줄바꿈", Foreground = Brush("#AAAAAF"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) });
-            _hideUnavailable = new CheckBox { Content = "계정에서 제공하지 않는 한도 자동 숨김", IsChecked = Mode.HideUnavailable, Margin = new Thickness(0, 12, 0, 12) };
-            _hideUnavailable.Click += delegate { Mode.HideUnavailable = _hideUnavailable.IsChecked == true; Preview(); };
-            top.Children.Add(_hideUnavailable);
-            WrapPanel presets = new WrapPanel { Margin = new Thickness(0, 0, 0, 12) }; top.Children.Add(presets);
-            ComboBox account = Choice(Enumerable.Range(1, accountCount).Select(n => "계정 " + n).ToArray(), 0);
-            presets.Children.Add(account);
-            presets.Children.Add(Button("한 계정 중심", delegate { Mode.UseSingleAccount(account.SelectedIndex + 1, compact); Rebuild(); Preview(); }));
-            presets.Children.Add(Button("기본 배치", delegate {
-                if (_compact) _draft.Widget = LayoutSettings.DefaultMode(true); else _draft.Expanded = LayoutSettings.DefaultMode(false);
-                Rebuild(); Preview();
-            }));
-            ScrollViewer scroll = new ScrollViewer { Content = _cards, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-            Grid.SetRow(scroll, 1); root.Children.Add(scroll);
-            StackPanel bottom = new StackPanel { Margin = new Thickness(0, 10, 0, 0) }; Grid.SetRow(bottom, 2); root.Children.Add(bottom);
-            _status.Foreground = Brush("#E8BA78"); bottom.Children.Add(_status);
-            DockPanel actions = new DockPanel { Margin = new Thickness(0, 8, 0, 0) }; bottom.Children.Add(actions);
-            System.Windows.Controls.Button cancel = Button("취소", delegate { Close(); }); cancel.IsCancel = true;
-            DockPanel.SetDock(cancel, Dock.Right); actions.Children.Add(cancel);
-            System.Windows.Controls.Button saveButton = Button("배치 저장", delegate { SaveAndClose(); });
-            saveButton.Background = Brush("#285844"); saveButton.IsDefault = true;
-            DockPanel.SetDock(saveButton, Dock.Right); actions.Children.Add(saveButton);
-            actions.Children.Add(new TextBlock { Text = "취소하면 편집 전 배치로 돌아갑니다.", Foreground = Brush("#AAAAAF"), VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap });
-            Rebuild();
-        }
+            _draft = settings.Copy(); _original = settings.Copy(); _compact = compact; _originalCompact = compact;
+            _accountCount = accountCount; _dashboard = dashboard; _layoutView = layoutView; _preview = preview; _save = save;
+            _dashboardRoot = (FrameworkElement)dashboard.Content;
+            if (_dashboardRoot == null) throw new InvalidOperationException("대시보드 미리보기를 열 수 없습니다.");
+            _originalWidth = _dashboardRoot.Width; _originalHeight = _dashboardRoot.Height;
+            _originalForeground = _dashboardRoot.ReadLocalValue(Control.ForegroundProperty);
+            _originalFont = _dashboardRoot.ReadLocalValue(Control.FontFamilyProperty);
+            Title = "대시보드 배치 편집"; Width = Math.Min(1220, SystemParameters.WorkArea.Width - 40);
+            Height = Math.Min(880, SystemParameters.WorkArea.Height - 40); MinWidth = 780; MinHeight = 540;
+            WindowStartupLocation = WindowStartupLocation.CenterOwner; WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.CanResizeWithGrip;
+            Background = Brush("#151515"); Foreground = Brush("#F4F4F5"); FontFamily = new FontFamily("Malgun Gothic"); FontSize = 13;
+            DarkTheme.Apply(this);
+            Grid root = new Grid(); _editorRoot = root; root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(66) });
+            root.RowDefinitions.Add(new RowDefinition()); root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(64) }); Content = root;
+            Border titleBar = new Border { Background = Brush("#1E1E21"), Padding = new Thickness(22, 12, 18, 12) }; root.Children.Add(titleBar);
+            titleBar.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e) { if (e.OriginalSource is TextBlock || e.OriginalSource == titleBar) DragMove(); };
+            DockPanel title = new DockPanel(); titleBar.Child = title;
+            Button close = MakeButton("×", delegate { Close(); }); DockPanel.SetDock(close, Dock.Right); title.Children.Add(close);
+            TextBlock heading = new TextBlock { Text = "배치 편집", FontSize = 22, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 28, 0) }; title.Children.Add(heading);
+            StackPanel tabs = new StackPanel { Orientation = Orientation.Horizontal };
+            _expandedTab = MakeButton("전체 화면", delegate { SwitchMode(false); }); _widgetTab = MakeButton("위젯", delegate { SwitchMode(true); });
+            tabs.Children.Add(_expandedTab); tabs.Children.Add(_widgetTab); title.Children.Add(tabs);
 
+            Grid middle = new Grid(); Grid.SetRow(middle, 1); root.Children.Add(middle);
+            middle.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(242) }); middle.ColumnDefinitions.Add(new ColumnDefinition());
+            Border sidebar = new Border { Background = Brush("#1D1D20"), BorderBrush = Brush("#35353A"), BorderThickness = new Thickness(0, 0, 1, 0), Padding = new Thickness(16) };
+            sidebar.Child = new ScrollViewer { Content = _inspector, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }; middle.Children.Add(sidebar);
+            Grid stage = new Grid { Margin = new Thickness(18, 12, 18, 12) }; Grid.SetColumn(stage, 1); middle.Children.Add(stage);
+            stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); stage.RowDefinitions.Add(new RowDefinition()); stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            DockPanel stageTools = new DockPanel { Margin = new Thickness(0, 0, 0, 10) }; stage.Children.Add(stageTools);
+            ComboBox viewport = new ComboBox { ItemsSource = new[] { "기본 창 크기", "좁은 창", "넓은 창" }, SelectedIndex = 0, Width = 140 };
+            viewport.SelectionChanged += delegate { SetViewport(viewport.SelectedIndex); };
+            DockPanel.SetDock(viewport, Dock.Right); stageTools.Children.Add(viewport);
+            _previewSize.Foreground = Brush("#B5B5BF"); _previewSize.VerticalAlignment = VerticalAlignment.Center; stageTools.Children.Add(_previewSize);
+            Border previewFrame = new Border { Background = Brush("#101012"), BorderBrush = Brush("#37373D"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12), Padding = new Thickness(12), ClipToBounds = true };
+            Grid.SetRow(previewFrame, 1); stage.Children.Add(previewFrame);
+            Viewbox zoom = new Viewbox { Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, Child = _previewDecorator };
+            previewFrame.Child = zoom;
+            TextBlock guide = new TextBlock { Text = "카드를 눌러 선택 · 위쪽을 끌어 이동 · 오른쪽 아래를 끌어 크기 조절\n폭은 열 단위, 높이는 3단계로 맞춰집니다. 좁은 창에서는 자동으로 줄바꿈됩니다.", Foreground = Brush("#A4A4AE"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0), FontSize = 12 };
+            Grid.SetRow(guide, 2); stage.Children.Add(guide);
+            Border footer = new Border { Background = Brush("#1E1E21"), Padding = new Thickness(18, 10, 18, 10) }; Grid.SetRow(footer, 2); root.Children.Add(footer);
+            DockPanel actions = new DockPanel(); footer.Child = actions;
+            Button saveButton = MakeButton("배치 저장", delegate { if (TrySave()) Close(); }); saveButton.Background = Brush("#246A55"); saveButton.IsDefault = true; DockPanel.SetDock(saveButton, Dock.Right); actions.Children.Add(saveButton);
+            Button cancel = MakeButton("취소", delegate { Close(); }); cancel.IsCancel = true; DockPanel.SetDock(cancel, Dock.Right); actions.Children.Add(cancel);
+            _status.Foreground = Brush("#C2C2CC"); _status.VerticalAlignment = VerticalAlignment.Center; actions.Children.Add(_status);
+
+            try
+            {
+                dashboard.Content = null;
+                if (!_dashboardRoot.Resources.MergedDictionaries.Contains(dashboard.Resources)) { _dashboardRoot.Resources.MergedDictionaries.Add(dashboard.Resources); _addedResources = true; }
+                _dashboardRoot.SetValue(Control.ForegroundProperty, dashboard.Foreground); _dashboardRoot.SetValue(Control.FontFamilyProperty, dashboard.FontFamily);
+                _previewDecorator.Child = _dashboardRoot;
+                Closed += delegate { RestoreDashboard(); if (!Saved) _preview(_original.Copy(), _originalCompact, null); };
+                _dashboardRoot.LayoutUpdated += DashboardLayoutUpdated;
+                _selected = Choices().First().Id; SetViewport(0); RefreshInspector(); Preview();
+            }
+            catch { RestoreDashboard(); throw; }
+        }
         internal bool TrySave()
         {
             try { _save(_draft.Copy()); Saved = true; return true; }
-            catch (Exception ex) { _status.Text = "저장하지 못했습니다. 다시 시도해 주세요. " + ex.Message; return false; }
+            catch (Exception ex) { _status.Text = "저장하지 못했습니다: " + ex.Message; return false; }
         }
-        private void SaveAndClose() { if (TrySave()) Close(); }
-        internal void MoveCard(string id, string target) { Mode.Move(id, target); Rebuild(); Preview(); }
+        internal void RestoreDashboard()
+        {
+            if (_restored) return; _restored = true;
+            _dashboardRoot.LayoutUpdated -= DashboardLayoutUpdated;
+            foreach (LayoutCardAdorner adorner in _adorners.Values) { AdornerLayer layer = VisualTreeHelper.GetParent(adorner) as AdornerLayer; if (layer != null) layer.Remove(adorner); }
+            foreach (KeyValuePair<UIElement, bool> entry in _previewHitTests) entry.Key.IsHitTestVisible = entry.Value;
+            foreach (KeyValuePair<Button, bool> entry in _buttonFocus) entry.Key.Focusable = entry.Value;
+            _previewDecorator.Child = null; _dashboardRoot.Width = _originalWidth; _dashboardRoot.Height = _originalHeight;
+            if (_addedResources) _dashboardRoot.Resources.MergedDictionaries.Remove(_dashboard.Resources);
+            RestoreValue(_dashboardRoot, Control.ForegroundProperty, _originalForeground); RestoreValue(_dashboardRoot, Control.FontFamilyProperty, _originalFont);
+            _dashboard.Content = _dashboardRoot;
+        }
+        private static void RestoreValue(DependencyObject target, DependencyProperty property, object value)
+        { if (value == DependencyProperty.UnsetValue) target.ClearValue(property); else target.SetValue(property, value); }
+        internal void SwitchMode(bool compact)
+        { _compact = compact; SetViewport(0); RefreshInspector(); Preview(); FocusSelectedCard(); }
+        internal void MoveCard(string id, string target)
+        { Mode.Move(id, target); _selected = id; RefreshInspector(); Preview(); }
+        internal void ResizeCard(string id, int span, int size)
+        {
+            LayoutCardSettings card = Mode.Card(id); card.Span = Math.Max(1, Math.Min(3, span)); card.Size = Math.Max(0, Math.Min(2, size));
+            if (card.Span > Mode.Columns) { Mode.Columns = card.Span; SetViewport(2); }
+            _selected = id; RefreshInspector(); Preview();
+        }
+        private IEnumerable<LayoutCardSettings> Choices()
+        { return Mode.Cards.Where(card => !card.Id.StartsWith("account") || Int32.Parse(card.Id.Substring(7)) <= _accountCount); }
+        private static string CardName(string id)
+        { return id == "pc" ? "PC 상태" : id == "subscriptions" ? "구독 갱신일" : "계정 " + id.Substring(7); }
+        private void SetViewport(int preset)
+        {
+            _dashboardRoot.Width = preset == 1 ? (_compact ? 320 : 900) : preset == 2 ? (_compact ? 900 : 1600) : (_compact ? 460 : 1280);
+            _dashboardRoot.Height = preset == 1 ? (_compact ? 480 : 620) : (_compact ? 780 : 820);
+            _previewSize.Text = "실제 화면 미리보기  ·  " + _dashboardRoot.Width + " × " + _dashboardRoot.Height;
+        }
         private void Preview()
         {
-            _status.Text = Mode.Cards.Any(card => card.Visible && (card.Id == "pc" || Int32.Parse(card.Id.Substring(7)) <= _accountCount))
-                ? "" : "모든 카드를 숨겼습니다. 목록에서 다시 켤 수 있습니다.";
-            _preview(_draft.Copy());
+            _preview(_draft.Copy(), _compact, _selected);
+            _expandedTab.Background = Brush(_compact ? "#292929" : "#255B4C"); _widgetTab.Background = Brush(_compact ? "#255B4C" : "#292929");
+            _status.Text = Choices().Any(card => card.Visible) ? "전체와 위젯의 배치는 따로 저장됩니다. 취소하면 이전 배치로 돌아갑니다." : "표시할 카드가 없습니다. 왼쪽에서 카드를 켜 주세요.";
+            _dashboardRoot.UpdateLayout(); RefreshAdorners();
         }
-        private void Rebuild()
+        private void FocusSelectedCard()
         {
-            _building = true;
-            _columns.SelectedIndex = Mode.Columns - 1;
-            _hideUnavailable.IsChecked = Mode.HideUnavailable;
-            _cards.Children.Clear();
-            LayoutCardSettings[] visibleChoices = Mode.Cards.Where(card => card.Id == "pc" || Int32.Parse(card.Id.Substring(7)) <= _accountCount).ToArray();
-            for (int index = 0; index < visibleChoices.Length; index++)
+            LayoutTile tile = _layoutView.Tiles(_compact).FirstOrDefault(item => item.Settings.Id == _selected && item.Card.IsVisible);
+            if (tile != null) tile.Card.BringIntoView(new Rect(0, 0, tile.Card.ActualWidth, Math.Min(100, tile.Card.ActualHeight)));
+        }
+        private void RefreshInspector()
+        {
+            _inspector.Children.Clear();
+            Label("카드 표시", 15);
+            foreach (LayoutCardSettings card in Choices())
             {
-                LayoutCardSettings card = visibleChoices[index];
-                int position = index;
-                Border row = new Border { Background = Brush("#252525"), BorderBrush = Brush("#414141"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(10), Padding = new Thickness(12), Margin = new Thickness(0, 0, 4, 10), AllowDrop = true };
-                StackPanel body = new StackPanel(); row.Child = body;
-                DockPanel head = new DockPanel(); body.Children.Add(head);
-                TextBlock handle = new TextBlock { Text = "☰", FontSize = 22, Cursor = Cursors.SizeAll, Margin = new Thickness(0, 0, 12, 0), ToolTip = "끌어서 카드 순서 변경" };
-                head.Children.Add(handle);
-                Point start = new Point();
-                bool armed = false;
-                handle.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e) { start = e.GetPosition(handle); armed = true; };
-                handle.MouseLeftButtonUp += delegate { armed = false; };
-                handle.MouseMove += delegate(object sender, MouseEventArgs e) {
-                    if (!armed || e.LeftButton != MouseButtonState.Pressed) return;
-                    Point now = e.GetPosition(handle);
-                    if (Math.Abs(now.X - start.X) + Math.Abs(now.Y - start.Y) < 6) return;
-                    armed = false;
-                    DragDrop.DoDragDrop(handle, new DataObject("CodexMeter.Card", card.Id), DragDropEffects.Move);
-                };
-                row.DragOver += delegate(object sender, DragEventArgs e) { e.Effects = e.Data.GetDataPresent("CodexMeter.Card") ? DragDropEffects.Move : DragDropEffects.None; e.Handled = true; };
-                row.Drop += delegate(object sender, DragEventArgs e) { if (e.Data.GetDataPresent("CodexMeter.Card")) MoveCard(e.Data.GetData("CodexMeter.Card") as string, card.Id); e.Handled = true; };
-                System.Windows.Controls.Button down = Button("↓", delegate { MoveCard(card.Id, visibleChoices[position + 1].Id); }); down.IsEnabled = index < visibleChoices.Length - 1;
-                DockPanel.SetDock(down, Dock.Right); head.Children.Add(down);
-                System.Windows.Controls.Button up = Button("↑", delegate { MoveCard(card.Id, visibleChoices[position - 1].Id); }); up.IsEnabled = index > 0;
-                DockPanel.SetDock(up, Dock.Right); head.Children.Add(up);
-                CheckBox enabled = new CheckBox { Content = card.Id == "pc" ? "PC 상태" : "계정 " + card.Id.Substring(7), IsChecked = card.Visible, FontWeight = FontWeights.Bold, FontSize = 16, VerticalAlignment = VerticalAlignment.Center };
-                enabled.Click += delegate { card.Visible = enabled.IsChecked == true; Preview(); }; head.Children.Add(enabled);
-                WrapPanel sizes = new WrapPanel { Margin = new Thickness(0, 10, 0, 6) }; body.Children.Add(sizes);
-                sizes.Children.Add(new TextBlock { Text = "폭", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
-                ComboBox span = Choice(new[] { "1칸", "2칸", "3칸" }, card.Span - 1);
-                span.SelectionChanged += delegate { card.Span = span.SelectedIndex + 1; Preview(); }; sizes.Children.Add(span);
-                sizes.Children.Add(new TextBlock { Text = "높이", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(18, 0, 8, 0) });
-                ComboBox size = Choice(new[] { "짧게", "보통", "길게" }, card.Size);
-                size.SelectionChanged += delegate { card.Size = size.SelectedIndex; Preview(); }; sizes.Children.Add(size);
-                WrapPanel sections = new WrapPanel(); body.Children.Add(sections);
-                string[] keys = card.Id == "pc" ? new[] { "cpu", "gpu", "ram", "disk", "network" } :
-                    (_compact ? new[] { "short", "weekly", "credits" } : new[] { "short", "weekly", "credits", "stats", "calendar" });
-                string[] names = card.Id == "pc" ? new[] { "CPU", "GPU", "RAM", "디스크", "네트워크" } : new[] { "5시간·단기", "주간", "초기화권", "사용 통계", "달력·최근 7일" };
-                for (int n = 0; n < keys.Length; n++)
-                {
-                    string key = keys[n];
-                    CheckBox show = new CheckBox { Content = names[n], IsChecked = card.Shows(key), Margin = new Thickness(0, 7, 14, 3) };
-                    show.Click += delegate { card.SetSection(key, show.IsChecked == true); Preview(); };
-                    sections.Children.Add(show);
-                }
-                _cards.Children.Add(row);
+                DockPanel row = new DockPanel { Margin = new Thickness(0, 5, 0, 5) };
+                CheckBox visible = new CheckBox { IsChecked = card.Visible, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0), ToolTip = "카드 표시/숨김" };
+                visible.Click += delegate { card.Visible = visible.IsChecked == true; _selected = card.Id; RefreshInspector(); Preview(); FocusSelectedCard(); };
+                row.Children.Add(visible);
+                Button select = MakeButton(CardName(card.Id), delegate { _selected = card.Id; RefreshInspector(); Preview(); FocusSelectedCard(); });
+                select.HorizontalContentAlignment = HorizontalAlignment.Left; select.Background = Brush(card.Id == _selected ? "#255B4C" : "#292929"); row.Children.Add(select); _inspector.Children.Add(row);
             }
-            _building = false;
+            Label("최대 열 수", 13);
+            Segments(new[] { "1열", "2열", "3열" }, Mode.Columns - 1, n => { Mode.Columns = n + 1; if (n > 0) SetViewport(2); RefreshInspector(); Preview(); });
+            CheckBox hide = new CheckBox { Content = new TextBlock { Text = "제공하지 않는 한도 숨김", TextWrapping = TextWrapping.Wrap }, IsChecked = Mode.HideUnavailable, Margin = new Thickness(0, 12, 0, 10) };
+            hide.Click += delegate { Mode.HideUnavailable = hide.IsChecked == true; Preview(); }; _inspector.Children.Add(hide);
+            LayoutCardSettings selected = Mode.Card(_selected);
+            Label(CardName(_selected) + " 조절", 15);
+            if (selected.Id == "subscriptions")
+            {
+                _inspector.Children.Add(MakeButton("구독 서비스·갱신일 관리", delegate {
+                    SubscriptionEditor editor = new SubscriptionEditor(_draft.Subscriptions, entries => { _draft.Subscriptions = entries; selected.Visible = true; RefreshInspector(); Preview(); });
+                    editor.Owner = this; editor.ShowDialog();
+                }));
+            }
+            Label("폭", 12); Segments(new[] { "1칸", "2칸", "3칸" }, selected.Span - 1, n => ResizeCard(selected.Id, n + 1, selected.Size));
+            Label("높이", 12); Segments(new[] { "짧게", "보통", "길게" }, selected.Size, n => ResizeCard(selected.Id, selected.Span, n));
+            string[] keys = selected.Id == "pc" ? new[] { "cpu", "gpu", "ram", "disk", "network" } : selected.Id == "subscriptions" ? new string[0] : (_compact ? new[] { "short", "weekly", "credits" } : new[] { "short", "weekly", "credits", "stats", "calendar" });
+            string[] names = selected.Id == "pc" ? new[] { "CPU", "GPU", "RAM", "디스크", "네트워크" } : new[] { "5시간·단기 한도", "주간 한도", "초기화권", "사용 통계", "달력·최근 7일" };
+            for (int n = 0; n < keys.Length; n++)
+            {
+                string key = keys[n]; CheckBox section = new CheckBox { Content = names[n], IsChecked = selected.Shows(key), Margin = new Thickness(0, 9, 0, 0) };
+                section.Click += delegate { selected.SetSection(key, section.IsChecked == true); Preview(); }; _inspector.Children.Add(section);
+            }
+            Label("빠른 배치", 13);
+            _inspector.Children.Add(MakeButton("선택 계정 중심", delegate { int number = _selected.StartsWith("account") ? Int32.Parse(_selected.Substring(7)) : 1; Mode.UseSingleAccount(number, _compact); RefreshInspector(); Preview(); }));
+            _inspector.Children.Add(MakeButton("이 화면 기본 배치", delegate { if (_compact) _draft.Widget = LayoutSettings.DefaultMode(true); else _draft.Expanded = LayoutSettings.DefaultMode(false); RefreshInspector(); Preview(); }));
         }
-        private void StyleControls()
+        private void Label(string text, double size)
+        { _inspector.Children.Add(new TextBlock { Text = text, FontSize = size, FontWeight = FontWeights.SemiBold, Foreground = Brush("#DADAE0"), Margin = new Thickness(0, 14, 0, 7) }); }
+        private void Segments(string[] names, int selected, Action<int> action)
         {
-            Style check = new Style(typeof(CheckBox)); check.Setters.Add(new Setter(Control.ForegroundProperty, Foreground));
-            Resources.Add(typeof(CheckBox), check);
-            Style item = new Style(typeof(ComboBoxItem)); item.Setters.Add(new Setter(Control.ForegroundProperty, Brushes.Black));
-            Resources.Add(typeof(ComboBoxItem), item);
+            UniformGrid group = new UniformGrid { Rows = 1 };
+            for (int n = 0; n < names.Length; n++) { int choice = n; Button button = MakeButton(names[n], delegate { action(choice); }); button.Padding = new Thickness(4, 7, 4, 7); button.Background = Brush(n == selected ? "#255B4C" : "#292929"); group.Children.Add(button); }
+            _inspector.Children.Add(group);
         }
-        private static ComboBox Choice(string[] values, int selected)
+        private void DashboardLayoutUpdated(object sender, EventArgs e) { RefreshAdorners(); }
+        private void RefreshAdorners()
         {
-            return new ComboBox { ItemsSource = values, SelectedIndex = selected, MinWidth = 82, FontSize = 13, Padding = new Thickness(7, 3, 7, 3), Foreground = Brushes.Black, VerticalContentAlignment = VerticalAlignment.Center };
+            if (_refreshing || _restored) return; _refreshing = true;
+            try
+            {
+                foreach (LayoutTile tile in _layoutView.Tiles(_compact))
+                {
+                    LayoutCardAdorner adorner;
+                    if (_adorners.TryGetValue(tile.Card, out adorner) && VisualTreeHelper.GetParent(adorner) == null) _adorners.Remove(tile.Card);
+                    if (!_adorners.TryGetValue(tile.Card, out adorner))
+                    {
+                        AdornerLayer layer = _previewDecorator.AdornerLayer;
+                        adorner = new LayoutCardAdorner(tile, _editorRoot, id => { _selected = id; RefreshInspector(); RefreshAdorners(); }, MoveCard, ResizeCard);
+                        _adorners.Add(tile.Card, adorner); layer.Add(adorner);
+                    }
+                    adorner.Refresh(tile.Settings != null && tile.Settings.Id == _selected);
+                }
+                foreach (KeyValuePair<Border, LayoutCardAdorner> entry in _adorners)
+                    entry.Value.Visibility = entry.Key.IsVisible && entry.Key.ActualWidth > 0 ? Visibility.Visible : Visibility.Collapsed;
+                foreach (Button button in Visuals<Button>(_dashboardRoot))
+                {
+                    if (button.Name.Contains("AccountPage")) continue;
+                    BlockPreviewHitTest(button);
+                    if (!_buttonFocus.ContainsKey(button)) _buttonFocus.Add(button, button.Focusable);
+                    button.Focusable = false;
+                }
+                foreach (Border titleBar in Visuals<Border>(_dashboardRoot).Where(border => border.Name == "TitleBar" || border.Name == "CompactTitleBar"))
+                    BlockPreviewHitTest(titleBar);
+            }
+            finally { _refreshing = false; }
         }
-        private static System.Windows.Controls.Button Button(string title, Action action)
+        private void BlockPreviewHitTest(UIElement element)
         {
-            System.Windows.Controls.Button button = new System.Windows.Controls.Button { Content = title, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(5, 0, 0, 0), Background = Brush("#353535"), Foreground = Brushes.White, BorderBrush = Brush("#555555"), Cursor = Cursors.Hand };
-            button.Click += delegate { action(); }; return button;
+            if (!_previewHitTests.ContainsKey(element)) _previewHitTests.Add(element, element.IsHitTestVisible);
+            element.IsHitTestVisible = false;
         }
-        private static SolidColorBrush Brush(string hex) { return new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex)); }
+        private static IEnumerable<T> Visuals<T>(DependencyObject parent) where T : DependencyObject
+        {
+            for (int n = 0; n < VisualTreeHelper.GetChildrenCount(parent); n++) { DependencyObject child = VisualTreeHelper.GetChild(parent, n); if (child is T) yield return (T)child; foreach (T item in Visuals<T>(child)) yield return item; }
+        }
+        internal static Button MakeButton(string text, Action click)
+        { Button button = new Button { Content = text, Margin = new Thickness(0, 2, 5, 2) }; button.Click += delegate { click(); }; return button; }
+        internal static SolidColorBrush Brush(string hex) { return new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex)); }
+    }
+
+    internal sealed class LayoutCardAdorner : Adorner
+    {
+        private readonly LayoutTile _tile;
+        private readonly Grid _visual = new Grid();
+        private readonly Border _outline;
+        private readonly Thumb _resize;
+        private readonly Visual _dragSurface;
+        private readonly Action<string, int, int> _resizeCard;
+        private Point _dragStart, _thumbAnchor;
+        private double _scaleX, _scaleY, _unit;
+        private int _startSpan, _startSize;
+        private Rect _lastBounds = Rect.Empty;
+        internal LayoutCardAdorner(LayoutTile tile, Visual dragSurface, Action<string> select, Action<string, string> move, Action<string, int, int> resize) : base(tile.Card)
+        {
+            _tile = tile; _dragSurface = dragSurface; _resizeCard = resize;
+            _outline = new Border { Background = Brushes.Transparent, BorderBrush = LayoutEditor.Brush("#72D4B5"), BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(10), AllowDrop = true };
+            _visual.Children.Add(_outline);
+            _outline.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e) { select(_tile.Settings.Id); e.Handled = true; };
+            _outline.DragOver += delegate(object sender, DragEventArgs e) { e.Effects = e.Data.GetDataPresent("CodexMeter.Card") ? DragDropEffects.Move : DragDropEffects.None; _outline.BorderBrush = LayoutEditor.Brush("#6CCFFF"); e.Handled = true; };
+            _outline.DragLeave += delegate { _outline.BorderBrush = LayoutEditor.Brush("#72D4B5"); };
+            _outline.Drop += delegate(object sender, DragEventArgs e) { if (e.Data.GetDataPresent("CodexMeter.Card")) move(e.Data.GetData("CodexMeter.Card") as string, _tile.Settings.Id); e.Handled = true; };
+            Border drag = new Border { Height = 42, VerticalAlignment = VerticalAlignment.Top, Background = Brushes.Transparent, Cursor = Cursors.SizeAll, ToolTip = "끌어서 카드 이동", AllowDrop = true };
+            drag.DragOver += delegate(object sender, DragEventArgs e) { e.Effects = e.Data.GetDataPresent("CodexMeter.Card") ? DragDropEffects.Move : DragDropEffects.None; _outline.BorderBrush = LayoutEditor.Brush("#6CCFFF"); e.Handled = true; };
+            drag.Drop += delegate(object sender, DragEventArgs e) { if (e.Data.GetDataPresent("CodexMeter.Card")) move(e.Data.GetData("CodexMeter.Card") as string, _tile.Settings.Id); e.Handled = true; };
+            Point start = new Point(); bool armed = false;
+            drag.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e) { start = e.GetPosition(drag); armed = true; select(_tile.Settings.Id); e.Handled = true; };
+            drag.MouseLeftButtonUp += delegate { armed = false; };
+            drag.MouseMove += delegate(object sender, MouseEventArgs e) { if (!armed || e.LeftButton != MouseButtonState.Pressed) return; Point now = e.GetPosition(drag); if (Math.Abs(now.X - start.X) + Math.Abs(now.Y - start.Y) < 6) return; armed = false; DragDrop.DoDragDrop(drag, new DataObject("CodexMeter.Card", _tile.Settings.Id), DragDropEffects.Move); };
+            _visual.Children.Add(drag);
+            _resize = new Thumb { Width = 28, Height = 28, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Cursor = Cursors.SizeNWSE, ToolTip = "끌어서 카드 크기 조절", Background = LayoutEditor.Brush("#315D4E") };
+            FrameworkElementFactory grip = new FrameworkElementFactory(typeof(Border)); grip.SetValue(Border.BackgroundProperty, LayoutEditor.Brush("#315D4E")); grip.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
+            FrameworkElementFactory mark = new FrameworkElementFactory(typeof(TextBlock)); mark.SetValue(TextBlock.TextProperty, "◢"); mark.SetValue(TextBlock.ForegroundProperty, Brushes.White); mark.SetValue(TextBlock.FontSizeProperty, 18.0); mark.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center); grip.AppendChild(mark);
+            _resize.Template = new ControlTemplate(typeof(Thumb)) { VisualTree = grip };
+            _resize.DragStarted += delegate(object sender, DragStartedEventArgs e) {
+                select(_tile.Settings.Id); _startSpan = _tile.Settings.Span; _startSize = _tile.Settings.Size;
+                _unit = _tile.Card.ActualWidth / Math.Max(1, _startSpan);
+                _thumbAnchor = new Point(e.HorizontalOffset, e.VerticalOffset);
+                GeneralTransform transform = _resize.TransformToAncestor(_dragSurface);
+                _dragStart = transform.Transform(_thumbAnchor);
+                _scaleX = Math.Max(0.01, transform.Transform(new Point(_thumbAnchor.X + 1, _thumbAnchor.Y)).X - _dragStart.X);
+                _scaleY = Math.Max(0.01, transform.Transform(new Point(_thumbAnchor.X, _thumbAnchor.Y + 1)).Y - _dragStart.Y);
+            };
+            _resize.DragDelta += delegate(object sender, DragDeltaEventArgs e) {
+                // Thumb reports displacement from its initial local anchor, not the previous event.
+                // Recover the pointer in a fixed surface because snapping also moves the Thumb itself.
+                Point pointer = _resize.TransformToAncestor(_dragSurface).Transform(new Point(_thumbAnchor.X + e.HorizontalChange, _thumbAnchor.Y + e.VerticalChange));
+                double dx = (pointer.X - _dragStart.X) / _scaleX, dy = (pointer.Y - _dragStart.Y) / _scaleY;
+                int span = Math.Max(1, Math.Min(3, _startSpan + (int)Math.Round(dx / Math.Max(80, _unit))));
+                int size = Math.Max(0, Math.Min(2, _startSize + (int)Math.Round(dy / 60)));
+                if (span != _tile.Settings.Span || size != _tile.Settings.Size) _resizeCard(_tile.Settings.Id, span, size);
+            };
+            _visual.Children.Add(_resize); AddVisualChild(_visual);
+            PreviewMouseWheel += delegate(object sender, MouseWheelEventArgs e) {
+                ScrollViewer scroll = ParentScroll(_tile.Host);
+                if (scroll == null) return;
+                scroll.ScrollToVerticalOffset(scroll.VerticalOffset - e.Delta / 120.0 * 48);
+                e.Handled = true;
+            };
+        }
+        internal void Refresh(bool selected)
+        {
+            Thickness border = new Thickness(selected ? 2 : 1);
+            if (_outline.BorderThickness != border) _outline.BorderThickness = border;
+            _outline.BorderBrush = LayoutEditor.Brush(selected ? "#72D4B5" : "#505058"); _resize.Opacity = selected ? 1 : 0.55;
+            ScrollViewer scroll = ParentScroll(_tile.Host);
+            if (scroll != null && scroll.ActualWidth > 0)
+            {
+                Rect viewport = scroll.TransformToDescendant(_tile.Card).TransformBounds(new Rect(0, 0, Math.Max(0, scroll.ViewportWidth), Math.Max(0, scroll.ViewportHeight)));
+                Rect visible = Rect.Intersect(new Rect(_tile.Card.RenderSize), viewport);
+                // Assigning a fresh Clip on every LayoutUpdated invalidates arrangement again,
+                // preventing the adorner layer from settling its card-position transform.
+                if (Clip == null || Clip.Bounds != visible) Clip = visible.IsEmpty ? Geometry.Empty : new RectangleGeometry(visible);
+            }
+            AdornerLayer layer = VisualTreeHelper.GetParent(this) as AdornerLayer;
+            Visual parent = layer == null ? null : VisualTreeHelper.GetParent(layer) as Visual;
+            if (parent != null && _tile.Card.IsVisible)
+            {
+                Rect bounds = _tile.Card.TransformToAncestor(parent).TransformBounds(new Rect(_tile.Card.RenderSize));
+                if (bounds != _lastBounds) { _lastBounds = bounds; layer.Update(_tile.Card); }
+            }
+        }
+        private static ScrollViewer ParentScroll(DependencyObject item)
+        { while (item != null && !(item is ScrollViewer)) item = VisualTreeHelper.GetParent(item); return item as ScrollViewer; }
+        protected override int VisualChildrenCount { get { return 1; } }
+        protected override Visual GetVisualChild(int index) { return _visual; }
+        protected override Size MeasureOverride(Size size) { _visual.Measure(AdornedElement.RenderSize); return AdornedElement.RenderSize; }
+        protected override Size ArrangeOverride(Size size) { _visual.Arrange(new Rect(size)); return size; }
     }
 }

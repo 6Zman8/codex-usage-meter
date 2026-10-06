@@ -1,1 +1,1 @@
-Customize dashboard and widget cards with separate saved layouts, visibility, order, and sizes.
+Visual layout editing, subscription renewal dates, and dark scrollbar and quota layout fixes.

@@ -58,6 +58,11 @@ namespace CodexUsageMeter
             double top = 0;
             foreach (List<LayoutTile> items in rows)
             {
+                foreach (IGrouping<int, LayoutTile> group in items.GroupBy(tile => tile.Settings.Size))
+                {
+                    double alignedHeight = group.Max(tile => tile.Bounds.Height);
+                    foreach (LayoutTile tile in group) tile.Bounds = new Rect(tile.Bounds.X, 0, tile.Bounds.Width, alignedHeight);
+                }
                 double height = items.Max(tile => tile.Bounds.Height);
                 foreach (LayoutTile tile in items)
                 {
@@ -82,10 +87,15 @@ namespace CodexUsageMeter
     {
         private readonly Window _window;
         private readonly CardLayoutPanel[] _panels = new CardLayoutPanel[2];
-        private readonly LayoutTile[,] _tiles = new LayoutTile[2, 3];
+        private readonly LayoutTile[,] _tiles = new LayoutTile[2, 4];
+        private readonly SubscriptionCardView[] _subscriptions = new SubscriptionCardView[2];
+        internal event Action ManageSubscriptions;
+        internal DateTime RenderDate { get; private set; }
         private readonly TextBlock[] _empty = new TextBlock[2];
         private readonly Grid[] _compactQuotas = new Grid[2];
         private readonly Viewbox[] _compactQuotaHosts = new Viewbox[2];
+
+        internal IEnumerable<LayoutTile> Tiles(bool compact) { return _panels[compact ? 1 : 0].Tiles; }
 
         internal DashboardLayoutView(Window window)
         {
@@ -100,6 +110,8 @@ namespace CodexUsageMeter
                 CardLayoutPanel panel = new CardLayoutPanel { MinimumCardWidth = mode == 1 ? 390 : 400 };
                 _panels[mode] = panel;
                 _tiles[mode, 0] = panel.Add(first); _tiles[mode, 1] = panel.Add(second); _tiles[mode, 2] = panel.Add(pc);
+                _subscriptions[mode] = new SubscriptionCardView(mode == 1, delegate { if (ManageSubscriptions != null) ManageSubscriptions(); });
+                _tiles[mode, 3] = panel.Add(_subscriptions[mode].Card);
                 ScrollViewer scroll = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, CanContentScroll = false, Padding = new Thickness(0) };
                 body.Children.Add(scroll);
                 _empty[mode] = new TextBlock { Text = "표시할 카드가 없습니다.\n⚙ 설정 → 배치 편집에서 카드를 켜 주세요.", TextAlignment = TextAlignment.Center, TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Color.FromRgb(170, 170, 175)), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(20), Visibility = Visibility.Collapsed };
@@ -118,6 +130,7 @@ namespace CodexUsageMeter
 
         internal void Apply(LayoutSettings settings, AccountView[] views, double fontScale)
         {
+            RenderDate = DateTime.Today;
             for (int mode = 0; mode < 2; mode++)
             {
                 LayoutModeSettings layout = settings.Mode(mode == 1);
@@ -142,6 +155,10 @@ namespace CodexUsageMeter
                 LayoutTile pc = _tiles[mode, 2]; pc.Settings = layout.Card("pc");
                 pc.Card.Visibility = pc.Settings.Visible ? Visibility.Visible : Visibility.Collapsed;
                 if (mode == 0) ApplyExpandedPc(pc, fontScale); else ApplyCompactPc(pc, fontScale);
+                LayoutTile subscription = _tiles[mode, 3]; subscription.Settings = layout.Card("subscriptions");
+                subscription.Card.Visibility = subscription.Settings.Visible ? Visibility.Visible : Visibility.Collapsed;
+                subscription.MinimumHeight = (mode == 1 ? 245 : 320) * Math.Max(1, fontScale / 1.5);
+                _subscriptions[mode].Update(settings.Subscriptions, RenderDate, fontScale);
                 panel.Tiles.Sort((a, b) => layout.Cards.IndexOf(a.Settings).CompareTo(layout.Cards.IndexOf(b.Settings)));
                 _empty[mode].Visibility = panel.Tiles.Any(tile => tile.Card.Visibility == Visibility.Visible) ? Visibility.Collapsed : Visibility.Visible;
                 panel.InvalidateMeasure();
@@ -161,19 +178,22 @@ namespace CodexUsageMeter
         private void ApplyCompactAccount(int slot, LayoutTile tile, bool shortQuota, bool weekly, double fontScale)
         {
             Grid quota = _compactQuotas[slot];
+            bool single = shortQuota != weekly;
             foreach (UIElement item in quota.Children)
             {
                 int column = Grid.GetColumn(item);
                 item.Visibility = (column == 0 ? weekly : column == 2 ? shortQuota : shortQuota || weekly) ? Visibility.Visible : Visibility.Collapsed;
             }
-            quota.ColumnDefinitions[0].Width = new GridLength(weekly ? 120 : 0);
-            quota.ColumnDefinitions[1].Width = new GridLength(weekly ? 8 : 0);
-            quota.ColumnDefinitions[2].Width = new GridLength(shortQuota ? 96 : 0);
+            quota.ColumnDefinitions[0].Width = new GridLength(weekly ? (single ? 144 : 120) : 0);
+            quota.ColumnDefinitions[1].Width = new GridLength(weekly ? (single ? 16 : 8) : 0);
+            quota.ColumnDefinitions[2].Width = new GridLength(shortQuota ? (single ? 144 : 96) : 0);
             quota.ColumnDefinitions[3].Width = new GridLength(shortQuota ? 12 : 0);
-            quota.Width = (weekly ? 128 : 0) + (shortQuota ? 108 : 0) + 132;
+            quota.Width = 368;
             quota.Height = 136 * Math.Max(1, fontScale / 1.5);
             foreach (Canvas canvas in quota.Children.OfType<Canvas>())
             {
+                double ringScale = single ? 132 / canvas.Width : 1;
+                canvas.LayoutTransform = new ScaleTransform(ringScale, ringScale);
                 StackPanel labels = canvas.Children.OfType<StackPanel>().FirstOrDefault();
                 if (labels != null)
                 {

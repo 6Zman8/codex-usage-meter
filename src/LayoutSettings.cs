@@ -33,7 +33,7 @@ namespace CodexUsageMeter
         public LayoutCardSettings Card(string id) { return Cards.First(card => card.Id == id); }
         public int[] VisibleAccounts(int count)
         {
-            return Cards.Where(card => card.Visible && card.Id != "pc")
+            return Cards.Where(card => card.Visible && card.Id.StartsWith("account"))
                 .Select(card => Int32.Parse(card.Id.Substring(7))).Where(number => number <= count).ToArray();
         }
         public void Move(string id, string targetId)
@@ -50,6 +50,7 @@ namespace CodexUsageMeter
             HideUnavailable = true;
             foreach (LayoutCardSettings card in Cards)
             {
+                if (card.Id == "subscriptions") continue;
                 card.Visible = card.Id == "pc" || card.Id == "account" + number;
                 card.Span = 1;
                 card.Size = 1;
@@ -62,7 +63,8 @@ namespace CodexUsageMeter
         public int Version { get; set; }
         public LayoutModeSettings Expanded { get; set; }
         public LayoutModeSettings Widget { get; set; }
-        public LayoutSettings() { Version = 1; }
+        public List<SubscriptionEntry> Subscriptions { get; set; }
+        public LayoutSettings() { Version = 1; Subscriptions = new List<SubscriptionEntry>(); }
         public LayoutModeSettings Mode(bool compact) { return compact ? Widget : Expanded; }
         public LayoutSettings Copy() { return Parse(ToJson()); }
         public string ToJson() { return new JavaScriptSerializer().Serialize(this); }
@@ -79,6 +81,7 @@ namespace CodexUsageMeter
                     Sections = new List<string>(compact ? new[] { "short", "weekly", "credits" } :
                         new[] { "short", "weekly", "credits", "stats", "calendar" }) });
             mode.Cards.Add(new LayoutCardSettings { Id = "pc", Sections = new List<string>(new[] { "cpu", "gpu", "ram", "disk", "network" }) });
+            mode.Cards.Add(new LayoutCardSettings { Id = "subscriptions", Visible = false });
             return mode;
         }
         public static LayoutSettings Parse(string json)
@@ -92,6 +95,7 @@ namespace CodexUsageMeter
             if (parsed == null || parsed.Version != 1) return Defaults();
             parsed.Expanded = Normalize(parsed.Expanded, false);
             parsed.Widget = Normalize(parsed.Widget, true);
+            parsed.Subscriptions = SubscriptionEntry.Normalize(parsed.Subscriptions);
             return parsed;
         }
         private static LayoutModeSettings Normalize(LayoutModeSettings input, bool compact)
