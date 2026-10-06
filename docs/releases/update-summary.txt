@@ -1,1 +1,1 @@
-Fix account-switch startup detection when Codex is launched by the meter.
+Customize dashboard and widget cards with separate saved layouts, visibility, order, and sizes.

@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.0.10.0")]
-[assembly: AssemblyFileVersion("1.0.10.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace CodexUsageMeter
 {
@@ -36,6 +36,13 @@ namespace CodexUsageMeter
         [STAThread]
         public static int Main(string[] args)
         {
+            if (args.Length == 2 && args[0] == "--layout-reload-check") return LayoutRegressionTests.CheckReload(args[1]);
+            if (args.Length > 1 && args[0] == "--layout-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try { LayoutRegressionTests.Run(line => report.AppendLine(line), args.Length > 2 ? args[2] : null, Path.GetDirectoryName(Path.GetFullPath(args[1]))); File.WriteAllText(args[1], report.ToString()); return 0; }
+                catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
+            }
             if (args.Length == 1 && args[0] == "--lifetime-test-child") { Thread.Sleep(30000); return 0; }
             if (args.Length == 2 && args[0] == "--lifetime-test-host") return ProcessLifetimeTests.Host(args[1]);
             if (args.Length == 2 && args[0] == "--lifetime-self-test")
@@ -467,6 +474,8 @@ namespace CodexUsageMeter
         private HwndSource _windowSource;
         private Action _modalPrimaryAction;
         private Action _modalSecondaryAction;
+        private LayoutSettings _layouts;
+        private DashboardLayoutView _layoutView;
 
         public DashboardController(Window window)
         {
@@ -619,6 +628,16 @@ namespace CodexUsageMeter
             _modalPrimaryButton.Click += ModalPrimaryClick;
             _modalSecondaryButton.Click += ModalSecondaryClick;
 
+            _layouts = LayoutSettingsStore.Load();
+            _layoutView = new DashboardLayoutView(_window);
+            Find<Button>("LayoutEditButton").Click += delegate { EditLayout(); };
+            foreach (Border bar in new[] { _titleBar, _compactTitleBar })
+            {
+                ContextMenu menu = new ContextMenu();
+                MenuItem edit = new MenuItem { Header = "배치 편집" };
+                edit.Click += delegate { EditLayout(); };
+                menu.Items.Add(edit); bar.ContextMenu = menu;
+            }
             ApplyAccountCount(UserSettings.LoadAccountCount(), false);
 
             _trayIcon = CreateTrayIcon();
@@ -702,6 +721,7 @@ namespace CodexUsageMeter
             view.WeeklyUsageValue = Find<TextBlock>(prefix + "WeeklyUsageValue");
             view.WeeklyUsageGrid = Find<UniformGrid>(prefix + "WeeklyUsageGrid");
             view.UsageGrid = Find<UniformGrid>(prefix + "UsageGrid");
+            view.UsageGrid.SizeChanged += delegate { RefreshCalendarDetailIfNeeded(view); };
             view.UsageEmpty = Find<TextBlock>(prefix + "UsageEmpty");
             view.Status = Find<TextBlock>(prefix + "Status");
             string compactPrefix = "Compact" + prefix;
@@ -780,6 +800,7 @@ namespace CodexUsageMeter
 
         private void SetDisplayMode(bool compact)
         {
+            SaveVisibleCalendarOffsets();
             bool restoreMaximized = _customMaximized;
             if (restoreMaximized)
             {
@@ -802,6 +823,8 @@ namespace CodexUsageMeter
             }
 
             _compactMode = compact;
+            _accountPage = 0;
+            BindAccountPage();
             _displayModeInitialized = true;
             _compactLayout.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
             _expandedLayout.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
@@ -1317,6 +1340,32 @@ namespace CodexUsageMeter
             _settingsOverlay.Visibility = Visibility.Collapsed;
         }
 
+        private void EditLayout()
+        {
+            if (_switchingAccount || _updateChecking) return;
+            _settingsOverlay.Visibility = Visibility.Collapsed;
+            LayoutSettings before = _layouts.Copy();
+            int beforePage = _accountPage;
+            SaveVisibleCalendarOffsets();
+            LayoutEditor editor = new LayoutEditor(_layouts, _compactMode, _accountCount,
+                delegate(LayoutSettings draft) { SaveVisibleCalendarOffsets(); _layouts = draft; _accountPage = 0; BindAccountPage(); },
+                delegate(LayoutSettings saved) { LayoutSettingsStore.Save(saved); _layouts = saved; });
+            editor.Owner = _window;
+            editor.ShowDialog();
+            if (!editor.Saved) { _layouts = before; _accountPage = beforePage; }
+            BindAccountPage();
+        }
+
+        private int[] VisibleLayoutAccounts()
+        {
+            return _layouts == null ? Enumerable.Range(1, _accountCount).ToArray() : _layouts.Mode(_compactMode).VisibleAccounts(_accountCount);
+        }
+
+        private void ApplyLayout()
+        {
+            if (_layoutView != null) _layoutView.Apply(_layouts, new[] { _account1, _account2 }, _fontScale);
+        }
+
         private void FontDecreaseButtonClick(object sender, RoutedEventArgs e)
         {
             ApplyFontScale(_fontScale - 0.1, true);
@@ -1436,7 +1485,7 @@ namespace CodexUsageMeter
 
         private void CompactAccountPageButtonClick(object sender, RoutedEventArgs e)
         {
-            int pageCount = Math.Max(1, (_accountCount + 1) / 2);
+            int pageCount = Math.Max(1, (VisibleLayoutAccounts().Length + 1) / 2);
             SetAccountPage((_accountPage + 1) % pageCount);
         }
 
@@ -1466,9 +1515,7 @@ namespace CodexUsageMeter
             _accountPage = Math.Max(0, Math.Min(pageCount - 1, _accountPage));
             BindAccountPage();
             _accountCountValue.Text = _accountCount.ToString() + "개";
-            _compactAccountSummaryText.Text = "계정 " + _accountCount.ToString() + "개 · PC 상태";
             _accountCountBadgeText.Text = _accountCount.ToString() + " ACC";
-            _accountSummaryText.Text = "계정 " + _accountCount.ToString() + "개 한도 · 사용 기록 · 시스템 텔레메트리";
             _accountCountDecreaseButton.IsEnabled = _accountCount > 1;
             _accountCountIncreaseButton.IsEnabled = _accountCount < 4;
             if (persist)
@@ -1481,7 +1528,7 @@ namespace CodexUsageMeter
         private void SetAccountPage(int page)
         {
             SaveVisibleCalendarOffsets();
-            int pageCount = Math.Max(1, (_accountCount + 1) / 2);
+            int pageCount = Math.Max(1, (VisibleLayoutAccounts().Length + 1) / 2);
             _accountPage = Math.Max(0, Math.Min(pageCount - 1, page));
             BindAccountPage();
         }
@@ -1494,17 +1541,23 @@ namespace CodexUsageMeter
 
         private void BindAccountPage()
         {
-            BindAccountView(_account1, _accountPage * 2);
-            BindAccountView(_account2, _accountPage * 2 + 1);
-            int pageCount = Math.Max(1, (_accountCount + 1) / 2);
-            int start = _accountPage * 2 + 1;
-            int end = Math.Min(_accountCount, start + 1);
-            string pageText = "계정 " + start.ToString() + (end > start ? "–" + end.ToString() : String.Empty) + " / " + _accountCount.ToString();
+            int[] visible = VisibleLayoutAccounts();
+            int pageCount = Math.Max(1, (visible.Length + 1) / 2);
+            _accountPage = Math.Max(0, Math.Min(pageCount - 1, _accountPage));
+            int start = _accountPage * 2;
+            BindAccountView(_account1, start < visible.Length ? visible[start] - 1 : -1);
+            BindAccountView(_account2, start + 1 < visible.Length ? visible[start + 1] - 1 : -1);
+            string pageText = visible.Length == 0 ? "계정 숨김" : "계정 " + visible[start].ToString() +
+                (start + 1 < visible.Length ? ", " + visible[start + 1].ToString() : String.Empty) + " · " + (_accountPage + 1) + "/" + pageCount;
             _accountPageText.Text = pageText;
             _compactAccountPageButton.Content = pageText.Replace("계정 ", String.Empty);
             _accountPagePreviousButton.IsEnabled = _accountPage > 0;
             _accountPageNextButton.IsEnabled = _accountPage < pageCount - 1;
             _compactAccountPageButton.IsEnabled = pageCount > 1;
+            if (_compactAccountSummaryText != null) _compactAccountSummaryText.Text = "계정 " + visible.Length + "개 표시" +
+                (_layouts == null || _layouts.Mode(_compactMode).Card("pc").Visible ? " · PC 상태" : "");
+            if (_accountSummaryText != null) _accountSummaryText.Text = "표시 계정 " + visible.Length + "개 · 연결 칸 " + _accountCount + "개 · 내 배치";
+            ApplyLayout();
         }
 
         private void BindAccountView(AccountView view, int stateIndex)
@@ -1553,6 +1606,7 @@ namespace CodexUsageMeter
             _fontScaleValue.Text = Math.Round(_fontScale * 100.0).ToString("0") + "%";
             _fontDecreaseButton.IsEnabled = _fontScale > 1.0;
             _fontIncreaseButton.IsEnabled = _fontScale < 2.0;
+            ApplyLayout();
             _window.UpdateLayout();
             if (persist)
             {
@@ -1791,6 +1845,7 @@ namespace CodexUsageMeter
         {
             Brush accent = BrushFromHex(item.Accent);
             Border card = new Border();
+            card.Tag = item.Key;
             card.Style = _window.Resources["SubCard"] as Style;
             card.Padding = new Thickness(9.0, 7.0, 9.0, 7.0);
             card.Margin = new Thickness(2.5, 2.5, 2.5, 2.5);
@@ -3233,6 +3288,9 @@ namespace CodexUsageMeter
                 lines.Add("PASS ui: Codex relogin buttons, shared modal, responsive layout, saved settings, and app icon enabled");
                 UpdateUiRegressionTests.Run(lines.Add, null);
                 RateLimitRegressionTests.Run(lines.Add);
+                string layoutEvidence = Path.GetDirectoryName(Path.GetFullPath(resultPath));
+                Directory.CreateDirectory(layoutEvidence);
+                LayoutRegressionTests.Run(lines.Add, null, layoutEvidence);
 
                 UpdateClient.RunUpdaterSelfTest();
                 lines.Add("PASS updater: embedded helper replacement, SHA-256 verification, and rollback path enabled; current v" + UpdateClient.CurrentVersionText);

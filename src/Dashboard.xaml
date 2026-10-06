@@ -85,13 +85,13 @@
         <Border x:Name="TitleBar" Grid.Row="0" Background="#1A1A1A" BorderBrush="#333333" BorderThickness="0,0,0,1" Padding="16,0">
           <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <StackPanel VerticalAlignment="Center">
+            <Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,3,8,3"><StackPanel>
               <StackPanel Orientation="Horizontal"><Border Width="9" Height="9" CornerRadius="5" Background="#2F9E7E" Margin="0,0,8,0" VerticalAlignment="Center"/>
                 <TextBlock Text="CODEX METER" FontWeight="Bold" FontSize="17" Foreground="#F8FAFC"/>
                 <Border Background="#203B33" CornerRadius="8" Margin="9,0,0,0" Padding="7,2"><TextBlock x:Name="AccountCountBadgeText" Text="2 ACC" FontSize="9" FontWeight="Bold" Foreground="#8DE0C4"/></Border>
               </StackPanel>
               <TextBlock x:Name="AccountSummaryText" Text="계정 2개 한도 · 사용 기록 · 시스템 텔레메트리" Style="{StaticResource Muted}" Margin="17,2,0,0"/>
-            </StackPanel>
+            </StackPanel></Viewbox>
             <Button x:Name="CompactModeButton" Grid.Column="1" Content="위젯" Margin="0,0,8,0" VerticalAlignment="Center"/>
             <Button x:Name="RefreshButton" Grid.Column="2" Content="↻  갱신" Style="{StaticResource AccentButton}" Margin="0,0,8,0" VerticalAlignment="Center"/>
             <Button x:Name="TopmostButton" Grid.Column="3" Content="TOP" ToolTip="항상 위 켜기" Style="{StaticResource IconButton}" FontSize="8" Margin="0,0,6,0" VerticalAlignment="Center"/>
@@ -207,13 +207,13 @@
         <Border x:Name="CompactTitleBar" Grid.Row="0" Background="#1A1A1A" BorderBrush="#333333" BorderThickness="0,0,0,1" Padding="13,0">
           <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <StackPanel VerticalAlignment="Center">
+            <Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,3,8,3"><StackPanel>
               <StackPanel Orientation="Horizontal">
                 <Border Width="8" Height="8" CornerRadius="4" Background="#2F9E7E" Margin="0,0,7,0" VerticalAlignment="Center"/>
                 <TextBlock Text="CODEX METER" FontWeight="Bold" FontSize="14"/>
               </StackPanel>
               <TextBlock x:Name="CompactAccountSummaryText" Text="계정 2개 · PC 상태" Style="{StaticResource Muted}" FontSize="9" Margin="15,1,0,0"/>
-            </StackPanel>
+            </StackPanel></Viewbox>
             <Button x:Name="ExpandedModeButton" Grid.Column="1" Content="전체" Padding="7,5" Margin="0,0,3,0" VerticalAlignment="Center"/>
             <Button x:Name="CompactTopmostButton" Grid.Column="2" Content="TOP" ToolTip="항상 위 켜기" Style="{StaticResource IconButton}" FontSize="7" Width="26" Height="28" Margin="0,0,3,0" VerticalAlignment="Center"/>
             <Button x:Name="CompactSettingsButton" Grid.Column="3" Content="⚙" ToolTip="설정" Style="{StaticResource IconButton}" Width="26" Height="28" Margin="0,0,3,0" VerticalAlignment="Center"/>
@@ -318,11 +318,12 @@
   <Grid x:Name="SettingsOverlay" Background="#D9000000" Visibility="Collapsed" Panel.ZIndex="700">
     <Border MaxWidth="540" Margin="18" Padding="20" Background="#1B1B1B" BorderBrush="#454545" BorderThickness="1" CornerRadius="16" HorizontalAlignment="Center" VerticalAlignment="Center">
       <Grid>
-        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <StackPanel><TextBlock Text="설정" FontSize="19" FontWeight="Bold"/><TextBlock Text="화면 표시 · Windows 시작 · 수동 업데이트" Style="{StaticResource Muted}" Margin="0,4,0,0"/></StackPanel>
           <Button x:Name="SettingsCloseButton" Grid.Column="1" Content="×" Style="{StaticResource IconButton}" VerticalAlignment="Top"/>
         </Grid>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" CanContentScroll="False" Margin="0,8,0,0"><StackPanel>
         <Border Grid.Row="1" Style="{StaticResource SubCard}" Margin="0,14,0,0">
           <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel><TextBlock Text="로그인 시 시작" FontWeight="SemiBold"/><TextBlock Text="Windows 로그인 후 미터기를 자동으로 실행합니다." Style="{StaticResource Muted}" Margin="0,3,12,0" TextWrapping="Wrap"/></StackPanel>
@@ -349,7 +350,11 @@
             <Grid Grid.Row="1" Margin="0,10,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="UpdateStatusText" Text="수동 확인 대기 중" Style="{StaticResource Muted}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0"/><Button x:Name="UpdateCheckButton" Grid.Column="1" Content="업데이트 확인" Style="{StaticResource AccentButton}"/></Grid>
           </Grid>
         </Border>
-        <Button x:Name="SettingsDoneButton" Grid.Row="5" Content="완료" Style="{StaticResource AccentButton}" HorizontalAlignment="Right" MinWidth="86" Margin="0,12,0,0"/>
+        </StackPanel></ScrollViewer>
+        <Grid Grid.Row="2" Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Button x:Name="LayoutEditButton" Content="▦  배치 편집" HorizontalAlignment="Left" ToolTip="현재 화면의 카드 순서·크기·표시 항목을 변경합니다."/>
+          <Button x:Name="SettingsDoneButton" Grid.Column="1" Content="완료" Style="{StaticResource AccentButton}" MinWidth="86"/>
+        </Grid>
       </Grid>
     </Border>
   </Grid>
