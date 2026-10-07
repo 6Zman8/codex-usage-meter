@@ -6,6 +6,24 @@ using Microsoft.Win32;
 
 namespace CodexUsageMeter
 {
+    internal sealed class LayoutItemSettings
+    {
+        public string Id { get; set; }
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double Width { get; set; }
+        public double Height { get; set; }
+
+        internal bool Normalize()
+        {
+            if (String.IsNullOrWhiteSpace(Id) || Id.Length > 80 ||
+                new[] { X, Y, Width, Height }.Any(value => Double.IsNaN(value) || Double.IsInfinity(value)) || Width <= 0 || Height <= 0) return false;
+            Width = Math.Max(0.025, Math.Min(1, Width)); Height = Math.Max(0.02, Math.Min(1, Height));
+            X = Math.Max(0, Math.Min(1 - Width, X)); Y = Math.Max(0, Math.Min(1 - Height, Y));
+            return true;
+        }
+    }
+
     internal sealed class LayoutCardSettings
     {
         public string Id { get; set; }
@@ -13,8 +31,9 @@ namespace CodexUsageMeter
         public int Span { get; set; }
         public int Size { get; set; }
         public List<string> Sections { get; set; }
+        public List<LayoutItemSettings> ItemLayouts { get; set; }
 
-        public LayoutCardSettings() { Visible = true; Span = 1; Size = 1; Sections = new List<string>(); }
+        public LayoutCardSettings() { Visible = true; Span = 1; Size = 1; Sections = new List<string>(); ItemLayouts = new List<LayoutItemSettings>(); }
         public bool Shows(string section) { return Sections.Contains(section); }
         public void SetSection(string section, bool visible)
         {
@@ -107,6 +126,8 @@ namespace CodexUsageMeter
                 if (card == null || !defaults.Cards.Any(value => value.Id == card.Id) || cards.Any(value => value.Id == card.Id)) continue;
                 card.Span = Math.Max(1, Math.Min(3, card.Span));
                 card.Size = Math.Max(0, Math.Min(2, card.Size));
+                card.ItemLayouts = (card.ItemLayouts ?? new List<LayoutItemSettings>()).Where(item => item != null && item.Normalize())
+                    .GroupBy(item => item.Id, StringComparer.Ordinal).Select(group => group.First()).Take(128).ToList();
                 List<string> allowed = defaults.Card(card.Id).Sections;
                 card.Sections = card.Sections == null ? new List<string>(allowed) : card.Sections.Where(allowed.Contains).Distinct().ToList();
                 cards.Add(card);

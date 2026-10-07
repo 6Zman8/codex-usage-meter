@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.4.2.0")]
-[assembly: AssemblyFileVersion("1.4.2.0")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
 
 namespace CodexUsageMeter
 {
@@ -1927,6 +1927,7 @@ namespace CodexUsageMeter
             StackPanel namePanel = new StackPanel { Orientation = Orientation.Horizontal };
             Border accentLine = new Border { Width = 4.0, Height = 14.0, CornerRadius = new CornerRadius(2.0), Background = accent, Margin = new Thickness(0.0, 0.0, 7.0, 0.0) };
             TextBlock name = new TextBlock { Text = item.Name, FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
+            card.SetBinding(System.Windows.Automation.AutomationProperties.NameProperty, new System.Windows.Data.Binding("Text") { Source = name });
             namePanel.Children.Add(accentLine);
             namePanel.Children.Add(name);
             TextBlock value = new TextBlock { Text = item.Value, FontWeight = FontWeights.Bold, Margin = new Thickness(8.0, 0.0, 0.0, 0.0) };

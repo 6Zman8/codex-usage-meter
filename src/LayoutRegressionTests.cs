@@ -22,11 +22,15 @@ namespace CodexUsageMeter
             LayoutSettings loaded = LayoutSettings.Parse(File.ReadAllText(path));
             return loaded.Widget.Cards[0].Id == "pc" && loaded.Widget.VisibleAccounts(4).SequenceEqual(new[] { 3 }) &&
                 loaded.Widget.Card("pc").Span == 2 && loaded.Widget.Card("pc").Size == 2 &&
+                loaded.Widget.Card("pc").ItemLayouts.Any(item => item.Id == "cpu" && item.X == 0.25 && item.Width == 0.4) &&
                 loaded.Expanded.VisibleAccounts(4).Length == 4 ? 0 : 1;
         }
 
         public static void Run(Action<string> report, string previewDirectory, string evidenceDirectory)
         {
+            LayoutSettings itemLayout = LayoutSettings.Parse("{\"Version\":1,\"Widget\":{\"Columns\":1,\"Cards\":[{\"Id\":\"account1\",\"Visible\":true,\"Span\":1,\"Size\":1,\"ItemLayouts\":[{\"Id\":\"weekly\",\"X\":0.2,\"Y\":0.3,\"Width\":0.4,\"Height\":0.5}]}]}}");
+            Require(itemLayout.Copy().ToJson().Contains("\"X\":0.2"), "individual item positions and sizes did not survive save/reload");
+            VerifyContentLayout(report, previewDirectory);
             CheckAccountAlignmentAndFit(report, previewDirectory);
             SubscriptionRegressionTests.Run(report);
             AccountSubscriptionRegressionTests.Run(report);
@@ -39,6 +43,7 @@ namespace CodexUsageMeter
             edit.Widget.Columns = 2;
             edit.Widget.Card("pc").Span = 2;
             edit.Widget.Card("pc").Size = 2;
+            edit.Widget.Card("pc").ItemLayouts.Add(new LayoutItemSettings { Id = "cpu", X = 0.25, Y = 0.15, Width = 0.4, Height = 0.35 });
             edit.Widget.Move("pc", "account1");
             Require(saved.Widget.VisibleAccounts(4).Length == 4 && saved.Widget.Card("account3").Shows("short"), "Editing a draft mutated the original layout.");
             LayoutSettings loaded = LayoutSettings.Parse(edit.ToJson());
@@ -380,6 +385,147 @@ namespace CodexUsageMeter
         }
         private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 
+        private static void VerifyContentLayout(Action<string> report, string previewDirectory)
+        {
+            using (Fixture fixture = new Fixture())
+            {
+                foreach (bool compact in new[] { false, true })
+                {
+                    LayoutSettings settings = LayoutSettings.Defaults(); fixture.Layout(settings, compact); fixture.Render(1280, 820);
+                    DashboardLayoutView layout = (DashboardLayoutView)typeof(DashboardController).GetField("_layoutView", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(fixture.Controller);
+                    LayoutTile tile = layout.Tiles(compact).First(t => t.Settings.Id == "account1");
+                    Rect card = tile.Bounds;
+                    settings.Mode(compact).Card("account1").ItemLayouts = CardContentLayout.Capture(tile);
+                    LayoutItemSettings weekly = settings.Mode(compact).Card("account1").ItemLayouts.Single(i => i.Id == "weekly");
+                    weekly.X = 0.5; weekly.Y = 0.3; weekly.Width = 0.4; weekly.Height = 0.2;
+                    fixture.Layout(settings, compact); fixture.Render(1280, 820);
+                    LayoutContentItem element = tile.ContentItems().Single(i => i.Id == "weekly");
+                    LayoutItemSettings shown = CardContentLayout.Position(tile, element);
+                    Require(shown.X >= 0.499 && shown.X + shown.Width <= 0.901 && shown.Y >= 0.299 && shown.Y + shown.Height <= 0.501 && tile.Bounds == card,
+                        "custom item did not stay in its own bounds without resizing the card: " + shown.X + "," + shown.Y + "," + shown.Width + "," + shown.Height +
+                        " compact=" + compact + " element=" + element.Element.RenderSize + " transform=" + element.Element.RenderTransform.Value + " surface=" + tile.Surface.RenderSize + " content=" + tile.Content.RenderSize + " card=" + tile.Card.RenderSize);
+                    fixture.FontScale(2); fixture.Render(900, 620);
+                    shown = CardContentLayout.Position(tile, element);
+                    Require(shown.X >= 0 && shown.Y >= 0 && shown.X + shown.Width <= 1.001 && shown.Y + shown.Height <= 1.001, "custom item escaped a narrow card");
+                    LayoutTile pc = layout.Tiles(compact).Single(t => t.Settings.Id == "pc");
+                    settings.Mode(compact).Card("pc").ItemLayouts = CardContentLayout.Capture(pc);
+                    LayoutItemSettings cpu = settings.Mode(compact).Card("pc").ItemLayouts.Single(i => i.Id == "cpu");
+                    cpu.X = 0.1; cpu.Y = 0.55; cpu.Width = 0.35; cpu.Height = 0.25;
+                    fixture.Layout(settings, compact); fixture.Render(900, 620);
+                    shown = CardContentLayout.Position(pc, pc.ContentItems().Single(i => i.Id == "cpu"));
+                    Require(shown.X >= 0.099 && shown.X + shown.Width <= 0.451 && shown.Y >= 0.549 && shown.Y + shown.Height <= 0.801,
+                        "PC metric did not move and resize independently");
+                    LayoutItemSettings header = settings.Mode(compact).Card("account1").ItemLayouts.Single(i => i.Id == "header");
+                    header.X = 0.05; header.Y = 0.02; header.Width = 0.8; header.Height = 0.1;
+                    fixture.Layout(settings, compact); fixture.Render(900, 620);
+                    Button history = (Button)fixture.Window.FindName((compact ? "Compact" : "") + "Account1HistoryButton");
+                    Point hitPoint = history.TransformToAncestor(fixture.Root).Transform(new Point(history.ActualWidth / 2, history.ActualHeight / 2));
+                    DependencyObject hit = fixture.Root.InputHitTest(hitPoint) as DependencyObject;
+                    bool buttonHit = false; string hitPath = "";
+                    while (hit != null) { hitPath += hit.GetType().Name + " " + (hit is FrameworkElement ? ((FrameworkElement)hit).Name : "") + "/"; if (hit == history) { buttonHit = true; break; } hit = VisualTreeHelper.GetParent(hit); }
+                    if (!buttonHit && previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "content-hit-failure.png"));
+                    Require(buttonHit, "moving the header disconnected its visible button from hit testing: compact=" + compact + " point=" + hitPoint + " hit=" + hitPath);
+                    fixture.Page(1); fixture.Render(900, 620);
+                    Require(tile.ContentItems().All(i => i.Element.RenderTransform.Value.IsIdentity), "new account page inherited a previous account's item layout");
+                    settings.Mode(compact).Card("account1").ItemLayouts.Clear(); fixture.Layout(settings, compact); fixture.Render(900, 620);
+                    Require(tile.ContentItems().All(i => i.Element.RenderTransform.Value.IsIdentity), "reset did not restore automatic item layout");
+                    fixture.FontScale(1.5);
+                }
+                LayoutSettings original = LayoutSettings.Defaults(), previewed = null, accepted = null;
+                LayoutEditor editor = fixture.Editor(original, true, state => previewed = state, state => accepted = state);
+                RenderEditor(editor, root => {
+                    Descendants<Button>(root).Single(button => Convert.ToString(button.Content) == "항목 편집").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); root.UpdateLayout();
+                    Descendants<Button>(root).Single(button => Convert.ToString(button.Tag) == "item:weekly").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); root.UpdateLayout();
+                    LayoutContentAdorner adorner = Descendants<LayoutContentAdorner>(root).Single();
+                    Thumb move = Descendants<Thumb>(adorner).Single(thumb => Convert.ToString(thumb.Tag) == "move:weekly");
+                    LayoutTile tile = Descendants<CardLayoutPanel>(root).Where(panel => panel.IsVisible).SelectMany(panel => panel.Tiles).Single(t => t.Settings.Id == "account1");
+                    LayoutItemSettings before = CardContentLayout.Position(tile, tile.ContentItems().Single(i => i.Id == "weekly"));
+                    DragItem(root, move, 18, 0);
+                    LayoutItemSettings moved = previewed.Widget.Card("account1").ItemLayouts.Single(item => item.Id == "weekly");
+                    Require(moved.X > before.X && Math.Abs(moved.Width - before.Width) < 0.001 && original.Widget.Card("account1").ItemLayouts.Count == 0,
+                        "drag did not move only the selected item in the draft");
+                    Thumb resize = Descendants<Thumb>(adorner).Single(thumb => Convert.ToString(thumb.Tag) == "resize:weekly");
+                    LayoutItemSettings afterMove = CardContentLayout.Position(tile, tile.ContentItems().Single(i => i.Id == "weekly"));
+                    Require(Math.Abs(afterMove.Width - moved.Width) < 0.001 && Math.Abs(afterMove.Height - moved.Height) < 0.001,
+                        "moving changed actual size: saved=" + moved.Width + "," + moved.Height + " actual=" + afterMove.Width + "," + afterMove.Height);
+                    double previousWidth = moved.Width;
+                    DragItem(root, resize, -10, -10);
+                    LayoutItemSettings resized = previewed.Widget.Card("account1").ItemLayouts.Single(item => item.Id == "weekly");
+                    Require(resized.Width < previousWidth && resized.Height < moved.Height && previewed.Expanded.Card("account1").ItemLayouts.Count == 0 &&
+                        previewed.Widget.Card("account2").ItemLayouts.Count == 0, "resize changed unrelated card/mode or failed to shrink: before=" + moved.Width + "," + moved.Height + " after=" + resized.Width + "," + resized.Height);
+                    Rect marker = move.TransformToAncestor(root).TransformBounds(new Rect(move.RenderSize));
+                    Rect actual = tile.ContentItems().Single(i => i.Id == "weekly").Element.TransformToAncestor(root).TransformBounds(
+                        new Rect(tile.ContentItems().Single(i => i.Id == "weekly").Element.RenderSize));
+                    Require(Math.Abs(marker.Left - actual.Left) < 1 && Math.Abs(marker.Width - actual.Width) < 1, "item drag handle is detached from rendered content");
+                    Require(!tile.Content.IsHitTestVisible, "item editor exposes live dashboard interactions");
+                    DragItem(root, move, -10000, -10000);
+                    LayoutItemSettings edge = CardContentLayout.Position(tile, tile.ContentItems().Single(i => i.Id == "weekly"));
+                    Require(edge.X < 0.001 && edge.Y < 0.001, "item movement escaped the top-left card boundary");
+                    DragItem(root, resize, 10000, 10000);
+                    edge = CardContentLayout.Position(tile, tile.ContentItems().Single(i => i.Id == "weekly"));
+                    Require(edge.X + edge.Width <= 1.001 && edge.Y + edge.Height <= 1.001, "resizing escaped the card boundary");
+                    DragItem(root, resize, -10000, -10000);
+                    edge = CardContentLayout.Position(tile, tile.ContentItems().Single(i => i.Id == "weekly"));
+                    Require(edge.Width >= 0.024 && edge.Height >= 0.019, "resizing made an item disappear");
+                    editor.EditItem(resized.Id, resized.X, resized.Y, resized.Width, resized.Height); root.UpdateLayout();
+                }, previewDirectory == null ? null : Path.Combine(previewDirectory, "content-editor-widget.png"));
+                Require(editor.TrySave() && accepted.Widget.Card("account1").ItemLayouts.Count > 0, "custom item settings were not saved");
+                editor.Close();
+                Require(fixture.First.CompactContainer.IsHitTestVisible, "closing item editor did not restore interaction");
+                Require(((Button)fixture.Window.FindName("CompactAccount1HistoryButton")).IsHitTestVisible,
+                    "closing the editor left a dashboard button disabled by its former parent");
+                fixture.Layout(accepted, true); fixture.Render(460, 780);
+                if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "content-custom-widget.png"));
+                LayoutSettings restored = null;
+                LayoutEditor cancel = fixture.Editor(accepted, true, state => restored = state, state => { throw new InvalidOperationException("cancel saved"); });
+                RenderEditor(cancel, root => {
+                    cancel.SetItemEditing(true); root.UpdateLayout();
+                    cancel.EditItem("weekly", 0.75, 0.65, 0.2, 0.25); root.UpdateLayout();
+                    Descendants<Button>(root).Single(button => Convert.ToString(button.Content) == "카드 안쪽 모두 원래대로").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); root.UpdateLayout();
+                    Require(cancel.Draft.Widget.Card("account1").ItemLayouts.Count == 0, "card item reset did not clear custom positions");
+                }, null, 780, 540);
+                cancel.Close();
+                Require(restored.Widget.Card("account1").ItemLayouts.Count == accepted.Widget.Card("account1").ItemLayouts.Count,
+                    "cancel did not restore previously saved item positions");
+                LayoutSettings devices = LayoutSettings.Defaults(); devices.Expanded.Card("pc").SetSection("gpu", false);
+                LayoutEditor pcEditor = fixture.Editor(devices, false, state => { }, state => { });
+                RenderEditor(pcEditor, root => {
+                    pcEditor.SetItemEditing(true); root.UpdateLayout();
+                    foreach (bool visible in new[] { false, true })
+                    {
+                        CheckBox weekly = Descendants<CheckBox>(root).Single(box => Convert.ToString(box.Content) == "주간 한도");
+                        weekly.IsChecked = visible; weekly.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent)); root.UpdateLayout();
+                        Require(Descendants<Button>(root).Any(button => Convert.ToString(button.Tag) == "item:weekly") == visible,
+                            "section visibility changed without updating the item selection list");
+                    }
+                    Descendants<Button>(root).Single(button => Convert.ToString(button.Content) == "PC 상태").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    pcEditor.SetItemEditing(true); root.UpdateLayout();
+                    Thumb cpuHandle = Descendants<Thumb>(root).Single(thumb => Convert.ToString(thumb.Tag) == "move:cpu");
+                    fixture.UpdatePc(true); root.UpdateLayout();
+                    DragItem(root, cpuHandle, 4, 8);
+                    Require(pcEditor.Draft.Expanded.Card("pc").ItemLayouts.Any(item => item.Id == "cpu"), "recreated PC metric could not be dragged");
+                    CheckBox gpu = Descendants<CheckBox>(root).Single(box => Convert.ToString(box.Content) == "GPU");
+                    gpu.IsChecked = true; gpu.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent)); root.UpdateLayout();
+                    Require(Descendants<Button>(root).Any(button => Convert.ToString(button.Tag) == "item:gpu:1"), "a new device is missing from the item selection list");
+                }, previewDirectory == null ? null : Path.Combine(previewDirectory, "content-editor-pc.png"));
+                pcEditor.Close();
+            }
+            report("PASS content: custom positions and sizes fit card bounds, survive viewport/font changes and reset independently");
+            report("PASS content: routed item move/resize, aligned handles, draft isolation, save, cancel and restored interaction");
+        }
+
+        private static void DragItem(Grid root, Thumb handle, double dx, double dy)
+        {
+            Point start = handle.TransformToAncestor(root).Transform(new Point());
+            handle.RaiseEvent(new DragStartedEventArgs(0, 0) { RoutedEvent = Thumb.DragStartedEvent });
+            foreach (double part in new[] { 0.25, 0.5, 1.0, 1.0 })
+            {
+                Point pointer = root.TransformToDescendant(handle).Transform(new Point(start.X + dx * part, start.Y + dy * part));
+                handle.RaiseEvent(new DragDeltaEventArgs(pointer.X, pointer.Y) { RoutedEvent = Thumb.DragDeltaEvent }); root.UpdateLayout();
+            }
+            handle.RaiseEvent(new DragCompletedEventArgs(dx, dy, false) { RoutedEvent = Thumb.DragCompletedEvent });
+        }
+
         internal static void VerifyHistoryCards(UsageHistoryStore store, string key, string evidenceRoot, Action<string> report)
         {
             using (Fixture fixture = new Fixture())
@@ -405,6 +551,18 @@ namespace CodexUsageMeter
                     fixture.Call("BindAccountPage"); fixture.Render(width, height);
                     Require(tiles[0].History == history, "a routine refresh removed the card history");
                     fixture.Capture(Path.Combine(evidenceRoot, compact ? "dashboard-history-widget.png" : "dashboard-history-expanded.png"));
+                    layout.ShowHistory(1, compact, new UsageHistoryView(store, key, delegate { layout.HideHistory(1, compact); }));
+                    LayoutEditor editor = fixture.Editor(LayoutSettings.Defaults(), compact, state => { }, state => { });
+                    RenderEditor(editor, root => {
+                        editor.SetItemEditing(true); root.UpdateLayout();
+                        Require(tiles[0].History == history && history.Visibility == Visibility.Collapsed && tiles[0].Content.IsVisible,
+                            "item editing discarded the open history instead of temporarily hiding it");
+                        Descendants<Button>(root).Single(button => Convert.ToString(button.Content) == "계정 2").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); root.UpdateLayout();
+                        Require(Descendants<Button>(root).Any(button => Convert.ToString(button.Tag) == "item:weekly"), "another card's history prevented item selection");
+                    }, null);
+                    editor.Close(); fixture.Render(width, height);
+                    Require(tiles[0].History == history && history.IsVisible && tiles[0].Content.Visibility == Visibility.Collapsed,
+                        "closing the editor did not restore the previous history view");
                     fixture.FontScale(2); fixture.Render(width, height);
                     Button back = (Button)typeof(UsageHistoryView).GetField("_backButton", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(history);
                     Point center = back.TranslatePoint(new Point(back.ActualWidth / 2, back.ActualHeight / 2), fixture.Root);
@@ -464,12 +622,7 @@ namespace CodexUsageMeter
                 Root.SetValue(Control.FontFamilyProperty, Window.FontFamily); Root.SetValue(Control.ForegroundProperty, Window.Foreground);
                 Call("CaptureFontTargets", Root);
                 FontScale(1.5);
-                SystemSnapshot system = new SystemSnapshot { CpuPercent = 28, MemoryPercent = 63, MemoryUsedGb = 20, MemoryTotalGb = 32 };
-                system.Gpus.Add(new GpuSnapshot { Key = "gpu:0", Name = "예시 GPU", Percent = 41 });
-                system.Disks.Add(new DiskSnapshot { Key = "disk:0", Name = "디스크 0", Percent = 12, Detail = "예시 SSD" });
-                system.Networks.Add(new NetworkSnapshot { Key = "network:0", Name = "네트워크", Connected = true, Percent = 4 });
-                object items = typeof(DashboardController).GetMethod("BuildPerformanceItems", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { system });
-                Call("UpdatePerformanceCards", items);
+                UpdatePc(false);
                 foreach (string prefix in new[] { "Cpu", "Gpu", "Memory", "Disk" })
                 {
                     ((TextBlock)Window.FindName("Compact" + prefix + "Value")).Text = "28%";
@@ -486,6 +639,16 @@ namespace CodexUsageMeter
                 Call("BindAccountPage");
             }
             internal void Page(int page) { Call("SetAccountPage", page); }
+            internal void UpdatePc(bool extraGpu)
+            {
+                SystemSnapshot system = new SystemSnapshot { CpuPercent = 28, MemoryPercent = 63, MemoryUsedGb = 20, MemoryTotalGb = 32 };
+                system.Gpus.Add(new GpuSnapshot { Key = "gpu:0", Name = "예시 GPU", Percent = 41 });
+                if (extraGpu) system.Gpus.Add(new GpuSnapshot { Index = 1, Key = "gpu:1", Name = "추가 GPU", Percent = 12 });
+                system.Disks.Add(new DiskSnapshot { Key = "disk:0", Name = "디스크 0", Percent = 12, Detail = "예시 SSD" });
+                system.Networks.Add(new NetworkSnapshot { Key = "network:0", Name = "네트워크", Connected = true, Percent = 4 });
+                object items = typeof(DashboardController).GetMethod("BuildPerformanceItems", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { system });
+                Call("UpdatePerformanceCards", items);
+            }
             internal LayoutEditor Editor(LayoutSettings settings, bool compact, Action<LayoutSettings> preview, Action<LayoutSettings> save)
             {
                 _surface.RootVisual = null;
@@ -504,6 +667,7 @@ namespace CodexUsageMeter
             internal void FontScale(double scale) { Call("ApplyFontScale", scale, false); }
             internal void Render(int width, int height)
             {
+                if (Window.Content == Root) { Window.Content = null; _surface.RootVisual = Root; }
                 _width = width; _height = height;
                 Root.Measure(new Size(width, height)); Root.Arrange(new Rect(0, 0, width, height)); Root.UpdateLayout();
             }

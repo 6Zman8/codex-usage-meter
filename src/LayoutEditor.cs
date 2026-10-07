@@ -25,7 +25,7 @@ namespace CodexUsageMeter
         private readonly TextBlock _status = new TextBlock { TextWrapping = TextWrapping.Wrap };
         private readonly TextBlock _previewSize = new TextBlock();
         private readonly Dictionary<Border, LayoutCardAdorner> _adorners = new Dictionary<Border, LayoutCardAdorner>();
-        private readonly Dictionary<UIElement, bool> _previewHitTests = new Dictionary<UIElement, bool>();
+        private readonly Dictionary<UIElement, object> _previewHitTests = new Dictionary<UIElement, object>();
         private readonly Dictionary<Button, bool> _buttonFocus = new Dictionary<Button, bool>();
         private readonly double _originalWidth, _originalHeight;
         private readonly bool _originalCompact;
@@ -33,6 +33,11 @@ namespace CodexUsageMeter
         private bool _compact, _restored, _refreshing, _addedResources;
         private string _selected;
         private Button _expandedTab, _widgetTab;
+        private bool _editingItems;
+        private string _selectedItem;
+        private LayoutContentAdorner _contentAdorner;
+        private LayoutTile _contentTile;
+        private string _itemListSignature;
         internal bool Saved { get; private set; }
         internal LayoutSettings Draft { get { return _draft; } }
         internal bool Compact { get { return _compact; } }
@@ -67,8 +72,7 @@ namespace CodexUsageMeter
             Grid middle = new Grid(); Grid.SetRow(middle, 1); root.Children.Add(middle);
             middle.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(242) }); middle.ColumnDefinitions.Add(new ColumnDefinition());
             Border sidebar = new Border { Background = Brush("#1D1D20"), BorderBrush = Brush("#35353A"), BorderThickness = new Thickness(0, 0, 1, 0), Padding = new Thickness(16) };
-            _inspector.Width = 209;
-            sidebar.Child = new Viewbox { Child = _inspector, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Left }; middle.Children.Add(sidebar);
+            sidebar.Child = new ScrollViewer { Content = _inspector, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }; middle.Children.Add(sidebar);
             Grid stage = new Grid { Margin = new Thickness(18, 12, 18, 12) }; Grid.SetColumn(stage, 1); middle.Children.Add(stage);
             stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); stage.RowDefinitions.Add(new RowDefinition()); stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             DockPanel stageTools = new DockPanel { Margin = new Thickness(0, 0, 0, 10) }; stage.Children.Add(stageTools);
@@ -80,7 +84,7 @@ namespace CodexUsageMeter
             Grid.SetRow(previewFrame, 1); stage.Children.Add(previewFrame);
             Viewbox zoom = new Viewbox { Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, Child = _previewDecorator };
             previewFrame.Child = zoom;
-            TextBlock guide = new TextBlock { Text = "카드를 눌러 선택 · 위쪽을 끌어 이동 · 오른쪽 아래를 끌어 크기 조절\n폭은 열 단위, 높이는 3단계로 조절합니다. 모든 카드가 창 안에 맞춰 표시됩니다.", Foreground = Brush("#A4A4AE"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0), FontSize = 12 };
+            TextBlock guide = new TextBlock { Text = "카드: 위쪽을 끌어 이동 · 모서리로 크기 조절\n항목 편집: 내용물을 끌어 이동 · 선택한 항목의 모서리로 크기 조절", Foreground = Brush("#A4A4AE"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0), FontSize = 12 };
             Grid.SetRow(guide, 2); stage.Children.Add(guide);
             Border footer = new Border { Background = Brush("#1E1E21"), Padding = new Thickness(18, 10, 18, 10) }; Grid.SetRow(footer, 2); root.Children.Add(footer);
             DockPanel actions = new DockPanel(); footer.Child = actions;
@@ -94,6 +98,7 @@ namespace CodexUsageMeter
                 if (!_dashboardRoot.Resources.MergedDictionaries.Contains(dashboard.Resources)) { _dashboardRoot.Resources.MergedDictionaries.Add(dashboard.Resources); _addedResources = true; }
                 _dashboardRoot.SetValue(Control.ForegroundProperty, dashboard.Foreground); _dashboardRoot.SetValue(Control.FontFamilyProperty, dashboard.FontFamily);
                 _previewDecorator.Child = _dashboardRoot;
+                _layoutView.SetEditing(true);
                 Closed += delegate { RestoreDashboard(); if (!Saved) _preview(_original.Copy(), _originalCompact, null); };
                 _dashboardRoot.LayoutUpdated += DashboardLayoutUpdated;
                 _selected = Choices().First().Id; SetViewport(0); RefreshInspector(); Preview();
@@ -109,18 +114,20 @@ namespace CodexUsageMeter
         {
             if (_restored) return; _restored = true;
             _dashboardRoot.LayoutUpdated -= DashboardLayoutUpdated;
+            RemoveContentAdorner();
             foreach (LayoutCardAdorner adorner in _adorners.Values) { AdornerLayer layer = VisualTreeHelper.GetParent(adorner) as AdornerLayer; if (layer != null) layer.Remove(adorner); }
-            foreach (KeyValuePair<UIElement, bool> entry in _previewHitTests) entry.Key.IsHitTestVisible = entry.Value;
+            foreach (KeyValuePair<UIElement, object> entry in _previewHitTests) RestoreValue(entry.Key, UIElement.IsHitTestVisibleProperty, entry.Value);
             foreach (KeyValuePair<Button, bool> entry in _buttonFocus) entry.Key.Focusable = entry.Value;
             _previewDecorator.Child = null; _dashboardRoot.Width = _originalWidth; _dashboardRoot.Height = _originalHeight;
             if (_addedResources) _dashboardRoot.Resources.MergedDictionaries.Remove(_dashboard.Resources);
             RestoreValue(_dashboardRoot, Control.ForegroundProperty, _originalForeground); RestoreValue(_dashboardRoot, Control.FontFamilyProperty, _originalFont);
             _dashboard.Content = _dashboardRoot;
+            _layoutView.SetEditing(false);
         }
         private static void RestoreValue(DependencyObject target, DependencyProperty property, object value)
         { if (value == DependencyProperty.UnsetValue) target.ClearValue(property); else target.SetValue(property, value); }
         internal void SwitchMode(bool compact)
-        { _compact = compact; SetViewport(0); RefreshInspector(); Preview(); FocusSelectedCard(); }
+        { _compact = compact; _selectedItem = null; SetViewport(0); Preview(); RefreshInspector(); FocusSelectedCard(); }
         internal void MoveCard(string id, string target)
         { Mode.Move(id, target); _selected = id; RefreshInspector(); Preview(); }
         internal void ResizeCard(string id, int span, int size)
@@ -128,6 +135,35 @@ namespace CodexUsageMeter
             LayoutCardSettings card = Mode.Card(id); card.Span = Math.Max(1, Math.Min(3, span)); card.Size = Math.Max(0, Math.Min(2, size));
             if (card.Span > Mode.Columns) { Mode.Columns = card.Span; SetViewport(2); }
             _selected = id; RefreshInspector(); Preview();
+        }
+
+        internal void SetItemEditing(bool enabled)
+        {
+            _editingItems = enabled; _selectedItem = null;
+            Preview(); RefreshInspector();
+        }
+
+        internal void EditItem(string id, double x, double y, double width, double height)
+        {
+            LayoutTile tile = SelectedTile(); if (tile == null) return;
+            LayoutCardSettings card = Mode.Card(_selected);
+            if (card.ItemLayouts.Count == 0) card.ItemLayouts = CardContentLayout.Capture(tile);
+            var value = new LayoutItemSettings { Id = id, X = x, Y = y, Width = width, Height = height };
+            if (!value.Normalize()) return;
+            card.ItemLayouts.RemoveAll(item => item.Id == id); card.ItemLayouts.Add(value); _selectedItem = id;
+            Preview();
+        }
+
+        private LayoutTile SelectedTile()
+        { return _layoutView.Tiles(_compact).FirstOrDefault(tile => tile.Settings != null && tile.Settings.Id == _selected && tile.Card.IsVisible); }
+
+        private void SelectItem(string id) { if (_selectedItem == id) return; _selectedItem = id; RefreshInspector(); RefreshAdorners(); }
+
+        private void ResetItems(bool all)
+        {
+            LayoutCardSettings card = Mode.Card(_selected);
+            if (all) card.ItemLayouts.Clear(); else card.ItemLayouts.RemoveAll(item => item.Id == _selectedItem);
+            Preview(); RefreshInspector();
         }
         private IEnumerable<LayoutCardSettings> Choices()
         { return Mode.Cards.Where(card => !card.Id.StartsWith("account") || Int32.Parse(card.Id.Substring(7)) <= _accountCount); }
@@ -154,6 +190,7 @@ namespace CodexUsageMeter
         private void RefreshInspector()
         {
             _inspector.Children.Clear();
+            _itemListSignature = null;
             Label("카드 표시", 15);
             UniformGrid cards = new UniformGrid { Columns = 2 }; _inspector.Children.Add(cards);
             foreach (LayoutCardSettings card in Choices())
@@ -162,7 +199,7 @@ namespace CodexUsageMeter
                 CheckBox visible = new CheckBox { IsChecked = card.Visible, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0), ToolTip = "카드 표시/숨김" };
                 visible.Click += delegate { card.Visible = visible.IsChecked == true; _selected = card.Id; RefreshInspector(); Preview(); FocusSelectedCard(); };
                 row.Children.Add(visible);
-                Button select = MakeButton(CardName(card.Id), delegate { _selected = card.Id; RefreshInspector(); Preview(); FocusSelectedCard(); });
+                Button select = MakeButton(CardName(card.Id), delegate { _selected = card.Id; Preview(); RefreshInspector(); FocusSelectedCard(); });
                 select.Padding = new Thickness(5, 5, 5, 5);
                 select.HorizontalContentAlignment = HorizontalAlignment.Left; select.Background = Brush(card.Id == _selected ? "#255B4C" : "#292929"); row.Children.Add(select); cards.Children.Add(row);
             }
@@ -172,6 +209,26 @@ namespace CodexUsageMeter
             Label(CardName(_selected) + " 조절", 15);
             Label("폭", 12); Segments(new[] { "1칸", "2칸", "3칸" }, selected.Span - 1, n => ResizeCard(selected.Id, n + 1, selected.Size));
             Label("높이", 12); Segments(new[] { "짧게", "보통", "길게" }, selected.Size, n => ResizeCard(selected.Id, selected.Span, n));
+            Button editItems = MakeButton(_editingItems ? "카드 편집으로" : "항목 편집", delegate { SetItemEditing(!_editingItems); });
+            editItems.Background = Brush(_editingItems ? "#255B4C" : "#292929"); _inspector.Children.Add(editItems);
+            if (_editingItems)
+            {
+                Label("안쪽 항목", 13);
+                LayoutTile tile = SelectedTile();
+                var items = tile == null ? new List<LayoutContentItem>() : CardContentLayout.VisibleItems(tile);
+                _itemListSignature = ItemListSignature(items);
+                if (!items.Any(item => item.Id == _selectedItem)) _selectedItem = items.Count == 0 ? null : items[0].Id;
+                foreach (LayoutContentItem item in items)
+                {
+                    string id = item.Id;
+                    Button choice = MakeButton(item.Label, delegate { SelectItem(id); }); choice.Tag = "item:" + id;
+                    choice.Padding = new Thickness(7, 4, 7, 4); choice.HorizontalContentAlignment = HorizontalAlignment.Left;
+                    choice.Background = Brush(id == _selectedItem ? "#255B4C" : "#292929"); _inspector.Children.Add(choice);
+                }
+                _inspector.Children.Add(new TextBlock { Text = "항목을 끌어 이동하고 ◢로 크기를 바꾸세요. 겹친 항목은 이 목록에서 선택할 수 있습니다.", TextWrapping = TextWrapping.Wrap, Foreground = Brush("#B5B5BF"), FontSize = 11, Margin = new Thickness(0, 5, 0, 5) });
+                _inspector.Children.Add(MakeButton("선택 항목 원래대로", delegate { ResetItems(false); }));
+                _inspector.Children.Add(MakeButton("카드 안쪽 모두 원래대로", delegate { ResetItems(true); }));
+            }
             string[] keys = selected.Id == "pc" ? new[] { "cpu", "gpu", "ram", "disk", "network" } : (_compact ? new[] { "short", "weekly", "credits" } : new[] { "short", "weekly", "credits", "stats", "calendar" });
             string[] names = selected.Id == "pc" ? new[] { "CPU", "GPU", "RAM", "디스크", "네트워크" } : new[] { "5시간 한도", "주간 한도", "초기화권", "사용 통계", "달력·7일" };
             UniformGrid sections = new UniformGrid { Columns = 2, Margin = new Thickness(0, 4, 0, 0) }; _inspector.Children.Add(sections);
@@ -202,6 +259,7 @@ namespace CodexUsageMeter
             {
                 foreach (LayoutTile tile in _layoutView.Tiles(_compact))
                 {
+                    BlockPreviewHitTest(tile.Content);
                     LayoutCardAdorner adorner;
                     if (_adorners.TryGetValue(tile.Card, out adorner) && VisualTreeHelper.GetParent(adorner) == null) _adorners.Remove(tile.Card);
                     if (!_adorners.TryGetValue(tile.Card, out adorner))
@@ -213,7 +271,21 @@ namespace CodexUsageMeter
                     adorner.Refresh(tile.Settings != null && tile.Settings.Id == _selected);
                 }
                 foreach (KeyValuePair<Border, LayoutCardAdorner> entry in _adorners)
-                    entry.Value.Visibility = entry.Key.IsVisible && entry.Key.ActualWidth > 0 ? Visibility.Visible : Visibility.Collapsed;
+                    entry.Value.Visibility = !_editingItems && entry.Key.IsVisible && entry.Key.ActualWidth > 0 ? Visibility.Visible : Visibility.Collapsed;
+                LayoutTile selectedTile = _editingItems ? SelectedTile() : null;
+                if (_editingItems && _itemListSignature != ItemListSignature(selectedTile == null ? new List<LayoutContentItem>() : CardContentLayout.VisibleItems(selectedTile)))
+                    RefreshInspector();
+                if (selectedTile != _contentTile) RemoveContentAdorner();
+                if (selectedTile != null)
+                {
+                    if (_contentAdorner == null)
+                    {
+                        _contentTile = selectedTile;
+                        _contentAdorner = new LayoutContentAdorner(selectedTile, _editorRoot, SelectItem, EditItem);
+                        _previewDecorator.AdornerLayer.Add(_contentAdorner);
+                    }
+                    _contentAdorner.Refresh(_selectedItem);
+                }
                 foreach (Button button in Visuals<Button>(_dashboardRoot))
                 {
                     if (button.Name.Contains("AccountPage")) continue;
@@ -228,8 +300,19 @@ namespace CodexUsageMeter
         }
         private void BlockPreviewHitTest(UIElement element)
         {
-            if (!_previewHitTests.ContainsKey(element)) _previewHitTests.Add(element, element.IsHitTestVisible);
+            if (!_previewHitTests.ContainsKey(element)) _previewHitTests.Add(element, element.ReadLocalValue(UIElement.IsHitTestVisibleProperty));
             element.IsHitTestVisible = false;
+        }
+        private static string ItemListSignature(IEnumerable<LayoutContentItem> items)
+        { return String.Join("|", items.Select(item => item.Id + ":" + item.Label)); }
+        private void RemoveContentAdorner()
+        {
+            if (_contentAdorner != null)
+            {
+                AdornerLayer layer = VisualTreeHelper.GetParent(_contentAdorner) as AdornerLayer;
+                if (layer != null) layer.Remove(_contentAdorner);
+            }
+            _contentAdorner = null; _contentTile = null;
         }
         private static IEnumerable<T> Visuals<T>(DependencyObject parent) where T : DependencyObject
         {

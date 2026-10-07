@@ -15,6 +15,8 @@ namespace CodexUsageMeter
         public Grid Content;
         public Grid Surface;
         public UsageHistoryView History;
+        public bool ShowingHistory { get { return History != null && History.Visibility == Visibility.Visible; } }
+        public Func<List<LayoutContentItem>> ContentItems;
         public LayoutCardSettings Settings;
         public double MinimumHeight;
         public Rect Bounds;
@@ -38,6 +40,7 @@ namespace CodexUsageMeter
             card.Child = contentHost;
             Viewbox host = new Viewbox { Child = card, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
             LayoutTile tile = new LayoutTile { Card = card, Host = host, Content = content, Surface = surface };
+            surface.LayoutUpdated += delegate { CardContentLayout.Apply(tile); };
             Tiles.Add(tile); Children.Add(host); return tile;
         }
         protected override Size MeasureOverride(Size available)
@@ -87,11 +90,14 @@ namespace CodexUsageMeter
                     double innerWidth = Math.Max(1, tile.Card.Width - padding.Left - padding.Right - border.Left - border.Right);
                     double innerHeight = Math.Max(1, tile.Card.Height - padding.Top - padding.Bottom - border.Top - border.Bottom);
                     tile.Content.Width = innerWidth;
+                    bool custom = tile.Settings.ItemLayouts.Count > 0;
+                    tile.Content.VerticalAlignment = custom ? VerticalAlignment.Top : VerticalAlignment.Stretch;
                     tile.Content.Height = Double.NaN;
                     tile.Content.Measure(new Size(innerWidth, Double.PositiveInfinity));
                     tile.Content.Height = Math.Max(innerHeight, tile.Content.DesiredSize.Height);
                     tile.Surface.Width = innerWidth;
-                    tile.Surface.Height = tile.History == null ? tile.Content.Height : Math.Max(170, innerHeight);
+                    tile.Surface.Height = tile.ShowingHistory ? Math.Max(170, innerHeight) : custom ? innerHeight : tile.Content.Height;
+                    tile.Surface.ClipToBounds = custom;
                     tile.Host.Visibility = Visibility.Visible;
                     tile.Host.Measure(tile.Bounds.Size);
                 }
@@ -102,7 +108,10 @@ namespace CodexUsageMeter
         }
         protected override Size ArrangeOverride(Size finalSize)
         {
-            foreach (LayoutTile tile in Tiles.Where(tile => tile.Host.Visibility == Visibility.Visible)) tile.Host.Arrange(tile.Bounds);
+            foreach (LayoutTile tile in Tiles.Where(tile => tile.Host.Visibility == Visibility.Visible))
+            {
+                tile.Host.Arrange(tile.Bounds); CardContentLayout.Apply(tile);
+            }
             return finalSize;
         }
     }
@@ -116,6 +125,7 @@ namespace CodexUsageMeter
         private readonly TextBlock[] _empty = new TextBlock[2];
         private readonly Grid[] _compactQuotas = new Grid[2];
         private readonly Viewbox[] _compactQuotaHosts = new Viewbox[2];
+        private bool _editing;
 
         internal IEnumerable<LayoutTile> Tiles(bool compact) { return _panels[compact ? 1 : 0].Tiles; }
 
@@ -123,7 +133,8 @@ namespace CodexUsageMeter
         {
             HideHistory(slot, compact);
             LayoutTile tile = _tiles[compact ? 1 : 0, slot];
-            tile.History = history; tile.Content.Visibility = Visibility.Collapsed;
+            tile.History = history; tile.Content.Visibility = _editing ? Visibility.Visible : Visibility.Collapsed;
+            history.Visibility = _editing ? Visibility.Collapsed : Visibility.Visible;
             tile.Surface.Children.Add(history); _panels[compact ? 1 : 0].InvalidateMeasure();
         }
 
@@ -138,6 +149,18 @@ namespace CodexUsageMeter
         internal void ReloadHistory()
         {
             foreach (LayoutTile tile in _tiles) if (tile.History != null) tile.History.Reload();
+        }
+
+        internal void SetEditing(bool editing)
+        {
+            _editing = editing;
+            foreach (LayoutTile tile in _tiles)
+                if (tile.History != null)
+                {
+                    tile.History.Visibility = editing ? Visibility.Collapsed : Visibility.Visible;
+                    tile.Content.Visibility = editing ? Visibility.Visible : Visibility.Collapsed;
+                }
+            foreach (CardLayoutPanel panel in _panels) panel.InvalidateMeasure();
         }
 
         internal DashboardLayoutView(Window window)
@@ -166,6 +189,54 @@ namespace CodexUsageMeter
                 Grid.SetRow(host, 1); card.Children.Add(host);
                 _compactQuotas[slot] = quota; _compactQuotaHosts[slot] = host;
             }
+            foreach (LayoutTile tile in _tiles) tile.ContentItems = delegate { return DescribeItems(tile); };
+        }
+
+        private List<LayoutContentItem> DescribeItems(LayoutTile tile)
+        {
+            var result = new List<LayoutContentItem>();
+            Action<string, string, FrameworkElement> add = (id, label, element) => {
+                if (element != null) result.Add(new LayoutContentItem { Id = id, Label = label, Element = element });
+            };
+            bool compact = tile == _tiles[1, 0] || tile == _tiles[1, 1] || tile == _tiles[1, 2];
+            bool pc = tile == _tiles[0, 2] || tile == _tiles[1, 2];
+            Grid body = tile.Content;
+            add("header", pc ? "제목·상태" : "제목·계정 버튼", body.Children.OfType<Grid>().FirstOrDefault(child => Grid.GetRow(child) == 0));
+            if (!pc && !compact)
+            {
+                string[] keys = { "header", "short", "weekly", "credits", "stats", "calendar", "status" };
+                string[] names = { "제목", "5시간 한도", "주간 한도", "초기화권·구독", "사용 통계", "달력·7일", "상태 안내" };
+                foreach (FrameworkElement child in body.Children)
+                    if (Grid.GetRow(child) > 0) add(keys[Grid.GetRow(child)], names[Grid.GetRow(child)], child);
+            }
+            else if (!pc)
+            {
+                int slot = tile == _tiles[1, 0] ? 0 : 1;
+                foreach (FrameworkElement child in _compactQuotas[slot].Children)
+                {
+                    int column = Grid.GetColumn(child);
+                    add(column == 0 ? "weekly" : column == 2 ? "short" : "countdown", column == 0 ? "주간 원형 게이지" : column == 2 ? "5시간 원형 게이지" : "갱신까지", child);
+                }
+                string prefix = "CompactAccount" + (slot + 1);
+                add("credits", "초기화권", Find<TextBlock>(prefix + "ResetValue"));
+                add("subscription", "구독 날짜", Find<TextBlock>(prefix + "SubscriptionValue"));
+            }
+            else
+            {
+                UniformGrid items = body.Children.OfType<UniformGrid>().Single();
+                string[] keys = { "cpu", "gpu", "ram", "disk" }, names = { "CPU", "GPU", "RAM", "디스크" };
+                for (int i = 0; i < items.Children.Count; i++)
+                {
+                    FrameworkElement child = (FrameworkElement)items.Children[i];
+                    string key = compact ? keys[i] : Convert.ToString(child.Tag);
+                    string label = compact ? names[i] : System.Windows.Automation.AutomationProperties.GetName(child);
+                    if (String.IsNullOrWhiteSpace(label)) label = key == "memory" ? "RAM" : key.ToUpperInvariant();
+                    add(key, label, child);
+                }
+                add(compact ? "network" : "status", compact ? "네트워크" : "상태 안내",
+                    body.Children.OfType<FrameworkElement>().FirstOrDefault(child => Grid.GetRow(child) == 2));
+            }
+            return result;
         }
 
         internal void Apply(LayoutSettings settings, AccountView[] views, double fontScale)

@@ -1,1 +1,1 @@
-View account usage history as graphs inside each card, with tables and pre-reset values.
+Move and resize items inside each card. Save separate desktop and widget layouts.
