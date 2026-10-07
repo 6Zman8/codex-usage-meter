@@ -53,9 +53,9 @@ namespace CodexUsageMeter
             {
                 int port = bridge.ListeningPort;
                 Require(Request(port, key, body, "127.0.0.1:" + port).StartsWith("HTTP/1.1 200"), "Local POST did not update the date.");
-                Require(Request(port, new string('0', 64), body, "127.0.0.1:" + port).StartsWith("HTTP/1.1 403"), "Wrong connection key admitted.");
-                Require(Request(port, key, body, "evil.invalid:" + port).StartsWith("HTTP/1.1 403"), "DNS-rebinding host admitted.");
-                Require(Request(port, key, body, "127.0.0.1:" + port, "OPTIONS").StartsWith("HTTP/1.1 404"), "Page CORS preflight admitted.");
+                Require(Request(port, new string('0', 64), body, "127.0.0.1:" + port, sendBody: false).StartsWith("HTTP/1.1 403"), "Wrong connection key admitted.");
+                Require(Request(port, key, body, "evil.invalid:" + port, sendBody: false).StartsWith("HTTP/1.1 403"), "DNS-rebinding host admitted.");
+                Require(Request(port, key, body, "127.0.0.1:" + port, "OPTIONS", false).StartsWith("HTTP/1.1 404"), "Page CORS preflight admitted.");
                 Require(Request(port, key, new string('x', 65537), "127.0.0.1:" + port).StartsWith("HTTP/1.1 400"), "Oversized import admitted.");
                 Require(requests == 1, "Rejected request reached the billing parser.");
                 Require(Request(port, key, Payload(now.AddSeconds(1), "chrome-fixture", "plus", null), "127.0.0.1:" + port).StartsWith("HTTP/1.1 200"), "Authoritative no-date result rejected.");
@@ -70,7 +70,7 @@ namespace CodexUsageMeter
             var data = AccountSubscription.ParseJson(AccountSubscriptionRegressionTests.Body(account, plan, date == null ? (bool?)null : true, date, null, null, null));
             data["version"] = 1; data["observedAt"] = at.ToString("o"); return new JavaScriptSerializer().Serialize(data);
         }
-        private static string Request(int port, string key, string body, string host, string method = "POST")
+        private static string Request(int port, string key, string body, string host, string method = "POST", bool sendBody = true)
         {
             using (TcpClient client = new TcpClient())
             {
@@ -78,7 +78,9 @@ namespace CodexUsageMeter
                 byte[] bytes = Encoding.UTF8.GetBytes(body);
                 byte[] header = Encoding.ASCII.GetBytes(method + " /subscription HTTP/1.1\r\nHost: " + host + "\r\nX-Codex-Meter-Key: " + key + "\r\nContent-Type: application/json\r\nContent-Length: " + bytes.Length + "\r\n\r\n");
                 NetworkStream stream = client.GetStream(); stream.Write(header, 0, header.Length);
-                if (bytes.Length <= 65536) stream.Write(bytes, 0, bytes.Length);
+                // Rejected headers must get a full response without waiting for a body.
+                // Sending an unread body races the early close and can cause a TCP reset on Windows CI.
+                if (sendBody && bytes.Length <= 65536) stream.Write(bytes, 0, bytes.Length);
                 using (StreamReader reader = new StreamReader(stream))
                 {
                     string status = reader.ReadLine(), line; int length = 0;
