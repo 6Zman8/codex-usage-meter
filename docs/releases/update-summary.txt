@@ -1,1 +1,1 @@
-Use your regular Chrome login to check subscription dates with Tampermonkey.
+Adds per-account quota history and the last observed remaining quota before resets.

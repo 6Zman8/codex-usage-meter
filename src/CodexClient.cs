@@ -34,6 +34,9 @@ namespace CodexUsageMeter
         public string Error { get; set; }
         public string UsageError { get; set; }
         public DateTime UpdatedAt { get; set; }
+        public DateTime RateLimitsObservedAtUtc { get; set; }
+        public string HistoryKey { get; set; }
+        public string HistoryError { get; set; }
     }
 
     internal sealed class ResetCreditInfo
@@ -162,10 +165,15 @@ namespace CodexUsageMeter
 
                 try
                 {
+                    string historyKey = UsageHistoryStore.AccountKey(WebSubscriptionStore.AccountId(_profileRoot, snapshot.Email), snapshot.Email);
                     Dictionary<string, object> limitResult = await ReadWithReconnectAsync(
                         "account/rateLimits/read",
                         new Dictionary<string, object>());
                     ParseRateLimits(limitResult, snapshot);
+                    snapshot.RateLimitsObservedAtUtc = DateTime.UtcNow;
+                    string confirmedKey = UsageHistoryStore.AccountKey(WebSubscriptionStore.AccountId(_profileRoot, snapshot.Email), snapshot.Email);
+                    if (historyKey != null && historyKey == confirmedKey) snapshot.HistoryKey = historyKey;
+                    else snapshot.HistoryError = "계정 식별을 확인하지 못해 이번 사용량은 이력에 저장하지 않았습니다.";
                 }
                 catch (Exception ex)
                 {

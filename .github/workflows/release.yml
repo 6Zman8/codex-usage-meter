@@ -54,6 +54,18 @@ jobs:
             throw 'Rate-limit verification failed'
           }
 
+      - name: Verify account usage history and pre-reset remaining quota
+        shell: pwsh
+        run: |
+          $test = Start-Process -FilePath '.\bin\CodexUsageMeter.exe' -ArgumentList '--usage-history-self-test usage-history-self-test.txt' -WindowStyle Hidden -PassThru
+          if (-not $test.WaitForExit(30000)) {
+            throw 'Usage history verification timed out'
+          }
+          Get-Content -LiteralPath '.\usage-history-self-test.txt'
+          if ($test.ExitCode -ne 0) {
+            throw 'Usage history verification failed'
+          }
+
       - name: Verify editable layouts without live accounts
         shell: pwsh
         run: |

@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 namespace CodexUsageMeter
 {
@@ -37,6 +37,12 @@ namespace CodexUsageMeter
         public static int Main(string[] args)
         {
             WebViewRuntime.Register();
+            if (args.Length == 2 && args[0] == "--usage-history-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try { UsageHistoryRegressionTests.Run(line => report.AppendLine(line), Path.GetDirectoryName(Path.GetFullPath(args[1]))); File.WriteAllText(args[1], report.ToString()); return 0; }
+                catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
+            }
             if (args.Length == 2 && args[0] == "--chrome-subscription-self-test")
             {
                 StringBuilder report = new StringBuilder();
@@ -489,6 +495,8 @@ namespace CodexUsageMeter
         private Action _modalSecondaryAction;
         private LayoutSettings _layouts;
         private DashboardLayoutView _layoutView;
+        private readonly UsageHistoryStore _usageHistory;
+        private UsageHistoryWindow _historyWindow;
 
         public DashboardController(Window window)
         {
@@ -496,6 +504,7 @@ namespace CodexUsageMeter
             ChromeSubscriptionBridge.Changed += ChromeSubscriptionChanged;
             string localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             _accountsRoot = Path.Combine(localData, "CodexUsageMeter", "accounts");
+            _usageHistory = new UsageHistoryStore(Path.Combine(localData, "CodexUsageMeter", "usage-history"));
             string defaultCodexHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
             _accounts = new List<AccountState>();
             IAccountSwitchJournal switchJournal = new FileAccountSwitchJournal();
@@ -712,6 +721,8 @@ namespace CodexUsageMeter
             view.CodexLoginButton = Find<Button>(prefix + "CodexLoginButton");
             view.CompactCodexLoginButton = Find<Button>("Compact" + prefix + "CodexLoginButton");
             view.LogoutButton = Find<Button>(prefix + "LogoutButton");
+            Find<Button>(prefix + "HistoryButton").Click += delegate { ShowUsageHistory(view); };
+            Find<Button>("Compact" + prefix + "HistoryButton").Click += delegate { ShowUsageHistory(view); };
             view.PrimaryName = Find<TextBlock>(prefix + "PrimaryName");
             view.PrimaryValue = Find<TextBlock>(prefix + "PrimaryValue");
             view.PrimaryBar = Find<ProgressBar>(prefix + "PrimaryBar");
@@ -1717,12 +1728,20 @@ namespace CodexUsageMeter
                     return state.Client.RefreshAsync();
                 }).ToArray();
                 AccountSnapshot[] snapshots = await Task.WhenAll(refreshes);
+                await Task.Run(delegate {
+                    foreach (AccountSnapshot snapshot in snapshots)
+                    {
+                        try { _usageHistory.Record(snapshot); }
+                        catch (Exception) { snapshot.HistoryError = "사용량 이력 저장 실패 · 기존 기록은 보존했습니다. 이력에서 확인해 주세요."; }
+                    }
+                });
                 for (int index = 0; index < states.Length; index++)
                 {
                     states[index].LastSnapshot = snapshots[index];
                 }
                 _activeCodexAccountNumber = _accountSwitcher.DetectActiveAccountNumber(_accountCount);
                 BindAccountPage();
+                if (_historyWindow != null) _historyWindow.Reload();
                 UpdateFooter();
             }
             catch (Exception ex)
@@ -2281,6 +2300,11 @@ namespace CodexUsageMeter
                 view.Status.Text = snapshot.Error;
                 view.Status.Visibility = Visibility.Visible;
             }
+            else if (!String.IsNullOrWhiteSpace(snapshot.HistoryError))
+            {
+                view.Status.Text = snapshot.HistoryError;
+                view.Status.Visibility = Visibility.Visible;
+            }
             else if (!String.IsNullOrWhiteSpace(snapshot.UsageError))
             {
                 view.Status.Text = snapshot.UpdatedAt.ToString("HH:mm:ss") + " · 사용 기록 미제공";
@@ -2292,6 +2316,17 @@ namespace CodexUsageMeter
                 view.Status.Visibility = Visibility.Hidden;
             }
             UpdateCompactAccount(view, snapshot);
+            Find<Button>("CompactAccount" + (Object.ReferenceEquals(view, _account1) ? "1" : "2") + "HistoryButton").ToolTip =
+                String.IsNullOrEmpty(snapshot.HistoryError) ? "계정별 사용량 이력 · 초기화 전 잔여량" : snapshot.HistoryError;
+        }
+
+        private void ShowUsageHistory(AccountView view)
+        {
+            string key = view.LastSnapshot == null ? null : view.LastSnapshot.HistoryKey;
+            if (_historyWindow != null) { _historyWindow.SelectAccount(key); _historyWindow.Activate(); return; }
+            _historyWindow = new UsageHistoryWindow(_usageHistory, key) { Owner = _window };
+            _historyWindow.Closed += delegate { _historyWindow = null; };
+            _historyWindow.Show();
         }
 
         private static void ClearAccountExtras(AccountView view)
@@ -3373,6 +3408,7 @@ namespace CodexUsageMeter
                 lines.Add("PASS ui: Codex relogin buttons, shared modal, responsive layout, saved settings, and app icon enabled");
                 UpdateUiRegressionTests.Run(lines.Add, null);
                 RateLimitRegressionTests.Run(lines.Add);
+                UsageHistoryRegressionTests.Run(lines.Add, Path.GetDirectoryName(Path.GetFullPath(resultPath)));
                 string layoutEvidence = Path.GetDirectoryName(Path.GetFullPath(resultPath));
                 Directory.CreateDirectory(layoutEvidence);
                 LayoutRegressionTests.Run(lines.Add, null, layoutEvidence);
