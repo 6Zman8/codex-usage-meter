@@ -1,1 +1,1 @@
-Adds per-account quota history and the last observed remaining quota before resets.
+View account usage history as graphs inside each card, with tables and pre-reset values.

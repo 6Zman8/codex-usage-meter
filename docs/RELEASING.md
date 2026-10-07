@@ -6,7 +6,7 @@
 
 ## 배포 순서
 
-v1.4.0부터 `--usage-history-self-test 결과파일`로 계정별 이력 저장·재실행·초기화 경계·실패/손상 보존과 숨김 이력 화면을 검사합니다. 가상 계정 파일은 결과파일 옆에 보관하며, 이 검사는 전체 검사와 GitHub Release 워크플로에도 포함됩니다. 실제 계정 자료나 초기화 시각을 변경하지 않습니다.
+v1.4.0부터 `--usage-history-self-test 결과파일`로 계정별 이력 저장·재실행·초기화 경계·실패/손상 보존과 숨김 이력 화면을 검사합니다. v1.4.1부터 카드 내부 그래프·표 전환, 돌아가기, 시간축·공백·단일 기록·마우스 조회와 전체/위젯 카드 크기 보존도 검사합니다. 가상 계정 파일은 결과파일 옆에 보관하며, 이 검사는 전체 검사와 GitHub Release 워크플로에도 포함됩니다. 실제 계정 자료나 초기화 시각을 변경하지 않습니다.
 
 v1.3.0의 Chrome 연결은 `node browser/subscription.test.cjs`와 `--chrome-subscription-self-test 결과파일`로 검사합니다. 후자는 layout/전체 검사에도 포함됩니다. 스크립트와 EXE의 호환성을 유지하며 실제 Tampermonkey 설치·웹 응답 후킹은 격리 VM/TCP 검사와 구분합니다. 상세 동작은 `docs/CHROME_SUBSCRIPTION.md`를 읽습니다.
 

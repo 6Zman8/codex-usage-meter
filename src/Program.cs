@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.4.0.0")]
-[assembly: AssemblyFileVersion("1.4.0.0")]
+[assembly: AssemblyVersion("1.4.1.0")]
+[assembly: AssemblyFileVersion("1.4.1.0")]
 
 namespace CodexUsageMeter
 {
@@ -331,6 +331,7 @@ namespace CodexUsageMeter
         public TextBlock UsageEmpty;
         public TextBlock Status;
         public AccountSnapshot LastSnapshot;
+        public string HistoryAccountKey;
         public int CalendarMonthOffset;
         public int CalendarDetailLevel = -1;
         public System.Windows.Shapes.Path CompactPrimaryRing;
@@ -496,7 +497,6 @@ namespace CodexUsageMeter
         private LayoutSettings _layouts;
         private DashboardLayoutView _layoutView;
         private readonly UsageHistoryStore _usageHistory;
-        private UsageHistoryWindow _historyWindow;
 
         public DashboardController(Window window)
         {
@@ -721,8 +721,8 @@ namespace CodexUsageMeter
             view.CodexLoginButton = Find<Button>(prefix + "CodexLoginButton");
             view.CompactCodexLoginButton = Find<Button>("Compact" + prefix + "CodexLoginButton");
             view.LogoutButton = Find<Button>(prefix + "LogoutButton");
-            Find<Button>(prefix + "HistoryButton").Click += delegate { ShowUsageHistory(view); };
-            Find<Button>("Compact" + prefix + "HistoryButton").Click += delegate { ShowUsageHistory(view); };
+            Find<Button>(prefix + "HistoryButton").Click += delegate { ShowUsageHistory(view, false); };
+            Find<Button>("Compact" + prefix + "HistoryButton").Click += delegate { ShowUsageHistory(view, true); };
             view.PrimaryName = Find<TextBlock>(prefix + "PrimaryName");
             view.PrimaryValue = Find<TextBlock>(prefix + "PrimaryValue");
             view.PrimaryBar = Find<ProgressBar>(prefix + "PrimaryBar");
@@ -1623,6 +1623,7 @@ namespace CodexUsageMeter
         private void BindAccountView(AccountView view, int stateIndex)
         {
             AccountState state = stateIndex >= 0 && stateIndex < _accounts.Count ? _accounts[stateIndex] : null;
+            if (!Object.ReferenceEquals(view.State, state)) HideUsageHistory(view);
             view.State = state;
             view.Client = state == null ? null : state.Client;
             view.Container.Visibility = state == null ? Visibility.Collapsed : Visibility.Visible;
@@ -1741,7 +1742,7 @@ namespace CodexUsageMeter
                 }
                 _activeCodexAccountNumber = _accountSwitcher.DetectActiveAccountNumber(_accountCount);
                 BindAccountPage();
-                if (_historyWindow != null) _historyWindow.Reload();
+                _layoutView.ReloadHistory();
                 UpdateFooter();
             }
             catch (Exception ex)
@@ -2255,6 +2256,8 @@ namespace CodexUsageMeter
 
         private void UpdateAccount(AccountView view, AccountSnapshot snapshot)
         {
+            if (view.HistoryAccountKey != null && snapshot.HistoryKey != null && view.HistoryAccountKey != snapshot.HistoryKey)
+                HideUsageHistory(view);
             view.LastSnapshot = snapshot;
             if (!snapshot.IsAuthenticated)
             {
@@ -2320,13 +2323,21 @@ namespace CodexUsageMeter
                 String.IsNullOrEmpty(snapshot.HistoryError) ? "계정별 사용량 이력 · 초기화 전 잔여량" : snapshot.HistoryError;
         }
 
-        private void ShowUsageHistory(AccountView view)
+        private void ShowUsageHistory(AccountView view, bool compact)
         {
             string key = view.LastSnapshot == null ? null : view.LastSnapshot.HistoryKey;
-            if (_historyWindow != null) { _historyWindow.SelectAccount(key); _historyWindow.Activate(); return; }
-            _historyWindow = new UsageHistoryWindow(_usageHistory, key) { Owner = _window };
-            _historyWindow.Closed += delegate { _historyWindow = null; };
-            _historyWindow.Show();
+            int slot = Object.ReferenceEquals(view, _account1) ? 0 : 1;
+            view.HistoryAccountKey = key;
+            _layoutView.ShowHistory(slot, compact, new UsageHistoryView(_usageHistory, key,
+                delegate { _layoutView.HideHistory(slot, compact); }));
+        }
+
+        private void HideUsageHistory(AccountView view)
+        {
+            if (_layoutView == null) return;
+            int slot = Object.ReferenceEquals(view, _account1) ? 0 : 1;
+            _layoutView.HideHistory(slot, false); _layoutView.HideHistory(slot, true);
+            view.HistoryAccountKey = null;
         }
 
         private static void ClearAccountExtras(AccountView view)

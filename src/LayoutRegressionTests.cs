@@ -380,6 +380,47 @@ namespace CodexUsageMeter
         }
         private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 
+        internal static void VerifyHistoryCards(UsageHistoryStore store, string key, string evidenceRoot, Action<string> report)
+        {
+            using (Fixture fixture = new Fixture())
+            {
+                fixture.Set("_usageHistory", store);
+                foreach (bool compact in new[] { false, true })
+                {
+                    fixture.Accounts[0].LastSnapshot.HistoryKey = key;
+                    fixture.FontScale(1.5); fixture.Layout(LayoutSettings.Defaults(), compact);
+                    int width = compact ? 680 : 1280, height = compact ? 650 : 820;
+                    fixture.Render(width, height);
+                    DashboardLayoutView layout = (DashboardLayoutView)typeof(DashboardController).GetField("_layoutView", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(fixture.Controller);
+                    var tiles = layout.Tiles(compact).ToList();
+                    Rect cardBounds = tiles[0].Bounds, neighborBounds = tiles[1].Bounds;
+                    Button entry = (Button)fixture.Window.FindName((compact ? "Compact" : "") + "Account1HistoryButton");
+                    entry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); fixture.Render(width, height);
+                    Require(tiles[0].History != null && tiles[0].Content.Visibility == Visibility.Collapsed &&
+                        tiles[1].History == null && cardBounds == tiles[0].Bounds && neighborBounds == tiles[1].Bounds,
+                        "history did not replace only the selected card while preserving card bounds");
+                    UsageHistoryView history = tiles[0].History;
+                    Require(history.ActualWidth > 280 && history.ActualHeight > 150 && history.Parent == tiles[0].Surface,
+                        "history is not hosted inside the card: " + history.ActualWidth + " x " + history.ActualHeight + ", compact=" + compact + ", parent=" + history.Parent);
+                    fixture.Call("BindAccountPage"); fixture.Render(width, height);
+                    Require(tiles[0].History == history, "a routine refresh removed the card history");
+                    fixture.Capture(Path.Combine(evidenceRoot, compact ? "dashboard-history-widget.png" : "dashboard-history-expanded.png"));
+                    fixture.FontScale(2); fixture.Render(width, height);
+                    Button back = (Button)typeof(UsageHistoryView).GetField("_backButton", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(history);
+                    Point center = back.TranslatePoint(new Point(back.ActualWidth / 2, back.ActualHeight / 2), fixture.Root);
+                    Require(fixture.Root.InputHitTest(center) != null && back.IsVisible, "card back button disappeared at large font size");
+                    back.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); fixture.Render(width, height);
+                    Require(tiles[0].History == null && tiles[0].Content.Visibility == Visibility.Visible, "back did not restore the original card");
+                    entry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    fixture.Accounts[0].LastSnapshot.HistoryKey = new String('9', 64); fixture.Call("BindAccountPage");
+                    Require(tiles[0].History == null, "another authenticated account inherited the previous account's history");
+                    entry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); fixture.Page(1);
+                    Require(tiles[0].History == null, "account paging kept the old slot's history");
+                }
+            }
+            report("PASS history: expanded and widget cards switch inline, preserve neighbors, return and discard stale account bindings");
+        }
+
         private sealed class Fixture : IDisposable
         {
             internal Window Window = DashboardController.LoadWindow();
@@ -467,8 +508,8 @@ namespace CodexUsageMeter
                 Root.Measure(new Size(width, height)); Root.Arrange(new Rect(0, 0, width, height)); Root.UpdateLayout();
             }
             internal void Capture(string path) { LayoutRegressionTests.Capture(Root, _width, _height, path); }
-            private void Set(string name, object value) { typeof(DashboardController).GetField(name, Flags).SetValue(Controller, value); }
-            private object Call(string name, params object[] args) { return typeof(DashboardController).GetMethod(name, Flags).Invoke(Controller, args); }
+            internal void Set(string name, object value) { typeof(DashboardController).GetField(name, Flags).SetValue(Controller, value); }
+            internal object Call(string name, params object[] args) { return typeof(DashboardController).GetMethod(name, Flags).Invoke(Controller, args); }
             public void Dispose() { _surface.Dispose(); }
         }
     }

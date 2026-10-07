@@ -13,6 +13,8 @@ namespace CodexUsageMeter
         public Border Card;
         public Viewbox Host;
         public Grid Content;
+        public Grid Surface;
+        public UsageHistoryView History;
         public LayoutCardSettings Settings;
         public double MinimumHeight;
         public Rect Bounds;
@@ -31,10 +33,11 @@ namespace CodexUsageMeter
             card.Margin = new Thickness(0);
             Grid content = (Grid)card.Child;
             card.Child = null;
-            Viewbox contentHost = new Viewbox { Child = content, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
+            Grid surface = new Grid(); surface.Children.Add(content);
+            Viewbox contentHost = new Viewbox { Child = surface, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
             card.Child = contentHost;
             Viewbox host = new Viewbox { Child = card, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
-            LayoutTile tile = new LayoutTile { Card = card, Host = host, Content = content };
+            LayoutTile tile = new LayoutTile { Card = card, Host = host, Content = content, Surface = surface };
             Tiles.Add(tile); Children.Add(host); return tile;
         }
         protected override Size MeasureOverride(Size available)
@@ -87,6 +90,8 @@ namespace CodexUsageMeter
                     tile.Content.Height = Double.NaN;
                     tile.Content.Measure(new Size(innerWidth, Double.PositiveInfinity));
                     tile.Content.Height = Math.Max(innerHeight, tile.Content.DesiredSize.Height);
+                    tile.Surface.Width = innerWidth;
+                    tile.Surface.Height = tile.History == null ? tile.Content.Height : Math.Max(170, innerHeight);
                     tile.Host.Visibility = Visibility.Visible;
                     tile.Host.Measure(tile.Bounds.Size);
                 }
@@ -113,6 +118,27 @@ namespace CodexUsageMeter
         private readonly Viewbox[] _compactQuotaHosts = new Viewbox[2];
 
         internal IEnumerable<LayoutTile> Tiles(bool compact) { return _panels[compact ? 1 : 0].Tiles; }
+
+        internal void ShowHistory(int slot, bool compact, UsageHistoryView history)
+        {
+            HideHistory(slot, compact);
+            LayoutTile tile = _tiles[compact ? 1 : 0, slot];
+            tile.History = history; tile.Content.Visibility = Visibility.Collapsed;
+            tile.Surface.Children.Add(history); _panels[compact ? 1 : 0].InvalidateMeasure();
+        }
+
+        internal void HideHistory(int slot, bool compact)
+        {
+            LayoutTile tile = _tiles[compact ? 1 : 0, slot];
+            if (tile.History == null) return;
+            tile.Surface.Children.Remove(tile.History); tile.History = null;
+            tile.Content.Visibility = Visibility.Visible; _panels[compact ? 1 : 0].InvalidateMeasure();
+        }
+
+        internal void ReloadHistory()
+        {
+            foreach (LayoutTile tile in _tiles) if (tile.History != null) tile.History.Reload();
+        }
 
         internal DashboardLayoutView(Window window)
         {
