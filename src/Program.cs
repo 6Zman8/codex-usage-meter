@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.5.0.0")]
-[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyVersion("1.5.1.0")]
+[assembly: AssemblyFileVersion("1.5.1.0")]
 
 namespace CodexUsageMeter
 {
@@ -1917,7 +1917,7 @@ namespace CodexUsageMeter
             card.Tag = item.Key;
             card.Style = _window.Resources["SubCard"] as Style;
             card.Padding = new Thickness(9.0, 7.0, 9.0, 7.0);
-            card.Margin = new Thickness(2.5, 2.5, 2.5, 2.5);
+            card.Margin = new Thickness(4, 4, 4, 4);
 
             StackPanel body = new StackPanel();
             body.VerticalAlignment = VerticalAlignment.Center;

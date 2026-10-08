@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 
 namespace CodexUsageMeter
@@ -24,6 +25,13 @@ namespace CodexUsageMeter
         private readonly Grid _editorRoot;
         private readonly TextBlock _status = new TextBlock { TextWrapping = TextWrapping.Wrap };
         private readonly TextBlock _previewSize = new TextBlock();
+        private readonly ScrollViewer _previewScroll = new ScrollViewer { Name = "LayoutPreviewScroll", CanContentScroll = false };
+        private readonly Viewbox _previewZoom = new Viewbox { Stretch = Stretch.Uniform, StretchDirection = StretchDirection.Both };
+        private readonly TextBlock _zoomValue = new TextBlock { Name = "LayoutZoomValue", MinWidth = 52, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        private Button _maximize, _zoomOut, _zoomIn, _zoomFit;
+        private double _zoomScale = 1;
+        private bool _fitZoom = true, _maximized;
+        private Rect _normalBounds;
         private readonly Dictionary<Border, LayoutCardAdorner> _adorners = new Dictionary<Border, LayoutCardAdorner>();
         private readonly Dictionary<UIElement, object> _previewHitTests = new Dictionary<UIElement, object>();
         private readonly Dictionary<Button, bool> _buttonFocus = new Dictionary<Button, bool>();
@@ -41,6 +49,7 @@ namespace CodexUsageMeter
         internal bool Saved { get; private set; }
         internal LayoutSettings Draft { get { return _draft; } }
         internal bool Compact { get { return _compact; } }
+        internal double PreviewZoom { get { return _zoomScale; } }
         private LayoutModeSettings Mode { get { return _draft.Mode(_compact); } }
 
         internal LayoutEditor(LayoutSettings settings, bool compact, int accountCount, Window dashboard,
@@ -61,9 +70,16 @@ namespace CodexUsageMeter
             Grid root = new Grid(); _editorRoot = root; root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(66) });
             root.RowDefinitions.Add(new RowDefinition()); root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(64) }); Content = root;
             Border titleBar = new Border { Background = Brush("#1E1E21"), Padding = new Thickness(22, 12, 18, 12) }; root.Children.Add(titleBar);
-            titleBar.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e) { if (e.OriginalSource is TextBlock || e.OriginalSource == titleBar) DragMove(); };
+            titleBar.Name = "LayoutTitleBar";
+            titleBar.MouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e) {
+                if (e.ClickCount == 2) { ToggleMaximize(); e.Handled = true; }
+                else if (!_maximized && e.LeftButton == MouseButtonState.Pressed) DragMove();
+            };
             DockPanel title = new DockPanel(); titleBar.Child = title;
             Button close = MakeButton("×", delegate { Close(); }); DockPanel.SetDock(close, Dock.Right); title.Children.Add(close);
+            _maximize = MakeButton("□", ToggleMaximize); _maximize.Name = "LayoutMaximizeButton"; _maximize.ToolTip = "최대화";
+            DockPanel.SetDock(_maximize, Dock.Right); title.Children.Add(_maximize);
+            StateChanged += delegate { if (WindowState == WindowState.Maximized) { WindowState = WindowState.Normal; if (!_maximized) ToggleMaximize(); } };
             TextBlock heading = new TextBlock { Text = "배치 편집", FontSize = 22, FontWeight = FontWeights.Bold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 28, 0) }; title.Children.Add(heading);
             StackPanel tabs = new StackPanel { Orientation = Orientation.Horizontal };
             _expandedTab = MakeButton("전체 화면", delegate { SwitchMode(false); }); _widgetTab = MakeButton("위젯", delegate { SwitchMode(true); });
@@ -75,15 +91,28 @@ namespace CodexUsageMeter
             sidebar.Child = new ScrollViewer { Content = _inspector, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled }; middle.Children.Add(sidebar);
             Grid stage = new Grid { Margin = new Thickness(18, 12, 18, 12) }; Grid.SetColumn(stage, 1); middle.Children.Add(stage);
             stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); stage.RowDefinitions.Add(new RowDefinition()); stage.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            DockPanel stageTools = new DockPanel { Margin = new Thickness(0, 0, 0, 10) }; stage.Children.Add(stageTools);
+            StackPanel toolRows = new StackPanel { Margin = new Thickness(0, 0, 0, 10) }; stage.Children.Add(toolRows);
+            DockPanel stageTools = new DockPanel(); toolRows.Children.Add(stageTools);
             ComboBox viewport = new ComboBox { ItemsSource = new[] { "기본 창 크기", "좁은 창", "넓은 창" }, SelectedIndex = 0, Width = 140 };
             viewport.SelectionChanged += delegate { SetViewport(viewport.SelectedIndex); };
             DockPanel.SetDock(viewport, Dock.Right); stageTools.Children.Add(viewport);
             _previewSize.Foreground = Brush("#B5B5BF"); _previewSize.VerticalAlignment = VerticalAlignment.Center; stageTools.Children.Add(_previewSize);
+            WrapPanel zoomTools = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) }; toolRows.Children.Add(zoomTools);
+            _zoomOut = MakeButton("−", delegate { SetPreviewZoom(_zoomScale - 0.1); }); _zoomOut.Name = "LayoutZoomOut"; _zoomOut.ToolTip = "축소";
+            _zoomIn = MakeButton("+", delegate { SetPreviewZoom(_zoomScale + 0.1); }); _zoomIn.Name = "LayoutZoomIn"; _zoomIn.ToolTip = "확대";
+            Button actualSize = MakeButton("100%", delegate { SetPreviewZoom(1); }); actualSize.Name = "LayoutZoomActual"; actualSize.ToolTip = "실제 크기";
+            _zoomFit = MakeButton("화면에 맞춤", FitPreview); _zoomFit.Name = "LayoutZoomFit";
+            zoomTools.Children.Add(_zoomOut); zoomTools.Children.Add(_zoomValue); zoomTools.Children.Add(_zoomIn); zoomTools.Children.Add(actualSize); zoomTools.Children.Add(_zoomFit);
+            zoomTools.Children.Add(new TextBlock { Text = "Ctrl + 휠", Foreground = Brush("#A4A4AE"), FontSize = 11, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
             Border previewFrame = new Border { Background = Brush("#101012"), BorderBrush = Brush("#37373D"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12), Padding = new Thickness(12), ClipToBounds = true };
             Grid.SetRow(previewFrame, 1); stage.Children.Add(previewFrame);
-            Viewbox zoom = new Viewbox { Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, Child = _previewDecorator };
-            previewFrame.Child = zoom;
+            _previewZoom.Child = _previewDecorator; _previewZoom.HorizontalAlignment = HorizontalAlignment.Center; _previewZoom.VerticalAlignment = VerticalAlignment.Center;
+            _previewScroll.Content = _previewZoom; previewFrame.Child = _previewScroll;
+            _previewScroll.SizeChanged += delegate { if (_fitZoom) FitPreview(); };
+            _previewScroll.PreviewMouseWheel += delegate(object sender, MouseWheelEventArgs e) {
+                if ((Keyboard.Modifiers & ModifierKeys.Control) == 0) return;
+                ZoomWithWheel(e.Delta, e.GetPosition(_previewScroll)); e.Handled = true;
+            };
             TextBlock guide = new TextBlock { Text = "카드: 위쪽을 끌어 이동 · 모서리로 크기 조절\n항목 편집: 내용물을 끌어 이동 · 선택한 항목의 모서리로 크기 조절", Foreground = Brush("#A4A4AE"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0), FontSize = 12 };
             Grid.SetRow(guide, 2); stage.Children.Add(guide);
             Border footer = new Border { Background = Brush("#1E1E21"), Padding = new Thickness(18, 10, 18, 10) }; Grid.SetRow(footer, 2); root.Children.Add(footer);
@@ -173,7 +202,61 @@ namespace CodexUsageMeter
         {
             _dashboardRoot.Width = preset == 1 ? (_compact ? 320 : 900) : preset == 2 ? (_compact ? 900 : 1600) : (_compact ? 460 : 1280);
             _dashboardRoot.Height = preset == 1 ? (_compact ? 480 : 620) : (_compact ? 780 : 820);
-            _previewSize.Text = "실제 화면 미리보기  ·  " + _dashboardRoot.Width + " × " + _dashboardRoot.Height;
+            _previewSize.Text = "미리보기  ·  " + _dashboardRoot.Width + " × " + _dashboardRoot.Height;
+            if (_fitZoom) FitPreview(); else UpdatePreviewZoom();
+        }
+        private void ToggleMaximize()
+        {
+            if (_maximized)
+            {
+                _maximized = false; ResizeMode = ResizeMode.CanResizeWithGrip;
+                Left = _normalBounds.Left; Top = _normalBounds.Top; Width = _normalBounds.Width; Height = _normalBounds.Height;
+            }
+            else
+            {
+                _normalBounds = new Rect(Left, Top, ActualWidth > 0 ? ActualWidth : Width, ActualHeight > 0 ? ActualHeight : Height);
+                Rect workArea = SystemParameters.WorkArea;
+                IntPtr handle = new WindowInteropHelper(this).Handle;
+                HwndSource source = HwndSource.FromHwnd(handle);
+                if (source != null && source.CompositionTarget != null)
+                {
+                    System.Drawing.Rectangle pixels = System.Windows.Forms.Screen.FromHandle(handle).WorkingArea;
+                    Matrix fromDevice = source.CompositionTarget.TransformFromDevice;
+                    workArea = new Rect(fromDevice.Transform(new Point(pixels.Left, pixels.Top)), fromDevice.Transform(new Point(pixels.Right, pixels.Bottom)));
+                }
+                _maximized = true; ResizeMode = ResizeMode.NoResize;
+                Left = workArea.Left; Top = workArea.Top; Width = workArea.Width; Height = workArea.Height;
+            }
+            _maximize.Content = _maximized ? "❐" : "□"; _maximize.ToolTip = _maximized ? "이전 크기로 복원" : "최대화";
+        }
+        internal void FitPreview()
+        {
+            _fitZoom = true;
+            if (_previewScroll.ActualWidth > 0 && _previewScroll.ActualHeight > 0)
+                _zoomScale = Math.Min(_previewScroll.ActualWidth / _dashboardRoot.Width, _previewScroll.ActualHeight / _dashboardRoot.Height);
+            UpdatePreviewZoom(); _previewScroll.ScrollToHorizontalOffset(0); _previewScroll.ScrollToVerticalOffset(0);
+        }
+        internal void SetPreviewZoom(double scale, Point? anchor = null)
+        {
+            if (Double.IsNaN(scale) || Double.IsInfinity(scale)) return;
+            _previewScroll.UpdateLayout(); // Apply queued scrolling before locating the next wheel event's anchor.
+            Point viewportPoint = anchor ?? new Point(_previewScroll.ViewportWidth / 2, _previewScroll.ViewportHeight / 2);
+            Point contentPoint = _previewScroll.TranslatePoint(viewportPoint, _dashboardRoot);
+            _fitZoom = false; _zoomScale = Math.Max(0.25, Math.Min(4, scale)); UpdatePreviewZoom(); _previewScroll.UpdateLayout();
+            Point moved = _dashboardRoot.TranslatePoint(contentPoint, _previewScroll);
+            _previewScroll.ScrollToHorizontalOffset(_previewScroll.HorizontalOffset + moved.X - viewportPoint.X);
+            _previewScroll.ScrollToVerticalOffset(_previewScroll.VerticalOffset + moved.Y - viewportPoint.Y);
+        }
+        internal void ZoomWithWheel(int delta, Point anchor)
+        { if (delta != 0) SetPreviewZoom(_zoomScale + (delta > 0 ? 0.1 : -0.1), anchor); }
+        private void UpdatePreviewZoom()
+        {
+            _previewScroll.HorizontalScrollBarVisibility = _fitZoom ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+            _previewScroll.VerticalScrollBarVisibility = _fitZoom ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+            _previewZoom.Width = _dashboardRoot.Width * _zoomScale; _previewZoom.Height = _dashboardRoot.Height * _zoomScale;
+            _zoomValue.Text = Math.Round(_zoomScale * 100).ToString("0") + "%";
+            _zoomOut.IsEnabled = _zoomScale > 0.25001; _zoomIn.IsEnabled = _zoomScale < 3.99999;
+            _zoomFit.Background = Brush(_fitZoom ? "#255B4C" : "#292929");
         }
         private void Preview()
         {

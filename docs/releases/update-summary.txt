@@ -1,1 +1,1 @@
-Move and resize items inside each card. Save separate desktop and widget layouts.
+Maximize the layout editor, zoom and scroll previews, and use roomier default card spacing.

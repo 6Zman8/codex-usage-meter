@@ -30,6 +30,8 @@ namespace CodexUsageMeter
         {
             LayoutSettings itemLayout = LayoutSettings.Parse("{\"Version\":1,\"Widget\":{\"Columns\":1,\"Cards\":[{\"Id\":\"account1\",\"Visible\":true,\"Span\":1,\"Size\":1,\"ItemLayouts\":[{\"Id\":\"weekly\",\"X\":0.2,\"Y\":0.3,\"Width\":0.4,\"Height\":0.5}]}]}}");
             Require(itemLayout.Copy().ToJson().Contains("\"X\":0.2"), "individual item positions and sizes did not survive save/reload");
+            VerifyEditorZoom(report, previewDirectory);
+            VerifyDefaultSpacing(report, previewDirectory);
             VerifyContentLayout(report, previewDirectory);
             CheckAccountAlignmentAndFit(report, previewDirectory);
             SubscriptionRegressionTests.Run(report);
@@ -227,6 +229,123 @@ namespace CodexUsageMeter
                 Require(initializationFailed && Object.ReferenceEquals(fixture.Window.Content, fixture.Root), "Preview initialization failure did not restore the live dashboard.");
                 report("PASS real preview, routed drag/drop/resize without overflow, handle alignment, account/mode/viewport changes, save/cancel and failure restoration");
             }
+        }
+
+        private static void VerifyEditorZoom(Action<string> report, string previewDirectory)
+        {
+            using (Fixture fixture = new Fixture())
+            {
+                LayoutSettings settings = LayoutSettings.Defaults();
+                LayoutEditor editor = fixture.Editor(settings, false, state => { }, state => { });
+                new WindowInteropHelper(editor).EnsureHandle();
+                double originalWidth = editor.Width, originalHeight = editor.Height;
+                double originalLeft = editor.Left, originalTop = editor.Top;
+                string originalLayout = editor.Draft.ToJson();
+                RenderEditor(editor, root => {
+                    Button maximize = Descendants<Button>(root).FirstOrDefault(button => button.Name == "LayoutMaximizeButton");
+                    Require(maximize != null, "layout editor has no maximize/restore control");
+                    maximize.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Require(Convert.ToString(maximize.ToolTip) == "이전 크기로 복원" && editor.Width >= originalWidth && editor.Height >= originalHeight,
+                        "maximize did not enlarge the real hidden editor window");
+                    maximize.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Require(editor.Width == originalWidth && editor.Height == originalHeight && editor.Left == originalLeft && editor.Top == originalTop,
+                        "restore lost the original editor bounds");
+                    Border title = Descendants<Border>(root).Single(item => item.Name == "LayoutTitleBar");
+                    for (int n = 0; n < 2; n++)
+                    {
+                        var click = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent };
+                        typeof(MouseButtonEventArgs).GetProperty("ClickCount").SetValue(click, 2, null); title.RaiseEvent(click);
+                        Require(click.Handled && Convert.ToString(maximize.Content) == (n == 0 ? "❐" : "□"), "title double-click did not toggle maximize");
+                    }
+                    ScrollViewer scroll = Descendants<ScrollViewer>(root).Single(item => item.Name == "LayoutPreviewScroll");
+                    editor.SetPreviewZoom(2); root.UpdateLayout();
+                    double displayedScale = fixture.Root.TransformToAncestor(root).Transform(new Point(1, 0)).X - fixture.Root.TransformToAncestor(root).Transform(new Point()).X;
+                    Require(Math.Abs(displayedScale - 2) < 0.001 && scroll.ScrollableWidth > 0 && scroll.ScrollableHeight > 0,
+                        "200% zoom did not enlarge the real preview with scrollable overflow");
+                    scroll.ScrollToHorizontalOffset(240); scroll.ScrollToVerticalOffset(180); root.UpdateLayout();
+                    Point anchor = new Point(180, 140), originalPoint = scroll.TranslatePoint(anchor, fixture.Root);
+                    editor.ZoomWithWheel(120, anchor); editor.ZoomWithWheel(120, anchor); root.UpdateLayout();
+                    Point afterZoom = fixture.Root.TranslatePoint(originalPoint, scroll);
+                    Require(editor.PreviewZoom > 2 && Math.Abs(afterZoom.X - anchor.X) < 1 && Math.Abs(afterZoom.Y - anchor.Y) < 1,
+                        "consecutive wheel zoom moved the content away from the pointer: " + afterZoom);
+                    CheckAdornerAlignment(root);
+                    if (previewDirectory != null) Capture(root, 1220, 860, Path.Combine(previewDirectory, "editor-zoom-scrolled.png"));
+                    editor.SetPreviewZoom(99); root.UpdateLayout();
+                    Require(editor.PreviewZoom == 4 && !Descendants<Button>(root).Single(button => button.Name == "LayoutZoomIn").IsEnabled, "zoom upper bound failed");
+                    editor.SetPreviewZoom(0); root.UpdateLayout();
+                    Require(editor.PreviewZoom == 0.25 && !Descendants<Button>(root).Single(button => button.Name == "LayoutZoomOut").IsEnabled, "zoom lower bound failed");
+                    editor.FitPreview(); root.UpdateLayout();
+                    Require(scroll.ScrollableWidth < 1 && scroll.ScrollableHeight < 1 && editor.Draft.ToJson() == originalLayout,
+                        "fit-to-screen changed saved layout or left unreachable content");
+                    editor.SetPreviewZoom(1.5); root.UpdateLayout();
+                    editor.SetItemEditing(true); root.UpdateLayout();
+                    scroll.ScrollToTop(); scroll.ScrollToLeftEnd(); root.UpdateLayout();
+                    Thumb weekly = Descendants<Thumb>(root).Single(thumb => Convert.ToString(thumb.Tag) == "move:weekly");
+                    LayoutTile tile = Descendants<CardLayoutPanel>(root).Single(panel => panel.IsVisible).Tiles.First();
+                    LayoutItemSettings before = CardContentLayout.Position(tile, tile.ContentItems().Single(item => item.Id == "weekly"));
+                    DragItem(root, weekly, 0, 20);
+                    LayoutItemSettings after = CardContentLayout.Position(tile, tile.ContentItems().Single(item => item.Id == "weekly"));
+                    Require(after.Y > before.Y && Math.Abs(after.Width - before.Width) < 0.001, "item dragging broke in the zoomed preview");
+                    editor.FitPreview(); root.UpdateLayout();
+                }, previewDirectory == null ? null : Path.Combine(previewDirectory, "editor-zoom-normal.png"));
+                editor.SwitchMode(true);
+                RenderEditor(editor, root => {
+                    editor.FitPreview(); root.UpdateLayout();
+                    Require(editor.PreviewZoom > 1, "maximized work area still refuses to enlarge a widget preview");
+                }, previewDirectory == null ? null : Path.Combine(previewDirectory, "editor-zoom-large.png"), 1920, 1200);
+                RenderEditor(editor, root => {
+                    foreach (Button button in Descendants<Button>(root).Where(item => item.Name.StartsWith("LayoutZoom") || item.Name == "LayoutMaximizeButton" || Convert.ToString(item.Content) == "배치 저장"))
+                    {
+                        Rect bounds = button.TransformToAncestor(root).TransformBounds(new Rect(button.RenderSize));
+                        Require(bounds.Left >= 0 && bounds.Right <= 780 && bounds.Top >= 0 && bounds.Bottom <= 540, "small editor hides a zoom or window control: " + button.Name);
+                    }
+                }, previewDirectory == null ? null : Path.Combine(previewDirectory, "editor-zoom-small.png"), 780, 540);
+                editor.Close();
+            }
+            report("PASS editor: maximize/restore and preview zoom remain usable without changing saved card dimensions");
+        }
+
+        private static void VerifyDefaultSpacing(Action<string> report, string previewDirectory)
+        {
+            using (Fixture fixture = new Fixture())
+            {
+                fixture.Layout(LayoutSettings.Defaults(), true); fixture.Render(460, 780);
+                LayoutTile tile = Descendants<CardLayoutPanel>(fixture.Root).Single(panel => panel.IsVisible).Tiles.First();
+                Func<string, Rect> bounds = id => {
+                    FrameworkElement element = tile.ContentItems().Single(item => item.Id == id).Element;
+                    return element.TransformToAncestor(tile.Card).TransformBounds(new Rect(element.RenderSize));
+                };
+                double narrowGap = bounds("short").Left - bounds("weekly").Right;
+                double ringWidth = bounds("weekly").Width;
+                if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "default-spacing-widget.png"));
+                Require(narrowGap >= 12, "default widget gauges are crowded: gap=" + narrowGap);
+                fixture.Render(900, 780);
+                double wideGap = bounds("short").Left - bounds("weekly").Right;
+                Require(wideGap > narrowGap + 20 && bounds("weekly").Width >= ringWidth - 1, "wider cards keep their contents clustered at a fixed width");
+                if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "default-spacing-wide.png"));
+                foreach (double font in new[] { 1.0, 1.5, 2.0 })
+                    foreach (int height in new[] { 780, 1000 })
+                    {
+                        fixture.FontScale(font); fixture.Render(320, height);
+                        Rect inner = CardContentLayout.InnerBounds(tile);
+                        foreach (string id in new[] { "weekly", "short", "countdown" })
+                        {
+                            Rect item = bounds(id);
+                            Require(item.Left >= inner.Left - 1 && item.Right <= inner.Right + 1,
+                                "roomier defaults overflow a narrow card: " + id + ", " + item + ", inner=" + inner);
+                        }
+                    }
+                fixture.FontScale(1.5);
+                LayoutSettings legacy = LayoutSettings.Defaults();
+                legacy.Widget.Card("account1").ItemLayouts.Add(new LayoutItemSettings { Id = "countdown", X = 0.5501, Y = 0.3028, Width = 0.1271, Height = 0.4169 });
+                fixture.Layout(legacy, true); fixture.Render(900, 780);
+                LayoutItemSettings restored = CardContentLayout.Position(tile, tile.ContentItems().Single(item => item.Id == "countdown"));
+                Require(Math.Abs(restored.Y - 0.3028) < 0.002 && Math.Abs(restored.Height - 0.4169) < 0.002,
+                    "v1.5.0 saved countdown was shrunk by the roomier default: y=" + restored.Y + ", h=" + restored.Height);
+                fixture.Layout(LayoutSettings.Defaults(), false); fixture.Render(1280, 820);
+                if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "default-spacing-expanded.png"));
+            }
+            report("PASS defaults: separated quota groups spread across wider cards without shrinking the gauges");
         }
 
         private static void CheckAccountAlignmentAndFit(Action<string> report, string previewDirectory)

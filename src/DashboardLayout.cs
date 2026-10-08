@@ -188,6 +188,7 @@ namespace CodexUsageMeter
                 Viewbox host = new Viewbox { Child = quota, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
                 Grid.SetRow(host, 1); card.Children.Add(host);
                 _compactQuotas[slot] = quota; _compactQuotaHosts[slot] = host;
+                quota.SetBinding(FrameworkElement.WidthProperty, new System.Windows.Data.Binding("Width") { Source = card });
             }
             foreach (LayoutTile tile in _tiles) tile.ContentItems = delegate { return DescribeItems(tile); };
         }
@@ -271,7 +272,12 @@ namespace CodexUsageMeter
             bool[] show = { true, shortQuota, weekly, tile.Settings.Shows("credits"), tile.Settings.Shows("stats"), tile.Settings.Shows("calendar") };
             for (int row = 1; row <= 5; row++)
             {
-                foreach (UIElement child in body.Children) if (Grid.GetRow(child) == row) child.Visibility = show[row] ? Visibility.Visible : Visibility.Collapsed;
+                foreach (FrameworkElement child in body.Children)
+                    if (Grid.GetRow(child) == row)
+                    {
+                        child.Visibility = show[row] ? Visibility.Visible : Visibility.Collapsed;
+                        Thickness margin = child.Margin; margin.Top = 14; child.Margin = margin;
+                    }
                 body.RowDefinitions[row].Height = !show[row] ? new GridLength(0) : row == 5 ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
             }
             tile.MinimumHeight = (95 + (shortQuota ? 82 : 0) + (weekly ? 82 : 0) + (show[3] ? 82 : 0) + (show[4] ? 62 : 0)) * Math.Max(1, fontScale / 1.3) + (show[5] ? 235 : 0);
@@ -284,12 +290,24 @@ namespace CodexUsageMeter
             {
                 int column = Grid.GetColumn(item);
                 item.Visibility = (column == 0 ? weekly : column == 2 ? shortQuota : shortQuota || weekly) ? Visibility.Visible : Visibility.Collapsed;
+                if (column == 4)
+                {
+                    // Keep the original content size so saved item layouts do not shrink on upgrade.
+                    FrameworkElement countdown = (FrameworkElement)item;
+                    countdown.Width = single ? (weekly ? 208 : 212) : 132;
+                    countdown.HorizontalAlignment = HorizontalAlignment.Center;
+                    quota.ColumnDefinitions[4].MinWidth = countdown.Width;
+                }
             }
-            quota.ColumnDefinitions[0].Width = new GridLength(weekly ? (single ? 144 : 120) : 0);
-            quota.ColumnDefinitions[1].Width = new GridLength(weekly ? (single ? 16 : 8) : 0);
-            quota.ColumnDefinitions[2].Width = new GridLength(shortQuota ? (single ? 144 : 96) : 0);
-            quota.ColumnDefinitions[3].Width = new GridLength(shortQuota ? 12 : 0);
-            quota.Width = 368;
+            quota.ColumnDefinitions[0].Width = weekly ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+            quota.ColumnDefinitions[0].MinWidth = weekly ? (single ? 144 : 120) : 0;
+            quota.ColumnDefinitions[1].Width = new GridLength(weekly ? 18 : 0);
+            quota.ColumnDefinitions[2].Width = shortQuota ? new GridLength(single ? 1 : 0.8, GridUnitType.Star) : new GridLength(0);
+            quota.ColumnDefinitions[2].MinWidth = shortQuota ? (single ? 144 : 96) : 0;
+            quota.ColumnDefinitions[3].Width = new GridLength(shortQuota ? 20 : 0);
+            quota.ColumnDefinitions[4].Width = new GridLength(1.2, GridUnitType.Star);
+            quota.MinWidth = quota.ColumnDefinitions[0].MinWidth + quota.ColumnDefinitions[1].Width.Value +
+                quota.ColumnDefinitions[2].MinWidth + quota.ColumnDefinitions[3].Width.Value + quota.ColumnDefinitions[4].MinWidth;
             quota.Height = 136 * Math.Max(1, fontScale / 1.5);
             foreach (Canvas canvas in quota.Children.OfType<Canvas>())
             {
