@@ -6,6 +6,12 @@
 
 ## 배포 순서
 
+새 버전에서는 본체 `src/Program.cs`, 제공자 `windows-widget/CodexUsageMeter.WidgetProvider.csproj`, `windows-widget/AppxManifest.xml`의 버전을 함께 맞춥니다. 위젯 빌드 요약의 버전도 확인합니다. CI는 본체와 위젯 패키지의 버전 불일치를 차단합니다.
+
+v1.6.0부터 본체의 `--single-instance-self-test`, `--windows-widget-self-test`를 숨김 실행합니다. 전자는 별도 프로세스의 기존 창 복원·시작 경합·숨김 갱신, 후자는 익명 스냅샷·실패/한도 구분·ZIP/해시/패키지 검증·좁은 설정 화면을 확인합니다. 두 검사 모두 전체 검사에도 포함됩니다.
+
+Windows 위젯은 별도 `build-windows-widget.ps1`로 빌드하며 `bin/windows-widget/CodexUsageMeter.WindowsWidget.zip`을 본체와 같은 정식 Release의 추가 자산으로 게시합니다. 본체의 .NET Framework 빌드는 그대로 유지합니다. 위젯 빌드는 카드 및 published EXE 검사를 수행하고, 패키지 manifest와 self-contained 런타임을 함께 보관합니다. 본체 `--windows-widget-download-test 결과파일`은 정확히 같은 버전의 공개 ZIP·SHA-256·패키지 신원을 검증하며 Windows에 등록하지 않습니다. 개발자 모드 변경 및 실제 위젯 고정/표시는 별도의 승인·실기 확인 범위입니다. 최초 사용 경로는 `WINDOWS_WIDGETS.md`를 따릅니다.
+
 v1.5.1의 layout/전체 검사는 편집창 최대화·복원·제목 더블클릭, 미리보기 확대·축소·스크롤·연속 휠 기준점, 확대 중 이동·손잡이 정렬과 작은 창의 버튼 접근을 검사합니다. 기본 간격은 넓은 카드의 분산과 320폭·100~200% 글씨에서 경계, v1.5.0에 저장한 항목의 위치·크기 보존을 함께 확인합니다.
 
 v1.5.0의 카드 내부 편집은 layout/전체 검사에 포함됩니다. 개별 이동·비율 크기·카드 경계, 전체/위젯·계정 분리, 글씨 배율·좁은 창, 저장·새 프로세스 복원·취소, 장치 재생성, 버튼 조작 복원과 선택 목록 갱신을 숨김 WPF 표면에서 검사합니다. 이력 검사는 편집 중 이력 임시 숨김·종료 후 복원도 확인합니다.

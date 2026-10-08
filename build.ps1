@@ -40,6 +40,8 @@ if (-not (Test-Path -LiteralPath $iconPngPath)) {
 $references = @(
     (Join-Path $frameworkRoot 'System.dll'),
     (Join-Path $frameworkRoot 'System.Core.dll'),
+    (Join-Path $frameworkRoot 'System.IO.Compression.dll'),
+    (Join-Path $frameworkRoot 'System.IO.Compression.FileSystem.dll'),
     (Join-Path $frameworkRoot 'System.Security.dll'),
     (Join-Path $frameworkRoot 'System.Management.dll'),
     (Join-Path $frameworkRoot 'System.Web.Extensions.dll'),
@@ -105,6 +107,11 @@ foreach ($reference in $references) {
 
 $arguments += @(
     (Join-Path $sourceRoot 'Program.cs'),
+    (Join-Path $sourceRoot 'SingleInstanceActivation.cs'),
+    (Join-Path $sourceRoot 'SingleInstanceRegressionTests.cs'),
+    (Join-Path $sourceRoot 'WindowsWidgetBridge.cs'),
+    (Join-Path $sourceRoot 'WindowsWidgetRegressionTests.cs'),
+    (Join-Path $sourceRoot 'WindowsWidgetInstaller.cs'),
     (Join-Path $sourceRoot 'AccountSwitcher.cs'),
     (Join-Path $sourceRoot 'AccountSwitcherSelfTest.cs'),
     (Join-Path $sourceRoot 'AccountSwitchRegressionTests.cs'),

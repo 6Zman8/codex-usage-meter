@@ -330,6 +330,20 @@
             <CheckBox x:Name="AutostartCheckBox" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center"/>
           </Grid>
         </Border>
+        <Border Style="{StaticResource SubCard}" Margin="0,8,0,0">
+          <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel><TextBlock Text="자동 시작 시 트레이로" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="창을 숨긴 채 사용량을 갱신합니다. 고정 아이콘을 누르면 다시 열립니다." Style="{StaticResource Muted}" Margin="0,3,12,0" TextWrapping="Wrap"/></StackPanel>
+            <CheckBox x:Name="StartInTrayCheckBox" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center"/>
+          </Grid>
+        </Border>
+        <Border Style="{StaticResource SubCard}" Margin="0,8,0,0">
+          <StackPanel>
+            <TextBlock Text="Windows 위젯 보드" FontWeight="SemiBold"/>
+            <TextBlock Text="트레이에 숨겨 두고 Win+W에서 계정별 잔여량을 확인합니다." Style="{StaticResource Muted}" Margin="0,3,0,8" TextWrapping="Wrap"/>
+            <TextBlock x:Name="WindowsWidgetStatusText" Text="Windows 11 · 처음 등록할 때 개발자 모드 필요" Style="{StaticResource Muted}" TextWrapping="Wrap"/>
+            <Button x:Name="WindowsWidgetInstallButton" HorizontalContentAlignment="Stretch" Style="{StaticResource AccentButton}" Margin="0,10,0,0"><TextBlock Text="Windows 위젯 추가 / 업데이트" TextWrapping="Wrap" TextAlignment="Center"/></Button>
+          </StackPanel>
+        </Border>
         <Border Grid.Row="2" Style="{StaticResource SubCard}" Margin="0,8,0,0">
           <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel><TextBlock Text="계정 칸 수" FontWeight="SemiBold"/><TextBlock Text="1~4개 계정을 두 칸씩 넘겨 봅니다." Style="{StaticResource Muted}" Margin="0,3,12,0"/></StackPanel>

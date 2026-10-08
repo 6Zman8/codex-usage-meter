@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.5.1.0")]
-[assembly: AssemblyFileVersion("1.5.1.0")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 
 namespace CodexUsageMeter
 {
@@ -37,6 +37,26 @@ namespace CodexUsageMeter
         public static int Main(string[] args)
         {
             WebViewRuntime.Register();
+            if (args.Length == 1 && args[0] == "--tray-startup-test") return SingleInstanceRegressionTests.CheckTrayStartup();
+            if (args.Length == 2 && args[0] == "--windows-widget-download-test")
+            {
+                try { string folder = WindowsWidgetInstaller.PreparePackage(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(args[1])), "widget-download")); File.WriteAllText(args[1], "PASS verified widget package: " + folder); return 0; }
+                catch (Exception ex) { File.WriteAllText(args[1], "FAIL " + ex.ToString()); return 1; }
+            }
+            if (args.Length == 2 && args[0] == "--windows-widget-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try { WindowsWidgetRegressionTests.Run(line => report.AppendLine(line), Path.GetDirectoryName(Path.GetFullPath(args[1]))); File.WriteAllText(args[1], report.ToString()); return 0; }
+                catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
+            }
+            if (args.Length == 2 && args[0] == "--activation-test-send") return SingleInstanceRegressionTests.Send(args[1], false);
+            if (args.Length == 2 && args[0] == "--activation-test-refresh") return SingleInstanceRegressionTests.Send(args[1], true);
+            if (args.Length == 2 && args[0] == "--single-instance-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try { SingleInstanceRegressionTests.Run(line => report.AppendLine(line)); File.WriteAllText(args[1], report.ToString()); return 0; }
+                catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
+            }
             if (args.Length == 2 && args[0] == "--usage-history-self-test")
             {
                 StringBuilder report = new StringBuilder();
@@ -168,12 +188,19 @@ namespace CodexUsageMeter
             bool created = true;
             if (!uiSmoke)
             {
+                // Forward shortcut activation before detaching so foreground permission is retained.
+                Mutex running;
+                if (Mutex.TryOpenExisting("Local\\CodexUsageMeter.Singleton", out running))
+                {
+                    using (running) { return ActivateRunningInstance(args); }
+                }
                 // Detach before acquiring the singleton, including when launched by an updater.
                 try
                 {
                     if (IndependentProcess.NeedsIsolation && !args.Contains("--standalone"))
                     {
-                        using (Process independent = IndependentProcess.Start(Assembly.GetExecutingAssembly().Location, "--standalone"))
+                        using (Process independent = IndependentProcess.Start(Assembly.GetExecutingAssembly().Location,
+                            "--standalone" + (args.Contains("--tray") || args.Contains("--widget-refresh") ? " --tray" : String.Empty)))
                         {
                             // Older updaters observe this bootstrap PID for five seconds.
                             if (independent.WaitForExit(6500) && independent.ExitCode != 0)
@@ -186,9 +213,8 @@ namespace CodexUsageMeter
                 _singleInstance = new Mutex(true, "Local\\CodexUsageMeter.Singleton", out created);
                 if (!created)
                 {
-                    MessageBox.Show("Codex 사용량 미터기가 이미 실행 중입니다. 트레이 아이콘을 확인해 주세요.",
-                        "Codex 사용량 미터기", MessageBoxButton.OK, MessageBoxImage.Information);
-                    return 0;
+                    _singleInstance.Dispose(); _singleInstance = null;
+                    return ActivateRunningInstance(args);
                 }
             }
 
@@ -199,6 +225,8 @@ namespace CodexUsageMeter
                 Window window = DashboardController.LoadWindow();
                 window.ShowActivated = false;
                 DashboardController controller = new DashboardController(window);
+                if (!uiSmoke) controller.EnableWindowsWidgetPublishing();
+                if (!uiSmoke && (args.Contains("--tray") || args.Contains("--widget-refresh"))) controller.StartInTray = true;
                 if (!uiSmoke) ChromeSubscriptionBridge.StartIfConfigured();
                 DispatcherTimer smokeTimer = null;
                 if (uiSmoke)
@@ -255,7 +283,11 @@ namespace CodexUsageMeter
                     };
                     smokeTimer.Start();
                 }
-                application.Run(window);
+                using (SingleInstanceActivation activation = uiSmoke ? null :
+                    new SingleInstanceActivation(SingleInstanceActivation.DefaultScope, controller.ShowWindow, controller.RefreshFromWindowsWidget))
+                {
+                    RunMainWindow(application, window, controller.StartInTray, controller.InitializeInTray);
+                }
                 controller.Dispose();
                 return 0;
             }
@@ -274,6 +306,29 @@ namespace CodexUsageMeter
                     _singleInstance.Dispose();
                 }
             }
+        }
+
+        private static int ActivateRunningInstance(string[] args)
+        {
+            if (args.Contains("--widget-refresh"))
+                return SingleInstanceActivation.Request(SingleInstanceActivation.DefaultScope, 6000, true) ? 0 : 1;
+            if (args.Contains("--tray")) return 0;
+            if (SingleInstanceActivation.Request(SingleInstanceActivation.DefaultScope, 6000)) return 0;
+            MessageBox.Show("실행 중인 미터기가 창 열기 요청에 응답하지 않았습니다.\n\n이전 버전이 켜져 있다면 내장 업데이트로 업데이트한 뒤 다시 눌러 주세요.",
+                "Codex 사용량 미터기", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return 1;
+        }
+
+        internal static void RunMainWindow(Application application, Window window, bool tray, Action initialize)
+        {
+            if (tray)
+            {
+                application.MainWindow = window;
+                new WindowInteropHelper(window).EnsureHandle();
+                initialize();
+                application.Run();
+            }
+            else application.Run(window);
         }
     }
 
@@ -412,6 +467,10 @@ namespace CodexUsageMeter
         private readonly Border _compactTitleBar;
         private readonly Border _compactShell;
         private readonly CheckBox _autostartCheckBox;
+        private readonly CheckBox _startInTrayCheckBox;
+        private WindowsWidgetBridge _windowsWidgetBridge;
+        internal bool StartInTray;
+        private bool _windowInitialized;
         private readonly TextBlock _footerStatus;
         private readonly UniformGrid _performanceItemsPanel;
         private readonly TextBlock _performanceCountText;
@@ -535,6 +594,7 @@ namespace CodexUsageMeter
             _compactTitleBar = Find<Border>("CompactTitleBar");
             _compactShell = Find<Border>("CompactShell");
             _autostartCheckBox = Find<CheckBox>("AutostartCheckBox");
+            _startInTrayCheckBox = Find<CheckBox>("StartInTrayCheckBox");
             _footerStatus = Find<TextBlock>("FooterStatus");
             _performanceItemsPanel = Find<UniformGrid>("PerformanceItemsPanel");
             _performanceCountText = Find<TextBlock>("PerformanceCountText");
@@ -619,12 +679,15 @@ namespace CodexUsageMeter
             _compactTitleBar.MouseLeftButtonDown += TitleBarMouseLeftButtonDown;
             _autostartCheckBox.Checked += AutostartChanged;
             _autostartCheckBox.Unchecked += AutostartChanged;
+            _startInTrayCheckBox.Checked += StartInTrayChanged;
+            _startInTrayCheckBox.Unchecked += StartInTrayChanged;
             _settingsCloseButton.Click += SettingsCloseButtonClick;
             _settingsDoneButton.Click += SettingsCloseButtonClick;
             _fontDecreaseButton.Click += FontDecreaseButtonClick;
             _fontResetButton.Click += FontResetButtonClick;
             _fontIncreaseButton.Click += FontIncreaseButtonClick;
             _updateCheckButton.Click += UpdateCheckButtonClick;
+            Find<Button>("WindowsWidgetInstallButton").Click += WindowsWidgetInstallClick;
             _accountCountDecreaseButton.Click += AccountCountDecreaseButtonClick;
             _accountCountIncreaseButton.Click += AccountCountIncreaseButtonClick;
             _accountPagePreviousButton.Click += AccountPagePreviousButtonClick;
@@ -811,6 +874,8 @@ namespace CodexUsageMeter
 
         private async void WindowLoaded(object sender, RoutedEventArgs e)
         {
+            if (_windowInitialized) return;
+            _windowInitialized = true;
             CaptureFontTargets(_window.Content as DependencyObject);
             ApplyFontScale(UserSettings.LoadFontScale(), false);
             _settingAutostart = true;
@@ -818,6 +883,7 @@ namespace CodexUsageMeter
             {
                 bool autostartEnabled = AutoStartManager.IsEnabled();
                 _autostartCheckBox.IsChecked = autostartEnabled;
+                _startInTrayCheckBox.IsChecked = UserSettings.LoadStartInTray();
                 if (autostartEnabled)
                 {
                     AutoStartManager.SetEnabled(true);
@@ -834,6 +900,8 @@ namespace CodexUsageMeter
             await RefreshSystemAsync();
             await RefreshAccountsAsync();
         }
+
+        internal void InitializeInTray() { WindowLoaded(null, null); }
 
         private void SetDisplayMode(bool compact)
         {
@@ -1362,6 +1430,64 @@ namespace CodexUsageMeter
             }
         }
 
+        private void StartInTrayChanged(object sender, RoutedEventArgs e)
+        {
+            if (_settingAutostart) return;
+            try
+            {
+                UserSettings.SaveStartInTray(_startInTrayCheckBox.IsChecked == true);
+                if (AutoStartManager.IsEnabled()) AutoStartManager.SetEnabled(true);
+            }
+            catch (Exception ex) { ShowModal("트레이 시작 설정 실패", ex.Message, null, "확인", null, null, null); }
+        }
+
+        internal void EnableWindowsWidgetPublishing()
+        {
+            _windowsWidgetBridge = new WindowsWidgetBridge(WindowsWidgetBridge.DefaultRoot);
+            try { _windowsWidgetBridge.SetApplicationPath(Assembly.GetExecutingAssembly().Location); }
+            catch (Exception) { SetFooterText("Windows 위젯에 프로그램 경로를 저장하지 못했습니다."); }
+            PublishWindowsWidget(true);
+        }
+
+        private void PublishWindowsWidget(bool running)
+        {
+            if (_windowsWidgetBridge == null) return;
+            try { _windowsWidgetBridge.Publish(_accounts.Where(account => account.Number <= _accountCount), running); }
+            catch (Exception) { SetFooterText("Windows 위젯 자료 저장 실패 · 기존 계정 자료는 유지됩니다."); }
+        }
+
+        internal async void RefreshFromWindowsWidget()
+        {
+            await RefreshAccountsAsync();
+        }
+
+        private async void WindowsWidgetInstallClick(object sender, RoutedEventArgs e)
+        {
+            if (!WindowsWidgetInstaller.SupportedWindows())
+            {
+                ShowModal("Windows 위젯", "Windows 11 64비트에서 사용할 수 있습니다.", null, "확인", null, null, null);
+                return;
+            }
+            if (!WindowsWidgetInstaller.DeveloperModeEnabled())
+            {
+                ShowModal("Windows 위젯 등록 준비", "이 GitHub 버전의 Windows 위젯은 Windows 개발자 모드를 켜야 등록할 수 있습니다.\n\nWindows 설정에서 개발자 모드를 켠 뒤 이 버튼을 다시 눌러 주세요. 미터기는 이 보안 설정을 자동으로 바꾸지 않습니다.",
+                    null, "Windows 설정 열기", "나중에", delegate { Process.Start(new ProcessStartInfo("ms-settings:developers") { UseShellExecute = true }); }, null);
+                return;
+            }
+            Button button = Find<Button>("WindowsWidgetInstallButton");
+            TextBlock status = Find<TextBlock>("WindowsWidgetStatusText");
+            button.IsEnabled = false; status.Text = "정식 위젯 구성요소를 다운로드·검증·등록하는 중…";
+            try
+            {
+                await WindowsWidgetInstaller.InstallAsync();
+                PublishWindowsWidget(true);
+                status.Text = "등록 완료 · Win+W → 위젯 추가 → Codex 사용량";
+                ShowModal("Windows 위젯 등록 완료", "Win+W를 누르고 위젯 추가에서 ‘Codex 사용량’을 고정하세요.\n\n미터기의 최소화 버튼으로 트레이에 숨겨도 사용량은 계속 갱신됩니다. ‘로그인 시 시작’과 ‘자동 시작 시 트레이로’를 켜면 다음 로그인부터 창 없이 유지됩니다.", null, "확인", null, null, null);
+            }
+            catch (Exception ex) { status.Text = "등록되지 않았습니다. 다시 추가할 수 있습니다."; ShowModal("Windows 위젯 등록 실패", ex.Message, null, "확인", null, null, null); }
+            finally { button.IsEnabled = true; }
+        }
+
         private void SettingsButtonClick(object sender, RoutedEventArgs e)
         {
             _settingsOverlay.Visibility = Visibility.Visible;
@@ -1740,6 +1866,7 @@ namespace CodexUsageMeter
                 {
                     states[index].LastSnapshot = snapshots[index];
                 }
+                PublishWindowsWidget(true);
                 _activeCodexAccountNumber = _accountSwitcher.DetectActiveAccountNumber(_accountCount);
                 BindAccountPage();
                 _layoutView.ReloadHistory();
@@ -2950,17 +3077,9 @@ namespace CodexUsageMeter
             return Char.ToUpperInvariant(plan[0]) + plan.Substring(1);
         }
 
-        private void ShowWindow()
+        internal void ShowWindow()
         {
-            if (!_window.IsVisible)
-            {
-                _window.Show();
-            }
-            if (_window.WindowState == WindowState.Minimized)
-            {
-                _window.WindowState = WindowState.Normal;
-            }
-            _window.Activate();
+            SingleInstanceActivation.Restore(_window, true);
         }
 
         private void ExitApplication()
@@ -3133,6 +3252,7 @@ namespace CodexUsageMeter
                 return;
             }
             _disposed = true;
+            PublishWindowsWidget(false);
             _systemTimer.Stop();
             _accountTimer.Stop();
             foreach (AccountState state in _accounts)
@@ -3161,6 +3281,18 @@ namespace CodexUsageMeter
         private const string TopmostValue = "Topmost";
         private const string FontScaleValue = "FontScalePercent";
         private const string AccountCountValue = "AccountCount";
+
+        internal static bool LoadStartInTray()
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey, false))
+                return key != null && Convert.ToString(key.GetValue("StartInTray")) == "1";
+        }
+
+        internal static void SaveStartInTray(bool enabled)
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                key.SetValue("StartInTray", enabled ? 1 : 0, RegistryValueKind.DWord);
+        }
 
         public static bool LoadTopmost()
         {
@@ -3263,7 +3395,7 @@ namespace CodexUsageMeter
                 if (enabled)
                 {
                     string executable = Assembly.GetExecutingAssembly().Location;
-                    key.SetValue(ValueName, "\"" + executable + "\"", RegistryValueKind.String);
+                    key.SetValue(ValueName, "\"" + executable + "\"" + (UserSettings.LoadStartInTray() ? " --tray" : String.Empty), RegistryValueKind.String);
                 }
                 else
                 {
@@ -3418,6 +3550,8 @@ namespace CodexUsageMeter
                 }
                 window.Close();
                 lines.Add("PASS ui: Codex relogin buttons, shared modal, responsive layout, saved settings, and app icon enabled");
+                SingleInstanceRegressionTests.Run(lines.Add);
+                WindowsWidgetRegressionTests.Run(lines.Add, Path.GetDirectoryName(Path.GetFullPath(resultPath)));
                 UpdateUiRegressionTests.Run(lines.Add, null);
                 RateLimitRegressionTests.Run(lines.Add);
                 UsageHistoryRegressionTests.Run(lines.Add, Path.GetDirectoryName(Path.GetFullPath(resultPath)));

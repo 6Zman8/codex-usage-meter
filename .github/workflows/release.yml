@@ -30,6 +30,25 @@ jobs:
         shell: pwsh
         run: node browser/subscription.test.cjs
 
+      - name: Build and verify Windows widget provider
+        shell: pwsh
+        run: |
+          .\build-windows-widget.ps1
+          [xml]$manifest = Get-Content -LiteralPath '.\bin\windows-widget\package\AppxManifest.xml' -Raw
+          $mainVersion = [version](Get-Item -LiteralPath '.\bin\CodexUsageMeter.exe').VersionInfo.FileVersion
+          if ([version]$manifest.Package.Identity.Version -ne $mainVersion) { throw 'Widget package version does not match the meter' }
+
+      - name: Verify shortcut activation and Windows widget bridge
+        shell: pwsh
+        run: |
+          foreach ($kind in @('single-instance', 'windows-widget')) {
+            $result = "$kind-self-test.txt"
+            $test = Start-Process -FilePath '.\bin\CodexUsageMeter.exe' -ArgumentList "--$kind-self-test $result" -WindowStyle Hidden -PassThru
+            if (-not $test.WaitForExit(30000)) { throw "$kind verification timed out" }
+            Get-Content -LiteralPath $result
+            if ($test.ExitCode -ne 0) { throw "$kind verification failed" }
+          }
+
       - name: Verify update dialog and Korean release notes
         shell: pwsh
         run: |
@@ -95,4 +114,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:GITHUB_REF_NAME '.\bin\CodexUsageMeter.exe#CodexUsageMeter.exe' --verify-tag --notes-file '.\docs\releases\update-summary.txt' --title "Codex Usage Meter $env:GITHUB_REF_NAME"
+          gh release create $env:GITHUB_REF_NAME '.\bin\CodexUsageMeter.exe#CodexUsageMeter.exe' '.\bin\windows-widget\CodexUsageMeter.WindowsWidget.zip#CodexUsageMeter.WindowsWidget.zip' --verify-tag --notes-file '.\docs\releases\update-summary.txt' --title "Codex Usage Meter $env:GITHUB_REF_NAME"

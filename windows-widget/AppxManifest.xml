@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+ xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+ xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+ xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+ xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+ IgnorableNamespaces="uap uap3 com rescap">
+  <Identity Name="CodexUsageMeter.WindowsWidget" Publisher="CN=CodexUsageMeter" Version="1.6.0.0" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>Codex 사용량 위젯</DisplayName>
+    <PublisherDisplayName>CodexUsageMeter</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" /></Dependencies>
+  <Resources><Resource Language="ko-kr" /></Resources>
+  <Applications>
+    <Application Id="WidgetProvider" Executable="CodexUsageMeter.WidgetProvider.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Codex 사용량 위젯" Description="미터기에 연결된 계정의 남은 사용량을 보여 줍니다."
+        BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" AppListEntry="none" />
+      <Extensions>
+        <com:Extension Category="windows.comServer"><com:ComServer>
+          <com:ExeServer Executable="CodexUsageMeter.WidgetProvider.exe" Arguments="-RegisterProcessAsComServer" DisplayName="Codex 사용량 위젯">
+            <com:Class Id="6BA7A0D2-8E9C-4F5D-A263-624316ECC101" DisplayName="Codex 사용량 위젯" />
+          </com:ExeServer>
+        </com:ComServer></com:Extension>
+        <uap3:Extension Category="windows.appExtension">
+          <uap3:AppExtension Name="com.microsoft.windows.widgets" DisplayName="Codex 사용량 위젯" Id="CodexUsageMeterWindowsWidget" PublicFolder="Public">
+            <uap3:Properties><WidgetProvider>
+              <ProviderIcons><Icon Path="Assets\WidgetIcon.png" /></ProviderIcons>
+              <Activation><CreateInstance ClassId="6BA7A0D2-8E9C-4F5D-A263-624316ECC101" /></Activation>
+              <Definitions><Definition Id="CodexUsageSummary" DisplayName="Codex 사용량" Description="최대 4개 계정의 남은 사용량과 연결 상태" AllowMultiple="false">
+                <Capabilities><Capability><Size Name="small" /></Capability><Capability><Size Name="medium" /></Capability><Capability><Size Name="large" /></Capability></Capabilities>
+                <ThemeResources>
+                  <Icons><Icon Path="Assets\WidgetIcon.png" /></Icons>
+                  <Screenshots><Screenshot Path="Assets\WidgetScreenshot.png" DisplayAltText="계정별 남은 5시간·주간 사용량과 조회 상태" /></Screenshots>
+                </ThemeResources>
+              </Definition></Definitions>
+            </WidgetProvider></uap3:Properties>
+          </uap3:AppExtension>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities><rescap:Capability Name="runFullTrust" /></Capabilities>
+</Package>

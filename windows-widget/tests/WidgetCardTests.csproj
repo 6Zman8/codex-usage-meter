@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="TestProgram.cs" />
+    <Compile Include="../SelfTests.cs" />
+    <Compile Include="../WidgetContent.cs" />
+    <Compile Include="../WidgetFiles.cs" />
+    <Compile Include="../WindowsLauncher.cs" />
+  </ItemGroup>
+</Project>

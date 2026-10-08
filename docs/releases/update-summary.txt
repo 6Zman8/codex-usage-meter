@@ -1,1 +1,1 @@
-Maximize the layout editor, zoom and scroll previews, and use roomier default card spacing.
+Restore the running meter from pinned shortcuts; add Windows 11 Widgets and optional tray startup.

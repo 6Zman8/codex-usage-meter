@@ -40,6 +40,8 @@
 
 ## 프로젝트 구조와 확인 방법
 
+Windows 11 위젯 제공자만 별도 `windows-widget/` 소스와 `build-windows-widget.ps1`을 사용합니다. 해당 스크립트는 프로젝트 내부의 휴대용 .NET 8 SDK로 제공자를 빌드합니다. 본체의 기존 .NET Framework 빌드에는 별도 SDK가 필요하지 않습니다. 위젯 설치 조건과 사용법은 [Windows 위젯 안내](WINDOWS_WIDGETS.md)를 확인하세요.
+
 - `src`: C# 소스, WPF 화면, 기존 회귀검사
 - `assets`: 앱 아이콘 원본
 - `build.cmd`: 더블클릭 빌드 진입점
