@@ -23,6 +23,7 @@ namespace CodexUsageMeter
             return loaded.Widget.Cards[0].Id == "pc" && loaded.Widget.VisibleAccounts(4).SequenceEqual(new[] { 3 }) &&
                 loaded.Widget.Card("pc").Span == 2 && loaded.Widget.Card("pc").Size == 2 &&
                 loaded.Widget.Card("pc").ItemLayouts.Any(item => item.Id == "cpu" && item.X == 0.25 && item.Width == 0.4) &&
+                !loaded.Widget.Card("pc").ShowsItem("network") &&
                 loaded.Expanded.VisibleAccounts(4).Length == 4 ? 0 : 1;
         }
 
@@ -33,6 +34,7 @@ namespace CodexUsageMeter
             VerifyEditorZoom(report, previewDirectory);
             VerifyDefaultSpacing(report, previewDirectory);
             VerifyContentLayout(report, previewDirectory);
+            VerifyItemVisibility(report);
             CheckAccountAlignmentAndFit(report, previewDirectory);
             SubscriptionRegressionTests.Run(report);
             AccountSubscriptionRegressionTests.Run(report);
@@ -46,6 +48,7 @@ namespace CodexUsageMeter
             edit.Widget.Card("pc").Span = 2;
             edit.Widget.Card("pc").Size = 2;
             edit.Widget.Card("pc").ItemLayouts.Add(new LayoutItemSettings { Id = "cpu", X = 0.25, Y = 0.15, Width = 0.4, Height = 0.35 });
+            edit.Widget.Card("pc").SetItemVisible("network", false);
             edit.Widget.Move("pc", "account1");
             Require(saved.Widget.VisibleAccounts(4).Length == 4 && saved.Widget.Card("account3").Shows("short"), "Editing a draft mutated the original layout.");
             LayoutSettings loaded = LayoutSettings.Parse(edit.ToJson());
@@ -614,8 +617,9 @@ namespace CodexUsageMeter
                     {
                         CheckBox weekly = Descendants<CheckBox>(root).Single(box => Convert.ToString(box.Content) == "주간 한도");
                         weekly.IsChecked = visible; weekly.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent)); root.UpdateLayout();
-                        Require(Descendants<Button>(root).Any(button => Convert.ToString(button.Tag) == "item:weekly") == visible,
-                            "section visibility changed without updating the item selection list");
+                        Require(Descendants<Button>(root).Any(button => Convert.ToString(button.Tag) == "item:weekly") &&
+                            Descendants<CheckBox>(root).Single(box => Convert.ToString(box.Tag) == "item-visible:weekly").IsChecked == visible,
+                            "hidden section must remain in the item list with its current visibility");
                     }
                     Descendants<Button>(root).Single(button => Convert.ToString(button.Content) == "PC 상태").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     pcEditor.SetItemEditing(true); root.UpdateLayout();
@@ -631,6 +635,53 @@ namespace CodexUsageMeter
             }
             report("PASS content: custom positions and sizes fit card bounds, survive viewport/font changes and reset independently");
             report("PASS content: routed item move/resize, aligned handles, draft isolation, save, cancel and restored interaction");
+        }
+
+        private static void VerifyItemVisibility(Action<string> report)
+        {
+            using (Fixture fixture = new Fixture())
+            {
+                foreach (bool compact in new[] { false, true })
+                {
+                    LayoutSettings settings = LayoutSettings.Defaults();
+                    settings.Mode(compact).Card("account1").SetItemVisible("header", false);
+                    settings.Mode(compact).Card("account1").SetItemVisible("weekly", false);
+                    settings.Mode(compact).Card("pc").SetItemVisible("cpu", false);
+                    settings = settings.Copy();
+                    fixture.Layout(settings, compact); fixture.Render(900, 620);
+                    DashboardLayoutView layout = (DashboardLayoutView)typeof(DashboardController).GetField("_layoutView", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(fixture.Controller);
+                    LayoutTile tile = layout.Tiles(compact).Single(value => value.Settings.Id == "account1");
+                    Require(tile.ContentItems().Where(item => item.Id == "header" || item.Id == "weekly").All(item => !item.Element.IsVisible),
+                        "hidden header or gauge was still rendered");
+                    Require(!layout.Tiles(compact).Single(value => value.Settings.Id == "pc").ContentItems().Single(item => item.Id == "cpu").Element.IsVisible,
+                        "hidden PC metric was still rendered");
+                    if (compact)
+                        Require(tile.ContentItems().Single(item => item.Id == "countdown").Element.IsVisible, "hiding a ring also hid its countdown");
+                    fixture.Page(1); fixture.Render(900, 620);
+                    Require(tile.ContentItems().Single(item => item.Id == "header").Element.IsVisible, "hidden item leaked into another account");
+                    settings.Mode(compact).Card("account1").HiddenItems.Clear();
+                    fixture.Layout(settings, compact); fixture.Render(900, 620);
+                    Require(tile.ContentItems().Single(item => item.Id == "weekly").Element.IsVisible, "restored item stayed hidden");
+                    Require(settings.Mode(!compact).Card("pc").ShowsItem("cpu"), "hiding changed the other mode");
+                }
+                LayoutSettings original = LayoutSettings.Defaults(), saved = null, restored = null;
+                LayoutEditor editor = fixture.Editor(original, true, state => { }, state => saved = state);
+                RenderEditor(editor, root => {
+                    editor.SetItemEditing(true); root.UpdateLayout();
+                    CheckBox box = Descendants<CheckBox>(root).Single(value => Convert.ToString(value.Tag) == "item-visible:subscription");
+                    box.IsChecked = false; box.RaiseEvent(new RoutedEventArgs(CheckBox.ClickEvent)); root.UpdateLayout();
+                    Require(!editor.Draft.Widget.Card("account1").ShowsItem("subscription") &&
+                        original.Widget.Card("account1").ShowsItem("subscription"), "checkbox changed the saved settings instead of the draft");
+                    Require(Descendants<Button>(root).Any(button => Convert.ToString(button.Tag) == "item:subscription"),
+                        "hidden item cannot be selected for restoration");
+                }, null);
+                Require(editor.TrySave(), "hidden item settings were not saved"); editor.Close();
+                LayoutEditor cancel = fixture.Editor(saved, true, state => restored = state, state => { throw new InvalidOperationException("cancel saved"); });
+                RenderEditor(cancel, root => { cancel.SetItemVisible("subscription", true); root.UpdateLayout(); }, null);
+                cancel.Close();
+                Require(!restored.Widget.Card("account1").ShowsItem("subscription"), "cancel did not restore hidden items");
+            }
+            report("PASS item visibility: header/gauge/subscription/PC hide and restore, saved draft isolation, cancel, per-account/mode independence");
         }
 
         private static void DragItem(Grid root, Thumb handle, double dx, double dy)

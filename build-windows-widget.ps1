@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$DotNetPath = '',
     [string]$LogDirectory = '',
@@ -11,7 +11,7 @@ $sourceRoot = Join-Path $projectRoot 'windows-widget'
 $toolRoot = Join-Path $projectRoot 'obj\widget-tools'
 $packageRoot = Join-Path $projectRoot 'bin\windows-widget\package'
 $outputZip = Join-Path $projectRoot 'bin\windows-widget\CodexUsageMeter.WindowsWidget.zip'
-if (-not $LogDirectory) { $LogDirectory = Join-Path $projectRoot 'work\v1.6.0\widget-provider' }
+if (-not $LogDirectory) { $LogDirectory = Join-Path $projectRoot 'work\v1.7.0\widget-provider' }
 New-Item -ItemType Directory -Path $toolRoot,$packageRoot,$LogDirectory -Force | Out-Null
 
 if (-not $DotNetPath) {
@@ -47,9 +47,9 @@ if ($LASTEXITCODE -ne 0) { throw "Widget publish failed. See $buildLog" }
 
 # Self-contained WinRT components need both their native payload and activation declarations.
 # Preserve Microsoft's complete package fragment; copying only EXE/DLL is insufficient.
-[xml]$manifest = Get-Content -LiteralPath (Join-Path $sourceRoot 'AppxManifest.xml') -Raw
+[xml]$manifest = Get-Content -LiteralPath (Join-Path $sourceRoot 'AppxManifest.xml') -Raw -Encoding UTF8
 $fragmentPath = Join-Path $env:NUGET_PACKAGES 'microsoft.windowsappsdk.widgets\2.0.5\runtimes-framework\package.appxfragment'
-[xml]$fragment = Get-Content -LiteralPath $fragmentPath -Raw
+[xml]$fragment = Get-Content -LiteralPath $fragmentPath -Raw -Encoding UTF8
 $extensions = $manifest.CreateElement('Extensions', $manifest.DocumentElement.NamespaceURI)
 foreach ($extension in $fragment.DocumentElement.Extensions.ChildNodes) {
     if ($extension.NodeType -eq [Xml.XmlNodeType]::Element) { [void]$extensions.AppendChild($manifest.ImportNode($extension,$true)) }
@@ -103,7 +103,7 @@ $testResult = Join-Path $LogDirectory 'self-test.json'
 $test = Start-Process -FilePath $executable -ArgumentList @('--self-test',('"'+$testResult+'"')) -PassThru -WindowStyle Hidden
 if (-not $test.WaitForExit(60000)) { $test.Kill(); throw 'Widget self-test timed out.' }
 if ($test.ExitCode -ne 0) { throw "Widget self-test failed ($($test.ExitCode)). See $testResult" }
-$result = Get-Content -LiteralPath $testResult -Raw | ConvertFrom-Json
+$result = Get-Content -LiteralPath $testResult -Raw -Encoding UTF8 | ConvertFrom-Json
 if (-not $result.passed) { throw "Widget self-test did not pass. See $testResult" }
 
 $runtimeResult = Join-Path $LogDirectory 'runtime-probe.json'
@@ -140,6 +140,6 @@ if ($zipTemporary -ne $outputZip) {
     $oldZip = Join-Path $LogDirectory ('previous-widget-'+[Guid]::NewGuid().ToString('N')+'.zip')
     [IO.File]::Replace($zipTemporary,$outputZip,$oldZip)
 }
-$summary = [ordered]@{ Version='1.6.0.0'; Architecture='x64'; PackageFolder=$packageRoot; Zip=$outputZip; Sha256=(Get-FileHash -LiteralPath $outputZip -Algorithm SHA256).Hash; Bytes=(Get-Item -LiteralPath $outputZip).Length; Tests=$result.total; NativeWinRtAndComProbe=$true; UnpackagedLaunchProbe=$true; MakeAppxValidated=$true; Registered=$false }
+$summary = [ordered]@{ Version='1.7.0.0'; Architecture='x64'; PackageFolder=$packageRoot; Zip=$outputZip; Sha256=(Get-FileHash -LiteralPath $outputZip -Algorithm SHA256).Hash; Bytes=(Get-Item -LiteralPath $outputZip).Length; Tests=$result.total; NativeWinRtAndComProbe=$true; UnpackagedLaunchProbe=$true; MakeAppxValidated=$true; Registered=$false }
 $summary | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $LogDirectory 'build-summary.json') -Encoding UTF8
 $summary | ConvertTo-Json -Compress

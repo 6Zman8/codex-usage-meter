@@ -5,7 +5,7 @@ namespace CodexUsageMeter.WindowsWidget;
 
 internal static class WidgetContent
 {
-    internal static JsonObject Build(string? snapshotJson, string size, DateTimeOffset now)
+    internal static JsonObject Build(string? snapshotJson, string size, DateTimeOffset now, int page = 0)
     {
         bool small = size.Equals("Small", StringComparison.OrdinalIgnoreCase);
         bool large = size.Equals("Large", StringComparison.OrdinalIgnoreCase);
@@ -48,6 +48,32 @@ internal static class WidgetContent
         DateTimeOffset? written = Date(snapshot["writtenAtUtc"]);
         bool snapshotStale = Stale(written, now);
         string heading = !running ? "미터기 꺼짐 · 마지막 기록" : snapshotStale ? "오래됨 · 마지막 기록" : "남은 사용량";
+        if (snapshot["widgetPages"] is JsonObject views)
+        {
+            string key = small ? "Small" : large ? "Large" : "Medium";
+            JsonArray pages = views[key] as JsonArray ?? new JsonArray();
+            int index = pages.Count == 0 ? 0 : Math.Max(0, page) % pages.Count;
+            string image = pages.Count is >= 1 and <= 5 ? String(pages[index]?["image"]) : "";
+            if (!image.StartsWith("data:image/png;base64,", StringComparison.Ordinal))
+            {
+                body.Add(Text("위젯 화면을 읽을 수 없습니다. 미터기에서 새로고침해 주세요.", "Small", true));
+                return card;
+            }
+            bool resetPending = snapshot["accounts"]!.AsArray().OfType<JsonObject>()
+                .Any(account => String(account["status"]) == "ok" && new[] { "primary", "secondary" }
+                    .Any(name => account[name] is JsonObject limit && Date(limit["resetsAtUtc"]) is DateTimeOffset reset && reset <= now));
+            if (running && !snapshotStale && resetPending) heading = "초기화됨 · 갱신 대기";
+            if (!small || !running || snapshotStale || resetPending)
+                body.Add(Text(heading + (pages.Count > 1 ? $" · {index + 1}/{pages.Count}" : ""), "Small", false, subtle: true));
+            body.Add(new JsonObject {
+                ["type"] = "Image", ["url"] = image, ["altText"] = String(pages[index]?["alt"]),
+                ["size"] = "Stretch", ["height"] = (small ? 56 : large ? 350 : 194) + "px",
+                ["spacing"] = "None", ["selectAction"] = new JsonObject { ["type"] = "Action.Execute", ["title"] = "미터기 열기", ["verb"] = "open" }
+            });
+            if (pages.Count > 1) card["actions"]!.AsArray().Add(new JsonObject { ["type"] = "Action.Execute", ["title"] = "다음 계정", ["verb"] = "page" });
+            return card;
+        }
+        // Older meter versions publish data without a rendered compact dashboard.
         if(!small) body.Add(Text(heading, "Small", false, subtle: true));
 
         var accounts = snapshot["accounts"]!.AsArray().OfType<JsonObject>()

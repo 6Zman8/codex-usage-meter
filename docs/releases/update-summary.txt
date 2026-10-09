@@ -1,1 +1,1 @@
-Restore the running meter from pinned shortcuts; add Windows 11 Widgets and optional tray startup.
+Hide individual layout items, match Windows Widgets to the meter, and show remaining quota in the system tray.

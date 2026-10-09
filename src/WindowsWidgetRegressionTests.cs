@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Web.Script.Serialization;
@@ -58,6 +59,7 @@ namespace CodexUsageMeter
             if ((bool)root["running"] || ((ArrayList)root["accounts"]).Count != 1)
                 throw new InvalidOperationException("Shutdown/account count did not replace previous snapshot");
             report("PASS atomic snapshot replacement records shutdown and the current account count");
+            CheckRenderedWidget(report, directory);
             CheckPackageInputs(report, directory);
             CheckSettings(320, 480, 2, directory);
             CheckSettings(460, 780, 1.5, directory);
@@ -96,6 +98,66 @@ namespace CodexUsageMeter
             catch (InvalidDataException) { rejected = true; }
             if (!rejected) throw new InvalidOperationException("Different widget publisher was accepted");
             report("PASS widget package identity, publisher, architecture and matching app version are checked");
+        }
+
+        private static void CheckRenderedWidget(Action<string> report, string directory)
+        {
+            DateTime now = DateTime.UtcNow;
+            var accounts = Enumerable.Range(1, 4).Select(number => new AccountState { Number = number, Label = "private-label",
+                LastSnapshot = new AccountSnapshot { Email = "private@example.test", IsAuthenticated = true, PlanType = "prolite", RateLimitsObservedAtUtc = now,
+                    Primary = new RateWindow { Name = "5시간 한도", RemainingPercent = 0, DurationMinutes = 300, ResetsAt = now.AddHours(1) },
+                    Secondary = new RateWindow { Name = "주간 한도", RemainingPercent = 41, DurationMinutes = 10080, ResetsAt = now.AddDays(2) } } }).ToArray();
+            LayoutSettings settings = LayoutSettings.Defaults();
+            settings.Widget.Move("pc", "account1");
+            settings.Widget.Card("account1").SetItemVisible("subscription", false);
+            settings.Widget.Card("account1").ItemLayouts.Add(new LayoutItemSettings { Id = "weekly", X = 0.05, Y = 0.25, Width = 0.4, Height = 0.5 });
+            var system = new SystemSnapshot { CpuPercent = 28, MemoryPercent = 63 };
+            using (var renderer = new WindowsWidgetRenderer())
+            {
+                var pages = renderer.Render(accounts, settings, system, 1.5, now);
+                if (pages["Large"].Count != 2 || pages["Medium"].Count != 3 || pages["Small"].Count != 5 ||
+                    !pages["Large"][0]["alt"].Contains("계정 1") || !pages["Large"][1]["alt"].Contains("계정 4") ||
+                    !pages["Large"][0]["alt"].Contains("0%") || !pages["Large"][0]["alt"].Contains("41%") || !pages["Large"][0]["alt"].Contains("63%") ||
+                    pages.Values.SelectMany(value => value).Any(page => page["alt"].Contains("private")))
+                    throw new InvalidOperationException("Rendered widget lost accounts, real quota/PC values or leaked identity");
+                for (int size = 0; size < WindowsWidgetRenderer.Sizes.Length; size++)
+                {
+                    var sizePages = pages[WindowsWidgetRenderer.Sizes[size]];
+                    string text = String.Join(" · ", sizePages.Select(page => page["alt"]));
+                    if (Enumerable.Range(1, 4).Any(number => !text.Contains("계정 " + number)))
+                        throw new InvalidOperationException("Responsive pagination lost an account");
+                    byte[] png = Convert.FromBase64String(sizePages[0]["image"].Substring("data:image/png;base64,".Length));
+                    using (var stream = new MemoryStream(png))
+                    {
+                        BitmapFrame frame = BitmapFrame.Create(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+                        if (frame.PixelWidth != 600 || frame.PixelHeight != WindowsWidgetRenderer.Heights[size] * 2)
+                            throw new InvalidOperationException("Widget bitmap does not fit the requested host size");
+                    }
+                    File.WriteAllBytes(Path.Combine(directory, "widget-" + WindowsWidgetRenderer.Sizes[size] + ".png"), png);
+                }
+                string json = WindowsWidgetBridge.BuildJson(accounts, true, now, pages);
+                if (Encoding.UTF8.GetByteCount(json) > 512 * 1024) throw new InvalidOperationException("Rendered snapshot exceeds the provider input limit");
+                File.WriteAllText(Path.Combine(directory, "rendered-snapshot.json"), json);
+                settings.Widget.Card("account3").Visible = settings.Widget.Card("account4").Visible = false;
+                pages = renderer.Render(accounts, settings, system, 1.5, now);
+                LayoutTile first = renderer.Layout.Tiles(true).Single(tile => tile.Settings.Id == "account1");
+                if (pages["Large"].Count != 1 || renderer.Layout.Tiles(true).First().Settings.Id != "pc" ||
+                    first.ContentItems().Single(item => item.Id == "subscription").Element.IsVisible)
+                    throw new InvalidOperationException("Windows widget did not follow the compact layout order/visibility");
+                LayoutItemSettings position = CardContentLayout.Position(first, first.ContentItems().Single(item => item.Id == "weekly"));
+                if (position.X < 0.049 || position.X + position.Width > 0.451 || position.Y < 0.249 || position.Y + position.Height > 0.751)
+                    throw new InvalidOperationException("Windows widget ignored saved item bounds");
+                accounts[0].LastSnapshot.Error = "secret error";
+                pages = renderer.Render(accounts, settings, system, 1.5, now);
+                if (!pages["Large"][0]["alt"].Contains("조회 실패") || pages["Large"][0]["alt"].Contains("secret") ||
+                    ((TextBlock)renderer.Window.FindName("CompactAccount1PrimaryValue")).Text.Contains("%"))
+                    throw new InvalidOperationException("Failed account exposed a current quota or raw error");
+                accounts[0].LastSnapshot.Error = null;
+                accounts[0].LastSnapshot.Primary.ResetsAt = now;
+                pages = renderer.Render(accounts, settings, system, 1.5, now);
+                if (!pages["Large"][0]["alt"].Contains("갱신 대기")) throw new InvalidOperationException("Expired quota was presented as current");
+            }
+            report("PASS rendered Windows widget: shared gauges/layout, 3 sizes, paging, real zero/PC values, hidden items/order/bounds and private-data exclusion");
         }
 
         private static void CheckSettings(int width, int height, double scale, string evidence)

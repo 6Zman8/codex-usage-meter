@@ -53,6 +53,36 @@ internal static class SelfTests
         Check("account label control characters and markdown cannot inject card content", () => { var s=Render(SampleJson.Replace("계정 1", "[evil](https://invalid.example)")); Require(!s.Contains("https://invalid.example"),"Untrusted label must not become markdown link"); });
         Check("unexpected account numbers and duplicates do not exceed four rows", () => { var doc=JsonNode.Parse(SampleJson)!;var accounts=doc["accounts"]!.AsArray();accounts.Add(accounts[0]!.DeepClone());var extra=accounts[0]!.DeepClone();extra["number"]=5;extra["label"]="계정 5";accounts.Add(extra);var s=Text(doc.ToJsonString());Require(!s.Contains("계정 5") && s.Split("계정 1").Length==2,"Unexpected or duplicate account was displayed"); });
         Check("open action retains the exact executable path without a shell", () => { var start=WidgetFiles.CreateStartInfo(@"C:\fixture with spaces\a&b\CodexUsageMeter.exe","open");Require(start.FileName==@"C:\fixture with spaces\a&b\CodexUsageMeter.exe" && start.Arguments=="" && !start.UseShellExecute,"Open command was changed or interpreted by shell"); });
+        Check("rendered compact dashboard replaces text rows in every size and pages", () => {
+            var sample=JsonNode.Parse(SampleJson)!;
+            var views=new JsonObject();
+            foreach(string size in new[]{"Small","Medium","Large"})
+            {
+                var pages=new JsonArray();
+                for(int page=0;page<2;page++) pages.Add(new JsonObject {
+                    ["image"]="data:image/png;base64,"+Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(size+page)),
+                    ["alt"]="계정 "+(page==0?"1 · 계정 2":"3 · 계정 4")
+                });
+                views[size]=pages;
+            }
+            sample["widgetPages"]=views;
+            foreach(string size in new[]{"Small","Medium","Large"})
+            {
+                var card=WidgetContent.Build(sample.ToJsonString(),size,TestNow,1);
+                var image=card["body"]!.AsArray().OfType<JsonObject>().Single(item=>item["type"]?.GetValue<string>()=="Image");
+                Require(image["url"]!.GetValue<string>()==views[size]![1]!["image"]!.GetValue<string>() &&
+                    image["altText"]!.GetValue<string>().Contains("계정 4"),"Wrong dashboard size/page");
+                Require(image["selectAction"]?["verb"]?.GetValue<string>()=="open" &&
+                    card["actions"]!.AsArray().Any(action=>action?["verb"]?.GetValue<string>()=="page"),"Missing open/page action");
+                Require(!CollectTexts(card).Any(text=>text.Contains("73%")),"Legacy text rows duplicate the dashboard");
+            }
+            Require(string.Join(" ",CollectTexts(WidgetContent.Build(sample.ToJsonString().Replace("\"running\":true","\"running\":false"),"Small",TestNow))).Contains("꺼짐"),"Image hides offline state");
+            Require(string.Join(" ",CollectTexts(WidgetContent.Build(sample.ToJsonString().Replace("02:59:50Z","02:56:59Z"),"Medium",TestNow))).Contains("오래됨"),"Image hides stale state");
+            Require(string.Join(" ",CollectTexts(WidgetContent.Build(sample.ToJsonString().Replace("06:30:00Z","03:00:00Z"),"Large",TestNow))).Contains("갱신 대기"),"Image hides reset state");
+            views["Medium"]![0]!["image"]="https://invalid.example/private.png";
+            var invalid=WidgetContent.Build(sample.ToJsonString(),"Medium",TestNow);
+            Require(!invalid.ToJsonString().Contains("invalid.example") && CollectTexts(invalid).Any(text=>text.Contains("읽을 수 없")),"Widget loaded an external image");
+        });
         Check("refresh action only supplies the background request argument", () => Require(WidgetFiles.CreateStartInfo(@"C:\fixture\CodexUsageMeter.exe","refresh").Arguments=="--widget-refresh","Refresh must not open a normal app window"));
         Check("unknown actions and non-executable path contents are refused", () => { foreach(var value in new[]{"relative.exe",@"C:\fixture\meter.cmd","C:\\fixture\\meter.exe\nC:\\bad.exe"}){bool rejected=false;try{WidgetFiles.CreateStartInfo(value,"open");}catch(ArgumentException){rejected=true;}Require(rejected,"Invalid executable accepted");}bool badVerb=false;try{WidgetFiles.CreateStartInfo(@"C:\fixture\meter.exe","run-shell");}catch(ArgumentException){badVerb=true;}Require(badVerb,"Unknown verb accepted"); });
 

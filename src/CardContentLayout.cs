@@ -19,6 +19,22 @@ namespace CodexUsageMeter
 
     internal static class CardContentLayout
     {
+        internal static void RestoreVisibility(LayoutTile tile)
+        {
+            foreach (var entry in tile.SuppressedItems) entry.Key.Visibility = entry.Value;
+            tile.SuppressedItems.Clear();
+        }
+
+        internal static void ApplyVisibility(LayoutTile tile)
+        {
+            foreach (LayoutContentItem item in tile.ContentItems())
+                if (!tile.Settings.ShowsItem(item.Id))
+                {
+                    tile.SuppressedItems[item.Element] = item.Element.Visibility;
+                    item.Element.Visibility = Visibility.Collapsed;
+                }
+        }
+
         internal static List<LayoutContentItem> VisibleItems(LayoutTile tile)
         {
             return tile.ContentItems().Where(item => item.Element.IsVisible && item.Element.ActualWidth > 1 && item.Element.ActualHeight > 1).ToList();

@@ -38,10 +38,10 @@ jobs:
           $mainVersion = [version](Get-Item -LiteralPath '.\bin\CodexUsageMeter.exe').VersionInfo.FileVersion
           if ([version]$manifest.Package.Identity.Version -ne $mainVersion) { throw 'Widget package version does not match the meter' }
 
-      - name: Verify shortcut activation and Windows widget bridge
+      - name: Verify shortcut activation, tray quota and Windows widget bridge
         shell: pwsh
         run: |
-          foreach ($kind in @('single-instance', 'windows-widget')) {
+          foreach ($kind in @('single-instance', 'tray-usage', 'windows-widget')) {
             $result = "$kind-self-test.txt"
             $test = Start-Process -FilePath '.\bin\CodexUsageMeter.exe' -ArgumentList "--$kind-self-test $result" -WindowStyle Hidden -PassThru
             if (-not $test.WaitForExit(30000)) { throw "$kind verification timed out" }

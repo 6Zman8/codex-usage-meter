@@ -188,10 +188,20 @@ namespace CodexUsageMeter
 
         private void SelectItem(string id) { if (_selectedItem == id) return; _selectedItem = id; RefreshInspector(); RefreshAdorners(); }
 
+        internal void SetItemVisible(string id, bool visible)
+        {
+            LayoutCardSettings card = Mode.Card(_selected);
+            card.SetItemVisible(id, visible);
+            string section = id.Split(':')[0]; if (section == "memory") section = "ram";
+            if (visible && LayoutSettings.DefaultMode(_compact).Card(_selected).Sections.Contains(section)) card.SetSection(section, true);
+            _selectedItem = id; Preview(); RefreshInspector();
+        }
+
         private void ResetItems(bool all)
         {
             LayoutCardSettings card = Mode.Card(_selected);
-            if (all) card.ItemLayouts.Clear(); else card.ItemLayouts.RemoveAll(item => item.Id == _selectedItem);
+            if (all) { card.ItemLayouts.Clear(); card.HiddenItems.Clear(); }
+            else { card.ItemLayouts.RemoveAll(item => item.Id == _selectedItem); card.SetItemVisible(_selectedItem, true); }
             Preview(); RefreshInspector();
         }
         private IEnumerable<LayoutCardSettings> Choices()
@@ -298,17 +308,24 @@ namespace CodexUsageMeter
             {
                 Label("안쪽 항목", 13);
                 LayoutTile tile = SelectedTile();
-                var items = tile == null ? new List<LayoutContentItem>() : CardContentLayout.VisibleItems(tile);
+                var items = tile == null ? new List<LayoutContentItem>() : tile.ContentItems();
                 _itemListSignature = ItemListSignature(items);
                 if (!items.Any(item => item.Id == _selectedItem)) _selectedItem = items.Count == 0 ? null : items[0].Id;
                 foreach (LayoutContentItem item in items)
                 {
                     string id = item.Id;
+                    DockPanel row = new DockPanel();
+                    string section = id.Split(':')[0]; if (section == "memory") section = "ram";
+                    bool sectionVisible = !LayoutSettings.DefaultMode(_compact).Card(_selected).Sections.Contains(section) || selected.Shows(section);
+                    CheckBox visible = new CheckBox { Tag = "item-visible:" + id, IsChecked = selected.ShowsItem(id) && sectionVisible,
+                        VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 5, 0), ToolTip = item.Label + " 표시/숨김" };
+                    visible.Click += delegate { SetItemVisible(id, visible.IsChecked == true); };
+                    row.Children.Add(visible);
                     Button choice = MakeButton(item.Label, delegate { SelectItem(id); }); choice.Tag = "item:" + id;
                     choice.Padding = new Thickness(7, 4, 7, 4); choice.HorizontalContentAlignment = HorizontalAlignment.Left;
-                    choice.Background = Brush(id == _selectedItem ? "#255B4C" : "#292929"); _inspector.Children.Add(choice);
+                    choice.Background = Brush(id == _selectedItem ? "#255B4C" : "#292929"); row.Children.Add(choice); _inspector.Children.Add(row);
                 }
-                _inspector.Children.Add(new TextBlock { Text = "항목을 끌어 이동하고 ◢로 크기를 바꾸세요. 겹친 항목은 이 목록에서 선택할 수 있습니다.", TextWrapping = TextWrapping.Wrap, Foreground = Brush("#B5B5BF"), FontSize = 11, Margin = new Thickness(0, 5, 0, 5) });
+                _inspector.Children.Add(new TextBlock { Text = "체크를 끄면 항목이 사라지고 다시 켜면 복원됩니다. 항목을 끌어 이동하고 ◢로 크기를 바꾸세요.", TextWrapping = TextWrapping.Wrap, Foreground = Brush("#B5B5BF"), FontSize = 11, Margin = new Thickness(0, 5, 0, 5) });
                 _inspector.Children.Add(MakeButton("선택 항목 원래대로", delegate { ResetItems(false); }));
                 _inspector.Children.Add(MakeButton("카드 안쪽 모두 원래대로", delegate { ResetItems(true); }));
             }
@@ -356,7 +373,7 @@ namespace CodexUsageMeter
                 foreach (KeyValuePair<Border, LayoutCardAdorner> entry in _adorners)
                     entry.Value.Visibility = !_editingItems && entry.Key.IsVisible && entry.Key.ActualWidth > 0 ? Visibility.Visible : Visibility.Collapsed;
                 LayoutTile selectedTile = _editingItems ? SelectedTile() : null;
-                if (_editingItems && _itemListSignature != ItemListSignature(selectedTile == null ? new List<LayoutContentItem>() : CardContentLayout.VisibleItems(selectedTile)))
+                if (_editingItems && _itemListSignature != ItemListSignature(selectedTile == null ? new List<LayoutContentItem>() : selectedTile.ContentItems()))
                     RefreshInspector();
                 if (selectedTile != _contentTile) RemoveContentAdorner();
                 if (selectedTile != null)
@@ -387,7 +404,7 @@ namespace CodexUsageMeter
             element.IsHitTestVisible = false;
         }
         private static string ItemListSignature(IEnumerable<LayoutContentItem> items)
-        { return String.Join("|", items.Select(item => item.Id + ":" + item.Label)); }
+        { return String.Join("|", items.Select(item => item.Id + ":" + item.Label + ":" + item.Element.Visibility)); }
         private void RemoveContentAdorner()
         {
             if (_contentAdorner != null)

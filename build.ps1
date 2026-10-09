@@ -107,9 +107,12 @@ foreach ($reference in $references) {
 
 $arguments += @(
     (Join-Path $sourceRoot 'Program.cs'),
+    (Join-Path $sourceRoot 'TrayUsage.cs'),
+    (Join-Path $sourceRoot 'TrayUsageRegressionTests.cs'),
     (Join-Path $sourceRoot 'SingleInstanceActivation.cs'),
     (Join-Path $sourceRoot 'SingleInstanceRegressionTests.cs'),
     (Join-Path $sourceRoot 'WindowsWidgetBridge.cs'),
+    (Join-Path $sourceRoot 'WindowsWidgetRenderer.cs'),
     (Join-Path $sourceRoot 'WindowsWidgetRegressionTests.cs'),
     (Join-Path $sourceRoot 'WindowsWidgetInstaller.cs'),
     (Join-Path $sourceRoot 'AccountSwitcher.cs'),

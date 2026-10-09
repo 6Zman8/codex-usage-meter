@@ -12,14 +12,19 @@ namespace CodexUsageMeter
         internal WindowsWidgetBridge(string root) { _root = root; }
         internal static string DefaultRoot { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexUsageMeter", "windows-widget"); } }
 
-        internal static string BuildJson(IEnumerable<AccountState> accounts, bool running, DateTime writtenAtUtc)
+        internal static string Status(AccountSnapshot snapshot)
+        {
+            return snapshot == null ? "waiting" : !String.IsNullOrEmpty(snapshot.Error) ? "error" :
+                !snapshot.IsAuthenticated ? "unlinked" : snapshot.RateLimitsObservedAtUtc == default(DateTime) ? "waiting" : "ok";
+        }
+
+        internal static string BuildJson(IEnumerable<AccountState> accounts, bool running, DateTime writtenAtUtc, object widgetPages = null)
         {
             List<object> items = new List<object>();
             foreach (AccountState account in accounts)
             {
                 AccountSnapshot snapshot = account.LastSnapshot;
-                string status = snapshot == null ? "waiting" : !String.IsNullOrEmpty(snapshot.Error) ? "error" :
-                    !snapshot.IsAuthenticated ? "unlinked" : snapshot.RateLimitsObservedAtUtc == default(DateTime) ? "waiting" : "ok";
+                string status = Status(snapshot);
                 items.Add(new Dictionary<string, object> {
                     { "number", account.Number }, { "label", "계정 " + account.Number },
                     { "plan", snapshot == null ? String.Empty : snapshot.PlanType ?? String.Empty },
@@ -29,9 +34,11 @@ namespace CodexUsageMeter
                     { "secondary", status == "ok" ? Limit(snapshot.Secondary) : null }
                 });
             }
-            return new JavaScriptSerializer().Serialize(new Dictionary<string, object> {
+            var result = new Dictionary<string, object> {
                 { "schemaVersion", 1 }, { "writtenAtUtc", Utc(writtenAtUtc) }, { "running", running }, { "accounts", items }
-            });
+            };
+            if (widgetPages != null) result.Add("widgetPages", widgetPages);
+            return new JavaScriptSerializer().Serialize(result);
         }
 
         private static object Limit(RateWindow window)
@@ -46,10 +53,10 @@ namespace CodexUsageMeter
 
         private static string Utc(DateTime value) { return value.ToUniversalTime().ToString("o", System.Globalization.CultureInfo.InvariantCulture); }
 
-        internal void Publish(IEnumerable<AccountState> accounts, bool running)
+        internal void Publish(IEnumerable<AccountState> accounts, bool running, object widgetPages = null)
         {
             Directory.CreateDirectory(_root);
-            WriteAtomic(Path.Combine(_root, "snapshot.json"), BuildJson(accounts, running, DateTime.UtcNow));
+            WriteAtomic(Path.Combine(_root, "snapshot.json"), BuildJson(accounts, running, DateTime.UtcNow, widgetPages));
         }
 
         internal void SetApplicationPath(string executable)

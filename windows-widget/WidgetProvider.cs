@@ -16,6 +16,7 @@ public sealed class WidgetProvider : IWidgetProvider
         internal string LastTemplate="";
         internal string? Notice;
         internal int ActionSequence;
+        internal int Page;
     }
     private readonly object gate=new();
     private readonly Dictionary<string,Instance> instances=new();
@@ -47,6 +48,11 @@ public sealed class WidgetProvider : IWidgetProvider
     public void OnActionInvoked(WidgetActionInvokedArgs args)
     {
         string id=args.WidgetContext.Id;
+        if(args.Verb=="page")
+        {
+            lock(gate) if(instances.TryGetValue(id,out var current)) { current.Page++; Update(id,current,true); }
+            return;
+        }
         if(args.Verb is not "open" and not "refresh")return;
         string verb=args.Verb;
         int sequence;
@@ -84,7 +90,7 @@ public sealed class WidgetProvider : IWidgetProvider
     {
         try
         {
-            var card=WidgetContent.Build(WidgetFiles.ReadSnapshot(),instance.Size,DateTimeOffset.UtcNow);
+            var card=WidgetContent.Build(WidgetFiles.ReadSnapshot(),instance.Size,DateTimeOffset.UtcNow,instance.Page);
             if(instance.Notice is not null)
             {
                 // Error guidance replaces rows so it remains visible even in the smallest host surface.

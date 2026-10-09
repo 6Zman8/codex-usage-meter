@@ -16,7 +16,7 @@ internal static class Program
         try
         {
             if(args.Length>=1 && args[0]=="--self-test")return SelfTests.Run(args.Length>=2?args[1]:null);
-            if(args.Length==2 && args[0]=="--card-preview")return Preview(args[1]);
+            if(args.Length is 2 or 3 && args[0]=="--card-preview")return Preview(args[1],args.Length==3?args[2]:null);
             if(args.Length==2 && args[0]=="--catalog-probe")return CatalogProbe(args[1]);
             if(args.Length==2 && args[0]=="--runtime-probe")return RuntimeProbe(args[1]);
             if(args.Length==3 && args[0]=="--launch-context-test")return LaunchContextTest(args[1],args[2]);
@@ -48,15 +48,16 @@ internal static class Program
         File.WriteAllText(output,report.ToJsonString(new JsonSerializerOptions{WriteIndented=true}));
         return report["passed"]!.GetValue<bool>()?0:1;
     }
-    private static int Preview(string output)
+    private static int Preview(string output,string? snapshotPath)
     {
         Directory.CreateDirectory(output);
+        string snapshot=snapshotPath is null?SelfTests.SampleJson:File.ReadAllText(snapshotPath);
         foreach(string size in new[]{"Small","Medium","Large"})
         {
-            var card=WidgetContent.Build(SelfTests.SampleJson,size,SelfTests.TestNow);
+            var card=WidgetContent.Build(snapshot,size,snapshotPath is null?SelfTests.TestNow:DateTimeOffset.UtcNow);
             File.WriteAllText(Path.Combine(output,size.ToLowerInvariant()+".json"),card.ToJsonString(new JsonSerializerOptions{WriteIndented=true}));
         }
-        File.WriteAllText(Path.Combine(output,"snapshot.example.json"),SelfTests.SampleJson);
+        File.WriteAllText(Path.Combine(output,"snapshot.example.json"),snapshot);
         return 0;
     }
     private static int CatalogProbe(string output)

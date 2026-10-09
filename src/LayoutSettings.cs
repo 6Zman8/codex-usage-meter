@@ -32,9 +32,16 @@ namespace CodexUsageMeter
         public int Size { get; set; }
         public List<string> Sections { get; set; }
         public List<LayoutItemSettings> ItemLayouts { get; set; }
+        public List<string> HiddenItems { get; set; }
 
-        public LayoutCardSettings() { Visible = true; Span = 1; Size = 1; Sections = new List<string>(); ItemLayouts = new List<LayoutItemSettings>(); }
+        public LayoutCardSettings() { Visible = true; Span = 1; Size = 1; Sections = new List<string>(); ItemLayouts = new List<LayoutItemSettings>(); HiddenItems = new List<string>(); }
         public bool Shows(string section) { return Sections.Contains(section); }
+        public bool ShowsItem(string id) { return !HiddenItems.Contains(id); }
+        public void SetItemVisible(string id, bool visible)
+        {
+            HiddenItems.RemoveAll(value => value == id);
+            if (!visible) HiddenItems.Add(id);
+        }
         public void SetSection(string section, bool visible)
         {
             Sections.RemoveAll(value => value == section);
@@ -128,6 +135,8 @@ namespace CodexUsageMeter
                 card.Size = Math.Max(0, Math.Min(2, card.Size));
                 card.ItemLayouts = (card.ItemLayouts ?? new List<LayoutItemSettings>()).Where(item => item != null && item.Normalize())
                     .GroupBy(item => item.Id, StringComparer.Ordinal).Select(group => group.First()).Take(128).ToList();
+                card.HiddenItems = (card.HiddenItems ?? new List<string>()).Where(id => !String.IsNullOrWhiteSpace(id) && id.Length <= 80)
+                    .Distinct(StringComparer.Ordinal).Take(128).ToList();
                 List<string> allowed = defaults.Card(card.Id).Sections;
                 card.Sections = card.Sections == null ? new List<string>(allowed) : card.Sections.Where(allowed.Contains).Distinct().ToList();
                 cards.Add(card);

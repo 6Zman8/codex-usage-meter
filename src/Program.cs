@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.6.0.0")]
-[assembly: AssemblyFileVersion("1.6.0.0")]
+[assembly: AssemblyVersion("1.7.0.0")]
+[assembly: AssemblyFileVersion("1.7.0.0")]
 
 namespace CodexUsageMeter
 {
@@ -37,6 +37,12 @@ namespace CodexUsageMeter
         public static int Main(string[] args)
         {
             WebViewRuntime.Register();
+            if (args.Length == 2 && args[0] == "--tray-usage-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try { TrayUsageRegressionTests.Run(line => report.AppendLine(line), Path.GetDirectoryName(Path.GetFullPath(args[1]))); File.WriteAllText(args[1], report.ToString()); return 0; }
+                catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
+            }
             if (args.Length == 1 && args[0] == "--tray-startup-test") return SingleInstanceRegressionTests.CheckTrayStartup();
             if (args.Length == 2 && args[0] == "--windows-widget-download-test")
             {
@@ -431,7 +437,7 @@ namespace CodexUsageMeter
             public System.Windows.Shapes.Polyline Graph;
         }
 
-        private sealed class FontTarget
+        internal sealed class FontTarget
         {
             public DependencyObject Element;
             public double BaseSize;
@@ -468,7 +474,19 @@ namespace CodexUsageMeter
         private readonly Border _compactShell;
         private readonly CheckBox _autostartCheckBox;
         private readonly CheckBox _startInTrayCheckBox;
+        private readonly CheckBox _trayUsageCheckBox;
+        private readonly ComboBox _trayAccountComboBox;
+        private readonly ComboBox _trayLimitComboBox;
+        private readonly StackPanel _trayUsageOptions;
+        private TrayUsageSettings _trayUsageSettings;
+        private TrayUsageIcon _trayUsageIcon;
+        private bool _settingTrayUsage = true;
         private WindowsWidgetBridge _windowsWidgetBridge;
+        private WindowsWidgetRenderer _windowsWidgetRenderer;
+        private object _widgetPages;
+        private SystemSnapshot _lastSystemSnapshot;
+        private DateTime _lastWidgetPublishUtc;
+        private bool _editingLayout;
         internal bool StartInTray;
         private bool _windowInitialized;
         private readonly TextBlock _footerStatus;
@@ -595,6 +613,10 @@ namespace CodexUsageMeter
             _compactShell = Find<Border>("CompactShell");
             _autostartCheckBox = Find<CheckBox>("AutostartCheckBox");
             _startInTrayCheckBox = Find<CheckBox>("StartInTrayCheckBox");
+            _trayUsageCheckBox = Find<CheckBox>("TrayUsageCheckBox");
+            _trayAccountComboBox = Find<ComboBox>("TrayAccountComboBox");
+            _trayLimitComboBox = Find<ComboBox>("TrayLimitComboBox");
+            _trayUsageOptions = Find<StackPanel>("TrayUsageOptions");
             _footerStatus = Find<TextBlock>("FooterStatus");
             _performanceItemsPanel = Find<UniformGrid>("PerformanceItemsPanel");
             _performanceCountText = Find<TextBlock>("PerformanceCountText");
@@ -681,6 +703,10 @@ namespace CodexUsageMeter
             _autostartCheckBox.Unchecked += AutostartChanged;
             _startInTrayCheckBox.Checked += StartInTrayChanged;
             _startInTrayCheckBox.Unchecked += StartInTrayChanged;
+            _trayUsageCheckBox.Checked += TrayUsageChanged;
+            _trayUsageCheckBox.Unchecked += TrayUsageChanged;
+            _trayAccountComboBox.SelectionChanged += TrayUsageChanged;
+            _trayLimitComboBox.SelectionChanged += TrayUsageChanged;
             _settingsCloseButton.Click += SettingsCloseButtonClick;
             _settingsDoneButton.Click += SettingsCloseButtonClick;
             _fontDecreaseButton.Click += FontDecreaseButtonClick;
@@ -724,9 +750,15 @@ namespace CodexUsageMeter
                 edit.Click += delegate { EditLayout(); };
                 menu.Items.Add(edit); bar.ContextMenu = menu;
             }
+            _trayUsageSettings = UserSettings.LoadTrayUsage();
+            _trayUsageCheckBox.IsChecked = _trayUsageSettings.Enabled;
+            _trayLimitComboBox.SelectedIndex = _trayUsageSettings.Secondary ? 1 : 0;
+            _trayUsageOptions.IsEnabled = _trayUsageSettings.Enabled;
             ApplyAccountCount(UserSettings.LoadAccountCount(), false);
 
             _trayIcon = CreateTrayIcon();
+            _trayUsageIcon = new TrayUsageIcon(_trayIcon, delegate { _window.Dispatcher.BeginInvoke(new Action(ShowWindow)); });
+            UpdateTrayUsage();
             _trayIcon.Visible = true;
         }
 
@@ -868,7 +900,6 @@ namespace CodexUsageMeter
             menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add(exitItem);
             icon.ContextMenuStrip = menu;
-            icon.DoubleClick += delegate { _window.Dispatcher.BeginInvoke(new Action(ShowWindow)); };
             return icon;
         }
 
@@ -1166,6 +1197,7 @@ namespace CodexUsageMeter
             UpdateCountdowns();
             if (_layoutView != null && _layoutView.RenderDate != DateTime.Today) ApplyLayout();
             await RefreshSystemAsync();
+            if (DateTime.UtcNow - _lastWidgetPublishUtc >= TimeSpan.FromSeconds(15)) PublishWindowsWidget(true);
         }
 
         private void HideButtonClick(object sender, RoutedEventArgs e)
@@ -1441,6 +1473,35 @@ namespace CodexUsageMeter
             catch (Exception ex) { ShowModal("트레이 시작 설정 실패", ex.Message, null, "확인", null, null, null); }
         }
 
+        private void TrayUsageChanged(object sender, RoutedEventArgs e)
+        {
+            if (_settingTrayUsage) return;
+            _trayUsageSettings.Enabled = _trayUsageCheckBox.IsChecked == true;
+            _trayUsageSettings.AccountNumber = _trayAccountComboBox.SelectedIndex + 1;
+            _trayUsageSettings.Secondary = _trayLimitComboBox.SelectedIndex == 1;
+            _trayUsageOptions.IsEnabled = _trayUsageSettings.Enabled;
+            UpdateTrayUsage();
+            try { UserSettings.SaveTrayUsage(_trayUsageSettings); }
+            catch (Exception ex) { ShowModal("트레이 표시 설정 저장 실패", ex.Message, null, "확인", null, null, null); }
+        }
+
+        private void RefreshTrayAccounts()
+        {
+            _settingTrayUsage = true;
+            _trayUsageSettings.AccountNumber = Math.Min(_trayUsageSettings.AccountNumber, _accountCount);
+            _trayAccountComboBox.Items.Clear();
+            foreach (AccountState account in _accounts) _trayAccountComboBox.Items.Add("계정 " + account.Number);
+            _trayAccountComboBox.SelectedIndex = _trayUsageSettings.AccountNumber - 1;
+            _settingTrayUsage = false;
+            UpdateTrayUsage();
+        }
+
+        private void UpdateTrayUsage()
+        {
+            if (_trayUsageIcon == null || _disposed) return;
+            _trayUsageIcon.Update(TrayUsageDisplay.Build(_accounts, _trayUsageSettings, DateTime.UtcNow), _trayUsageSettings.Enabled);
+        }
+
         internal void EnableWindowsWidgetPublishing()
         {
             _windowsWidgetBridge = new WindowsWidgetBridge(WindowsWidgetBridge.DefaultRoot);
@@ -1451,8 +1512,18 @@ namespace CodexUsageMeter
 
         private void PublishWindowsWidget(bool running)
         {
-            if (_windowsWidgetBridge == null) return;
-            try { _windowsWidgetBridge.Publish(_accounts.Where(account => account.Number <= _accountCount), running); }
+            if (_windowsWidgetBridge == null || _editingLayout) return;
+            try
+            {
+                AccountState[] accounts = _accounts.Where(account => account.Number <= _accountCount).ToArray();
+                if (running)
+                {
+                    if (_windowsWidgetRenderer == null) _windowsWidgetRenderer = new WindowsWidgetRenderer();
+                    _widgetPages = _windowsWidgetRenderer.Render(accounts, _layouts, _lastSystemSnapshot, _fontScale, DateTime.UtcNow);
+                }
+                _windowsWidgetBridge.Publish(accounts, running, _widgetPages);
+                _lastWidgetPublishUtc = DateTime.UtcNow;
+            }
             catch (Exception) { SetFooterText("Windows 위젯 자료 저장 실패 · 기존 계정 자료는 유지됩니다."); }
         }
 
@@ -1513,6 +1584,7 @@ namespace CodexUsageMeter
             bool beforeMode = _compactMode;
             SaveVisibleCalendarOffsets();
             LayoutEditor editor = null;
+            _editingLayout = true;
             try
             {
                 editor = new LayoutEditor(_layouts, _compactMode, _accountCount, _window, _layoutView,
@@ -1539,6 +1611,8 @@ namespace CodexUsageMeter
                 _compactLayout.Visibility = beforeMode ? Visibility.Visible : Visibility.Collapsed;
                 _expandedLayout.Visibility = beforeMode ? Visibility.Collapsed : Visibility.Visible;
                 BindAccountPage();
+                _editingLayout = false;
+                if (editor != null && editor.Saved) PublishWindowsWidget(true);
             }
         }
 
@@ -1704,9 +1778,10 @@ namespace CodexUsageMeter
             _accountCountBadgeText.Text = _accountCount.ToString() + " ACC";
             _accountCountDecreaseButton.IsEnabled = _accountCount > 1;
             _accountCountIncreaseButton.IsEnabled = _accountCount < 4;
+            RefreshTrayAccounts();
             if (persist)
             {
-                try { UserSettings.SaveAccountCount(_accountCount); }
+                try { UserSettings.SaveAccountCount(_accountCount); UserSettings.SaveTrayUsage(_trayUsageSettings); }
                 catch (Exception ex) { SetFooterText("계정 칸 수 저장 실패: " + ex.Message); }
             }
         }
@@ -1776,20 +1851,7 @@ namespace CodexUsageMeter
         private void ApplyFontScale(double scale, bool persist)
         {
             _fontScale = Math.Round(Math.Max(1.0, Math.Min(2.0, scale)) * 10.0) / 10.0;
-            foreach (FontTarget target in _fontTargets)
-            {
-                TextBlock text = target.Element as TextBlock;
-                if (text != null)
-                {
-                    text.FontSize = target.BaseSize * _fontScale;
-                    continue;
-                }
-                Control control = target.Element as Control;
-                if (control != null)
-                {
-                    control.FontSize = target.BaseSize * _fontScale;
-                }
-            }
+            ScaleFontTargets(_fontTargets, _fontScale);
             _fontScaleValue.Text = Math.Round(_fontScale * 100.0).ToString("0") + "%";
             _fontDecreaseButton.IsEnabled = _fontScale > 1.0;
             _fontIncreaseButton.IsEnabled = _fontScale < 2.0;
@@ -1803,24 +1865,37 @@ namespace CodexUsageMeter
         }
 
         private void CaptureFontTargets(DependencyObject root)
+        { CollectFontTargets(root, _window, _fontTargets, _fontTargetElements); }
+
+        internal static void ScaleFontTargets(IEnumerable<FontTarget> targets, double scale)
+        {
+            foreach (FontTarget target in targets)
+            {
+                TextBlock text = target.Element as TextBlock;
+                if (text != null) text.FontSize = target.BaseSize * scale;
+                else ((Control)target.Element).FontSize = target.BaseSize * scale;
+            }
+        }
+
+        internal static void CollectFontTargets(DependencyObject root, Window window, List<FontTarget> targets, HashSet<DependencyObject> elements)
         {
             if (root == null)
             {
                 return;
             }
-            if (!_fontTargetElements.Contains(root))
+            if (!elements.Contains(root))
             {
                 TextBlock text = root as TextBlock;
                 Control control = root as Control;
                 if (text != null)
                 {
-                    _fontTargetElements.Add(root);
-                    _fontTargets.Add(new FontTarget { Element = root, BaseSize = text.FontSize });
+                    elements.Add(root);
+                    targets.Add(new FontTarget { Element = root, BaseSize = text.FontSize });
                 }
-                else if (control != null && !Object.ReferenceEquals(control.Style, _window.Resources["IconButton"] as Style))
+                else if (control != null && !Object.ReferenceEquals(control.Style, window.Resources["IconButton"] as Style))
                 {
-                    _fontTargetElements.Add(root);
-                    _fontTargets.Add(new FontTarget { Element = root, BaseSize = control.FontSize });
+                    elements.Add(root);
+                    targets.Add(new FontTarget { Element = root, BaseSize = control.FontSize });
                 }
             }
             foreach (object child in LogicalTreeHelper.GetChildren(root))
@@ -1828,7 +1903,7 @@ namespace CodexUsageMeter
                 DependencyObject dependencyChild = child as DependencyObject;
                 if (dependencyChild != null)
                 {
-                    CaptureFontTargets(dependencyChild);
+                    CollectFontTargets(dependencyChild, window, targets, elements);
                 }
             }
         }
@@ -1866,6 +1941,7 @@ namespace CodexUsageMeter
                 {
                     states[index].LastSnapshot = snapshots[index];
                 }
+                UpdateTrayUsage();
                 PublishWindowsWidget(true);
                 _activeCodexAccountNumber = _accountSwitcher.DetectActiveAccountNumber(_accountCount);
                 BindAccountPage();
@@ -1897,36 +1973,12 @@ namespace CodexUsageMeter
             try
             {
                 SystemSnapshot snapshot = await _systemMonitor.SampleAsync();
+                _lastSystemSnapshot = snapshot;
                 List<PerformanceDisplayItem> items = BuildPerformanceItems(snapshot);
                 UpdatePerformanceCards(items);
                 _performanceCountText.Text = "CPU · RAM · GPU " + snapshot.Gpus.Count.ToString() +
                     " · 디스크 " + snapshot.Disks.Count.ToString() + " · 네트워크 " + snapshot.Networks.Count.ToString();
-                GpuSnapshot busiestGpu = snapshot.Gpus
-                    .OrderByDescending(delegate(GpuSnapshot gpu) { return gpu.Percent; })
-                    .ThenBy(delegate(GpuSnapshot gpu) { return gpu.Index; })
-                    .FirstOrDefault();
-                DiskSnapshot busiestDisk = snapshot.Disks
-                    .OrderByDescending(delegate(DiskSnapshot disk) { return disk.Percent; })
-                    .ThenByDescending(delegate(DiskSnapshot disk) { return disk.ReadBytesPerSecond + disk.WriteBytesPerSecond; })
-                    .ThenBy(delegate(DiskSnapshot disk) { return disk.Index; })
-                    .FirstOrDefault();
-                _compactCpuValue.Text = Percent(snapshot.CpuPercent);
-                _compactGpuLabel.Text = busiestGpu == null ? "GPU" : "GPU " + busiestGpu.Index.ToString();
-                _compactGpuLabel.ToolTip = busiestGpu == null ? null : busiestGpu.Name;
-                _compactGpuValue.Text = busiestGpu == null ? "N/A" : Percent(busiestGpu.Percent);
-                _compactGpuValue.ToolTip = _compactGpuLabel.ToolTip;
-                _compactMemoryValue.Text = Percent(snapshot.MemoryPercent);
-                _compactDiskLabel.Text = busiestDisk == null ? "디스크" : "디스크 " + busiestDisk.Index.ToString();
-                _compactDiskLabel.ToolTip = busiestDisk == null ? null : busiestDisk.Name + " · " + busiestDisk.Detail;
-                _compactDiskValue.Text = busiestDisk == null ? "N/A" : Percent(busiestDisk.Percent);
-                _compactDiskValue.ToolTip = busiestDisk == null ? null :
-                    "읽기 " + FormatRate(busiestDisk.ReadBytesPerSecond) + " · 쓰기 " + FormatRate(busiestDisk.WriteBytesPerSecond);
-                _compactCpuRing.Data = CreateArcGeometry(snapshot.CpuPercent, 35.0, new Point(48.0, 48.0));
-                _compactGpuRing.Data = CreateArcGeometry(busiestGpu == null ? 0.0 : busiestGpu.Percent, 35.0, new Point(48.0, 48.0));
-                _compactMemoryRing.Data = CreateArcGeometry(snapshot.MemoryPercent, 35.0, new Point(48.0, 48.0));
-                _compactDiskRing.Data = CreateArcGeometry(busiestDisk == null ? 0.0 : busiestDisk.Percent, 35.0, new Point(48.0, 48.0));
-                _compactNetworkValue.Text = "NET " + snapshot.Networks.Count.ToString() + " · ↓ " + FormatRate(snapshot.NetworkReceiveBytesPerSecond) +
-                    "   ↑ " + FormatRate(snapshot.NetworkSendBytesPerSecond);
+                RenderCompactSystem(_window, snapshot);
                 if (!String.IsNullOrWhiteSpace(snapshot.Warning))
                 {
                     _systemStatus.Text = snapshot.Warning;
@@ -1944,6 +1996,32 @@ namespace CodexUsageMeter
             {
                 _sampling = false;
             }
+        }
+
+        internal static void RenderCompactSystem(Window window, SystemSnapshot snapshot)
+        {
+            GpuSnapshot gpu = snapshot.Gpus.OrderByDescending(item => item.Percent).ThenBy(item => item.Index).FirstOrDefault();
+            DiskSnapshot disk = snapshot.Disks.OrderByDescending(item => item.Percent)
+                .ThenByDescending(item => item.ReadBytesPerSecond + item.WriteBytesPerSecond).ThenBy(item => item.Index).FirstOrDefault();
+            string[] names = { "Cpu", "Gpu", "Memory", "Disk" };
+            double[] values = { snapshot.CpuPercent, gpu == null ? 0 : gpu.Percent, snapshot.MemoryPercent, disk == null ? 0 : disk.Percent };
+            for (int index = 0; index < names.Length; index++)
+            {
+                ((TextBlock)window.FindName("Compact" + names[index] + "Value")).Text =
+                    (index == 1 && gpu == null) || (index == 3 && disk == null) ? "N/A" : Percent(values[index]);
+                ((System.Windows.Shapes.Path)window.FindName("Compact" + names[index] + "Ring")).Data =
+                    CreateArcGeometry(values[index], 35.0, new Point(48.0, 48.0));
+            }
+            TextBlock gpuLabel = (TextBlock)window.FindName("CompactGpuLabel"), diskLabel = (TextBlock)window.FindName("CompactDiskLabel");
+            gpuLabel.Text = gpu == null ? "GPU" : "GPU " + gpu.Index;
+            gpuLabel.ToolTip = gpu == null ? null : gpu.Name;
+            ((TextBlock)window.FindName("CompactGpuValue")).ToolTip = gpuLabel.ToolTip;
+            diskLabel.Text = disk == null ? "디스크" : "디스크 " + disk.Index;
+            diskLabel.ToolTip = disk == null ? null : disk.Name + " · " + disk.Detail;
+            ((TextBlock)window.FindName("CompactDiskValue")).ToolTip = disk == null ? null :
+                "읽기 " + FormatRate(disk.ReadBytesPerSecond) + " · 쓰기 " + FormatRate(disk.WriteBytesPerSecond);
+            ((TextBlock)window.FindName("CompactNetworkValue")).Text = "NET " + snapshot.Networks.Count + " · ↓ " +
+                FormatRate(snapshot.NetworkReceiveBytesPerSecond) + "   ↑ " + FormatRate(snapshot.NetworkSendBytesPerSecond);
         }
 
         private static List<PerformanceDisplayItem> BuildPerformanceItems(SystemSnapshot snapshot)
@@ -2482,20 +2560,22 @@ namespace CodexUsageMeter
         }
 
         private void UpdateCompactAccount(AccountView view, AccountSnapshot snapshot)
+        { RenderCompactAccount(_window, view, snapshot, Object.ReferenceEquals(view, _account1) ? 1 : 2); }
+
+        internal static void RenderCompactAccount(Window window, AccountView view, AccountSnapshot snapshot, int slot)
         {
             UpdateSubscription(view, snapshot);
-            bool first = Object.ReferenceEquals(view, _account1);
-            TextBlock identity = first ? _compactAccount1Identity : _compactAccount2Identity;
-            TextBlock primaryValue = first ? _compactAccount1PrimaryValue : _compactAccount2PrimaryValue;
-            TextBlock secondaryValue = first ? _compactAccount1SecondaryValue : _compactAccount2SecondaryValue;
-            TextBlock resetValue = first ? _compactAccount1ResetValue : _compactAccount2ResetValue;
-            string prefix = first ? "CompactAccount1" : "CompactAccount2";
+            string prefix = "CompactAccount" + slot;
+            TextBlock identity = (TextBlock)window.FindName(prefix + "Identity");
+            TextBlock primaryValue = (TextBlock)window.FindName(prefix + "PrimaryValue");
+            TextBlock secondaryValue = (TextBlock)window.FindName(prefix + "SecondaryValue");
+            TextBlock resetValue = (TextBlock)window.FindName(prefix + "ResetValue");
             string primaryLabel = snapshot == null || snapshot.Primary == null ? "5시간" : snapshot.Primary.Name.Replace(" 한도", "");
             string secondaryLabel = snapshot == null || snapshot.Secondary == null ? "주간" : snapshot.Secondary.Name.Replace(" 한도", "");
-            Find<TextBlock>(prefix + "PrimaryName").Text = primaryLabel;
-            Find<TextBlock>(prefix + "PrimaryTimeName").Text = primaryLabel;
-            Find<TextBlock>(prefix + "SecondaryName").Text = secondaryLabel;
-            Find<TextBlock>(prefix + "SecondaryTimeName").Text = secondaryLabel;
+            ((TextBlock)window.FindName(prefix + "PrimaryName")).Text = primaryLabel;
+            ((TextBlock)window.FindName(prefix + "PrimaryTimeName")).Text = primaryLabel;
+            ((TextBlock)window.FindName(prefix + "SecondaryName")).Text = secondaryLabel;
+            ((TextBlock)window.FindName(prefix + "SecondaryTimeName")).Text = secondaryLabel;
 
             if (snapshot == null || !snapshot.IsAuthenticated)
             {
@@ -2948,6 +3028,7 @@ namespace CodexUsageMeter
         {
             UpdateAccountCountdown(_account1);
             UpdateAccountCountdown(_account2);
+            UpdateTrayUsage();
         }
 
         private void UpdateAccountCountdown(AccountView view)
@@ -3253,6 +3334,7 @@ namespace CodexUsageMeter
             }
             _disposed = true;
             PublishWindowsWidget(false);
+            if (_windowsWidgetRenderer != null) _windowsWidgetRenderer.Dispose();
             _systemTimer.Stop();
             _accountTimer.Stop();
             foreach (AccountState state in _accounts)
@@ -3266,6 +3348,7 @@ namespace CodexUsageMeter
                 _windowSource = null;
             }
             _trayIcon.Visible = false;
+            _trayUsageIcon.Dispose();
             System.Drawing.Icon drawingIcon = _trayIcon.Icon;
             _trayIcon.Dispose();
             if (drawingIcon != null)
@@ -3281,6 +3364,18 @@ namespace CodexUsageMeter
         private const string TopmostValue = "Topmost";
         private const string FontScaleValue = "FontScalePercent";
         private const string AccountCountValue = "AccountCount";
+
+        internal static TrayUsageSettings LoadTrayUsage()
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey, false))
+                return TrayUsageSettings.Load(key);
+        }
+
+        internal static void SaveTrayUsage(TrayUsageSettings settings)
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                settings.Save(key);
+        }
 
         internal static bool LoadStartInTray()
         {
@@ -3551,6 +3646,7 @@ namespace CodexUsageMeter
                 window.Close();
                 lines.Add("PASS ui: Codex relogin buttons, shared modal, responsive layout, saved settings, and app icon enabled");
                 SingleInstanceRegressionTests.Run(lines.Add);
+                TrayUsageRegressionTests.Run(lines.Add, Path.GetDirectoryName(Path.GetFullPath(resultPath)));
                 WindowsWidgetRegressionTests.Run(lines.Add, Path.GetDirectoryName(Path.GetFullPath(resultPath)));
                 UpdateUiRegressionTests.Run(lines.Add, null);
                 RateLimitRegressionTests.Run(lines.Add);
