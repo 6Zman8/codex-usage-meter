@@ -19,8 +19,9 @@ namespace CodexUsageMeter
     {
         internal static int CheckReload(string path)
         {
-            LayoutSettings loaded = LayoutSettings.Parse(File.ReadAllText(path));
-            return loaded.Widget.Cards[0].Id == "pc" && loaded.Widget.VisibleAccounts(4).SequenceEqual(new[] { 3 }) &&
+            string serialized = File.ReadAllText(path);
+            LayoutSettings loaded = LayoutSettings.Parse(serialized);
+            return loaded.ToJson() == serialized && loaded.Widget.Cards[0].Id == "pc" && loaded.Widget.VisibleAccounts(4).SequenceEqual(new[] { 3 }) &&
                 loaded.Widget.Card("pc").Span == 2 && loaded.Widget.Card("pc").Size == 2 &&
                 loaded.Widget.Card("pc").ItemLayouts.Any(item => item.Id == "cpu" && item.X == 0.25 && item.Width == 0.4) &&
                 !loaded.Widget.Card("pc").ShowsItem("network") &&
@@ -35,6 +36,8 @@ namespace CodexUsageMeter
             VerifyDefaultSpacing(report, previewDirectory);
             VerifyContentLayout(report, previewDirectory);
             VerifyItemVisibility(report);
+            VerifySnapping(report, previewDirectory);
+            VerifyUpgradeLayout(report);
             CheckAccountAlignmentAndFit(report, previewDirectory);
             SubscriptionRegressionTests.Run(report);
             AccountSubscriptionRegressionTests.Run(report);
@@ -339,7 +342,7 @@ namespace CodexUsageMeter
                         }
                     }
                 fixture.FontScale(1.5);
-                LayoutSettings legacy = LayoutSettings.Defaults();
+                LayoutSettings legacy = LayoutSettings.Parse("{\"Version\":1,\"Widget\":{\"Columns\":1}}");
                 legacy.Widget.Card("account1").ItemLayouts.Add(new LayoutItemSettings { Id = "countdown", X = 0.5501, Y = 0.3028, Width = 0.1271, Height = 0.4169 });
                 fixture.Layout(legacy, true); fixture.Render(900, 780);
                 LayoutItemSettings restored = CardContentLayout.Position(tile, tile.ContentItems().Single(item => item.Id == "countdown"));
@@ -637,6 +640,134 @@ namespace CodexUsageMeter
             report("PASS content: routed item move/resize, aligned handles, draft isolation, save, cancel and restored interaction");
         }
 
+        private static void VerifySnapping(Action<string> report, string previewDirectory)
+        {
+            foreach (double zoom in new[] { 0.25, 0.5, 1.0, 2.0, 4.0 })
+            {
+                double screenWidth = 600 * zoom, screenHeight = 400 * zoom;
+                foreach (double anchor in new[] { 0.0, 0.5, 1.0 })
+                {
+                    double? gx, gy;
+                    Rect input = new Rect(0.5 - 0.3 * anchor + 5 / screenWidth, 0.13, 0.3, 0.2);
+                    Rect output = LayoutSnap.Apply(input, new Rect[0], false, 6 / screenWidth, 6 / screenHeight, out gx, out gy);
+                    Require(Math.Abs(output.X + output.Width * anchor - 0.5) < 0.000001 && gx == 0.5,
+                        "item edge/center did not snap at five screen DIPs, zoom=" + zoom);
+                    input.X = 0.5 - 0.3 * anchor + 7 / screenWidth;
+                    output = LayoutSnap.Apply(input, new Rect[0], false, 6 / screenWidth, 6 / screenHeight, out gx, out gy);
+                    Require(output.X == input.X && !gx.HasValue, "snap captured an item beyond six screen DIPs");
+                }
+                double? x, y;
+                Rect sibling = new Rect(0.61, 0.61, 0.2, 0.2);
+                Rect near = new Rect(0.21, 0.21, 0.395, 0.395);
+                Rect resized = LayoutSnap.Apply(near, new[] { sibling }, true, 6 / screenWidth, 6 / screenHeight, out x, out y);
+                if (0.005 * Math.Max(screenWidth, screenHeight) <= 6)
+                    Require(Math.Abs(resized.Right - sibling.Left) < 0.000001 && Math.Abs(resized.Bottom - sibling.Top) < 0.000001,
+                        "aspect-preserving resize missed a sibling boundary");
+                Require(resized.X == near.X && resized.Y == near.Y && Math.Abs(resized.Width / resized.Height - 1) < 0.000001 &&
+                    resized.Right <= 1 && resized.Bottom <= 1, "resize snap changed its anchor, ratio or card boundary");
+            }
+            using (Fixture fixture = new Fixture())
+            {
+                foreach (bool compact in new[] { false, true })
+                {
+                    LayoutSettings settings = LayoutSettings.Defaults();
+                    settings.Mode(compact).UseSingleAccount(1, compact);
+                    LayoutCardSettings card = settings.Mode(compact).Card("account1");
+                    card.HiddenItems.AddRange(new[] { "header", "short", "countdown", "credits", "subscription", "stats", "calendar", "status" });
+                    string original = settings.ToJson();
+                    LayoutEditor editor = fixture.Editor(settings, compact, state => { }, state => { });
+                    RenderEditor(editor, root => {
+                        editor.SetItemEditing(true); root.UpdateLayout();
+                        foreach (double font in new[] { 1.0, 2.0 })
+                        {
+                            fixture.FontScale(font); root.UpdateLayout();
+                            foreach (double zoom in new[] { 0.25, 0.5, 1.0, 2.0, 4.0 })
+                            {
+                                editor.SetPreviewZoom(zoom); root.UpdateLayout();
+                                editor.EditItem("weekly", 0.1, 0.15, 0.3, 0.3); root.UpdateLayout();
+                                LayoutContentAdorner adorner = Descendants<LayoutContentAdorner>(root).Single();
+                                LayoutTile tile = Descendants<CardLayoutPanel>(root).Where(panel => panel.IsVisible)
+                                    .SelectMany(panel => panel.Tiles).Single(t => t.Settings.Id == "account1");
+                                LayoutContentItem item = tile.ContentItems().Single(value => value.Id == "weekly");
+                                LayoutItemSettings before = CardContentLayout.Position(tile, item);
+                                Rect inner = CardContentLayout.InnerBounds(tile);
+                                GeneralTransform transform = tile.Card.TransformToAncestor(root);
+                                Point origin = transform.Transform(new Point());
+                                double sx = transform.Transform(new Point(1, 0)).X - origin.X;
+                                double sy = transform.Transform(new Point(0, 1)).Y - origin.Y;
+                                // Keep the center closer than either edge even for a thin row at 25% zoom.
+                                double nearCenter = Math.Min(3, Math.Min(before.Width * inner.Width * sx, before.Height * inner.Height * sy) / 8);
+                                Thumb move = Descendants<Thumb>(adorner).Single(handle => Convert.ToString(handle.Tag) == "move:weekly");
+                                DragItem(root, move, (0.5 - before.X - before.Width / 2) * inner.Width * sx + nearCenter,
+                                    (0.5 - before.Y - before.Height / 2) * inner.Height * sy + nearCenter,
+                                    delegate {
+                                        Require(Descendants<System.Windows.Shapes.Line>(adorner).Count(line => Convert.ToString(line.Tag) == "layout-snap-guide") == 2,
+                                            "snapped item has no edge/center guides");
+                                    });
+                                LayoutItemSettings after = CardContentLayout.Position(tile, item);
+                                LayoutItemSettings stored = editor.Draft.Mode(compact).Card("account1").ItemLayouts.Single(value => value.Id == "weekly");
+                                // Saved coordinates are exact; WPF's rendered layout can round by a device pixel.
+                                Require(Math.Abs(stored.X + stored.Width / 2 - 0.5) < 0.00001 &&
+                                    Math.Abs(stored.Y + stored.Height / 2 - 0.5) < 0.00001 &&
+                                    Math.Abs(after.X + after.Width / 2 - 0.5) * inner.Width * sx < 1 &&
+                                    Math.Abs(after.Y + after.Height / 2 - 0.5) * inner.Height * sy < 1, "routed drag missed the card center: compact=" + compact +
+                                    " zoom=" + zoom + " font=" + font + " x=" + after.X + " y=" + after.Y + " w=" + after.Width + " h=" + after.Height +
+                                    " stored=" + stored.X + "," + stored.Y + "," + stored.Width + "," + stored.Height +
+                                    " inner=" + CardContentLayout.InnerBounds(tile) + " surface=" + tile.Surface.RenderSize);
+                                Require(!Descendants<System.Windows.Shapes.Line>(adorner).Any(), "release left stale alignment guides");
+                                adorner.ReadModifiers = () => ModifierKeys.Alt;
+                                DragItem(root, move, 3, 0, delegate { Require(!Descendants<System.Windows.Shapes.Line>(adorner).Any(), "Alt did not hide snap guides"); }, true);
+                                LayoutItemSettings free = CardContentLayout.Position(tile, item);
+                                Require(Math.Abs((free.X - after.X) * inner.Width * sx - 3) < 1, "Alt did not allow unsnapped movement");
+                                adorner.ReadModifiers = () => ModifierKeys.None;
+                                editor.EditItem("weekly", 0.1, 0.1, 0.3, 0.3); root.UpdateLayout();
+                                before = CardContentLayout.Position(tile, item);
+                                double fx = (0.5 - before.X) / before.Width, fy = (0.5 - before.Y) / before.Height;
+                                double factor = Math.Min(fx, fy);
+                                Thumb resize = Descendants<Thumb>(adorner).Single(handle => Convert.ToString(handle.Tag) == "resize:weekly");
+                                DragItem(root, resize, before.Width * (factor - 1) * inner.Width * sx,
+                                    before.Height * (factor - 1) * inner.Height * sy,
+                                    delegate { Require(Descendants<System.Windows.Shapes.Line>(adorner).Any(), "resize missed its alignment guide"); }, true);
+                                stored = editor.Draft.Mode(compact).Card("account1").ItemLayouts.Single(value => value.Id == "weekly");
+                                Require(Math.Abs((fx <= fy ? stored.X + stored.Width : stored.Y + stored.Height) - 0.5) < 0.00001 &&
+                                    Math.Abs(stored.Width / stored.Height - before.Width / before.Height) < 0.00001,
+                                    "routed resize lost center alignment or aspect ratio at zoom=" + zoom);
+                                Require(!Descendants<System.Windows.Shapes.Line>(adorner).Any(), "cancelled resize left stale guides");
+                            }
+                        }
+                        if (previewDirectory != null) Capture(root, 1220, 860, Path.Combine(previewDirectory, compact ? "snap-widget.png" : "snap-expanded.png"));
+                    }, null);
+                    editor.Close();
+                    Require(settings.ToJson() == original, "snapping or cancelling rewrote the saved layout");
+                }
+            }
+            report("PASS magnetic alignment: item/card edges and centers, aspect resize, six screen DIPs at 25-400% zoom, 100-200% text, Alt, guide cleanup and cancel");
+        }
+
+        private static void VerifyUpgradeLayout(Action<string> report)
+        {
+            // Legacy LayoutV1 values deliberately sit off the new magnetic lines.
+            LayoutSettings saved = LayoutSettings.Parse("{\"Version\":1,\"Expanded\":{\"Columns\":2,\"Cards\":[{\"Id\":\"pc\",\"Visible\":true,\"Span\":2,\"Size\":2,\"Sections\":[\"cpu\",\"ram\"],\"ItemLayouts\":[{\"Id\":\"cpu\",\"X\":0.173,\"Y\":0.267,\"Width\":0.319,\"Height\":0.283}],\"HiddenItems\":[\"network\"]}]},\"Widget\":{\"Columns\":1,\"Cards\":[{\"Id\":\"account3\",\"Visible\":true,\"Span\":1,\"Size\":0,\"Sections\":[\"weekly\"],\"ItemLayouts\":[{\"Id\":\"weekly\",\"X\":0.123,\"Y\":0.237,\"Width\":0.333,\"Height\":0.417}],\"HiddenItems\":[\"subscription\"]},{\"Id\":\"pc\",\"Visible\":true,\"Span\":1,\"Size\":1,\"Sections\":[\"cpu\",\"ram\"],\"ItemLayouts\":[{\"Id\":\"cpu\",\"X\":0.173,\"Y\":0.267,\"Width\":0.319,\"Height\":0.283}],\"HiddenItems\":[\"network\"]}]}}");
+            string original = saved.ToJson();
+            using (Fixture fixture = new Fixture())
+            {
+                foreach (bool compact in new[] { false, true })
+                {
+                    fixture.Layout(saved, compact); fixture.FontScale(2); fixture.Render(320, 480);
+                    LayoutSettings accepted = null;
+                    LayoutEditor editor = fixture.Editor(saved, compact, state => { }, state => accepted = state);
+                    RenderEditor(editor, root => { editor.SetItemEditing(true); editor.SetPreviewZoom(4); root.UpdateLayout(); }, null);
+                    Require(editor.TrySave(), "unchanged legacy layout could not be saved"); editor.Close();
+                    Require(accepted.ToJson() == original && saved.ToJson() == original,
+                        "opening/rendering/saving after upgrade changed legacy coordinates, order, dimensions or hidden items");
+                }
+                using (var renderer = new WindowsWidgetRenderer())
+                    renderer.Render(fixture.Accounts, saved, new SystemSnapshot(), 2, DateTime.UtcNow);
+            }
+            Require(saved.Copy().ToJson() == original, "Windows widget rendering or reload changed the legacy layout");
+            report("PASS upgrade preservation: LayoutV1 off-grid positions, sizes, order, sections and hidden items survive render, editor open/save, widget render and reload unchanged");
+        }
+
         private static void VerifyItemVisibility(Action<string> report)
         {
             using (Fixture fixture = new Fixture())
@@ -684,7 +815,7 @@ namespace CodexUsageMeter
             report("PASS item visibility: header/gauge/subscription/PC hide and restore, saved draft isolation, cancel, per-account/mode independence");
         }
 
-        private static void DragItem(Grid root, Thumb handle, double dx, double dy)
+        private static void DragItem(Grid root, Thumb handle, double dx, double dy, Action during = null, bool cancelled = false)
         {
             Point start = handle.TransformToAncestor(root).Transform(new Point());
             handle.RaiseEvent(new DragStartedEventArgs(0, 0) { RoutedEvent = Thumb.DragStartedEvent });
@@ -693,7 +824,8 @@ namespace CodexUsageMeter
                 Point pointer = root.TransformToDescendant(handle).Transform(new Point(start.X + dx * part, start.Y + dy * part));
                 handle.RaiseEvent(new DragDeltaEventArgs(pointer.X, pointer.Y) { RoutedEvent = Thumb.DragDeltaEvent }); root.UpdateLayout();
             }
-            handle.RaiseEvent(new DragCompletedEventArgs(dx, dy, false) { RoutedEvent = Thumb.DragCompletedEvent });
+            if (during != null) during();
+            handle.RaiseEvent(new DragCompletedEventArgs(dx, dy, cancelled) { RoutedEvent = Thumb.DragCompletedEvent });
         }
 
         internal static void VerifyHistoryCards(UsageHistoryStore store, string key, string evidenceRoot, Action<string> report)
@@ -796,7 +928,8 @@ namespace CodexUsageMeter
                 foreach (string prefix in new[] { "Cpu", "Gpu", "Memory", "Disk" })
                 {
                     ((TextBlock)Window.FindName("Compact" + prefix + "Value")).Text = "28%";
-                    ((System.Windows.Shapes.Path)Window.FindName("Compact" + prefix + "Ring")).Data = Geometry.Parse("M 48,13 A 35,35 0 0 1 82,57");
+                    Border bar = (Border)Window.FindName("Compact" + prefix + "Bar");
+                    bar.Height = ((FrameworkElement)bar.Parent).Height * 0.28;
                 }
                 ((TextBlock)Window.FindName("CompactNetworkValue")).Text = "↓ 11.3 MB/s   ↑ 684 KB/s";
                 Window.Content = null; _surface = Surface(1280, 820); _surface.RootVisual = Root;

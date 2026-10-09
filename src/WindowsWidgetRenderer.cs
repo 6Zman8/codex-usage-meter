@@ -21,7 +21,7 @@ namespace CodexUsageMeter
         private readonly List<DashboardController.FontTarget> _fonts = new List<DashboardController.FontTarget>();
         private readonly HwndSource _surface;
         internal static readonly string[] Sizes = { "Small", "Medium", "Large" };
-        internal static readonly int[] Heights = { 56, 194, 350 };
+        internal static readonly int[] Heights = { 100, 194, 350 };
 
         internal WindowsWidgetRenderer()
         {
@@ -82,7 +82,7 @@ namespace CodexUsageMeter
                     // Keep saved order; page instead of squeezing three complete cards into Small.
                     var cards = new List<string>();
                     int accountCount = 0;
-                    while (offset < selected.Length && cards.Count < size + 1)
+                    while (offset < selected.Length && cards.Count < (size == 2 ? 2 : 1))
                     {
                         string id = selected[offset];
                         if (id != "pc" && accountCount == 2) break;

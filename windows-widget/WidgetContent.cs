@@ -63,14 +63,16 @@ internal static class WidgetContent
                 .Any(account => String(account["status"]) == "ok" && new[] { "primary", "secondary" }
                     .Any(name => account[name] is JsonObject limit && Date(limit["resetsAtUtc"]) is DateTimeOffset reset && reset <= now));
             if (running && !snapshotStale && resetPending) heading = "초기화됨 · 갱신 대기";
-            if (!small || !running || snapshotStale || resetPending)
-                body.Add(Text(heading + (pages.Count > 1 ? $" · {index + 1}/{pages.Count}" : ""), "Small", false, subtle: true));
+            bool nextOnImage = small && pages.Count > 1;
+            string navigation = pages.Count > 1 ? $" · {index + 1}/{pages.Count}" + (small ? " · 눌러서 다음" : "") : "";
+            body.Add(Text(heading + navigation, "Small", false, subtle: true));
+            if (small) card["actions"] = new JsonArray();
             body.Add(new JsonObject {
-                ["type"] = "Image", ["url"] = image, ["altText"] = String(pages[index]?["alt"]),
-                ["size"] = "Stretch", ["height"] = (small ? 56 : large ? 350 : 194) + "px",
-                ["spacing"] = "None", ["selectAction"] = new JsonObject { ["type"] = "Action.Execute", ["title"] = "미터기 열기", ["verb"] = "open" }
+                ["type"] = "Image", ["url"] = image, ["altText"] = String(pages[index]?["alt"]) + navigation,
+                ["size"] = "Stretch", ["height"] = (small ? 100 : large ? 350 : 194) + "px",
+                ["spacing"] = "None", ["selectAction"] = new JsonObject { ["type"] = "Action.Execute", ["title"] = nextOnImage ? "다음 카드" : "미터기 열기", ["verb"] = nextOnImage ? "page" : "open" }
             });
-            if (pages.Count > 1) card["actions"]!.AsArray().Add(new JsonObject { ["type"] = "Action.Execute", ["title"] = "다음 계정", ["verb"] = "page" });
+            if (!small && pages.Count > 1) card["actions"]!.AsArray().Add(new JsonObject { ["type"] = "Action.Execute", ["title"] = "다음 카드", ["verb"] = "page" });
             return card;
         }
         // Older meter versions publish data without a rendered compact dashboard.

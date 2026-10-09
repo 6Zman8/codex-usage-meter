@@ -72,7 +72,15 @@ internal static class SelfTests
                 var image=card["body"]!.AsArray().OfType<JsonObject>().Single(item=>item["type"]?.GetValue<string>()=="Image");
                 Require(image["url"]!.GetValue<string>()==views[size]![1]!["image"]!.GetValue<string>() &&
                     image["altText"]!.GetValue<string>().Contains("계정 4"),"Wrong dashboard size/page");
-                Require(image["selectAction"]?["verb"]?.GetValue<string>()=="open" &&
+                if(size=="Small")
+                {
+                    Require(image["selectAction"]?["verb"]?.GetValue<string>()=="page" &&
+                        image["selectAction"]?["title"]?.GetValue<string>().Contains("다음")==true &&
+                        image["altText"]!.GetValue<string>().Contains("2/2") &&
+                        CollectTexts(card).Any(text=>text.Contains("다음") && text.Contains("2/2")),"Small image must announce its page navigation");
+                    Require(card["actions"]!.AsArray().Count==0,"Small action row would overflow the widget host");
+                }
+                else Require(image["selectAction"]?["verb"]?.GetValue<string>()=="open" &&
                     card["actions"]!.AsArray().Any(action=>action?["verb"]?.GetValue<string>()=="page"),"Missing open/page action");
                 Require(!CollectTexts(card).Any(text=>text.Contains("73%")),"Legacy text rows duplicate the dashboard");
             }

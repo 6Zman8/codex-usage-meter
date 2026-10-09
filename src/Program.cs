@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.7.1.0")]
-[assembly: AssemblyFileVersion("1.7.1.0")]
+[assembly: AssemblyVersion("1.8.0.0")]
+[assembly: AssemblyFileVersion("1.8.0.0")]
 
 namespace CodexUsageMeter
 {
@@ -508,10 +508,6 @@ namespace CodexUsageMeter
         private readonly TextBlock _compactDiskLabel;
         private readonly TextBlock _compactDiskValue;
         private readonly TextBlock _compactNetworkValue;
-        private readonly System.Windows.Shapes.Path _compactCpuRing;
-        private readonly System.Windows.Shapes.Path _compactGpuRing;
-        private readonly System.Windows.Shapes.Path _compactMemoryRing;
-        private readonly System.Windows.Shapes.Path _compactDiskRing;
         private readonly TextBlock _compactFooterStatus;
         private readonly TextBlock _compactAccountSummaryText;
         private readonly TextBlock _accountCountBadgeText;
@@ -636,10 +632,6 @@ namespace CodexUsageMeter
             _compactDiskLabel = Find<TextBlock>("CompactDiskLabel");
             _compactDiskValue = Find<TextBlock>("CompactDiskValue");
             _compactNetworkValue = Find<TextBlock>("CompactNetworkValue");
-            _compactCpuRing = Find<System.Windows.Shapes.Path>("CompactCpuRing");
-            _compactGpuRing = Find<System.Windows.Shapes.Path>("CompactGpuRing");
-            _compactMemoryRing = Find<System.Windows.Shapes.Path>("CompactMemoryRing");
-            _compactDiskRing = Find<System.Windows.Shapes.Path>("CompactDiskRing");
             _compactFooterStatus = Find<TextBlock>("CompactFooterStatus");
             _compactAccountSummaryText = Find<TextBlock>("CompactAccountSummaryText");
             _accountCountBadgeText = Find<TextBlock>("AccountCountBadgeText");
@@ -1508,6 +1500,32 @@ namespace CodexUsageMeter
             try { _windowsWidgetBridge.SetApplicationPath(Assembly.GetExecutingAssembly().Location); }
             catch (Exception) { SetFooterText("Windows 위젯에 프로그램 경로를 저장하지 못했습니다."); }
             PublishWindowsWidget(true);
+            SynchronizeWindowsWidget();
+        }
+
+        private async void SynchronizeWindowsWidget()
+        {
+            Button button = Find<Button>("WindowsWidgetInstallButton");
+            TextBlock status = Find<TextBlock>("WindowsWidgetStatusText");
+            string previous = status.Text;
+            button.IsEnabled = false;
+            status.Text = "Windows 위젯 버전 확인 중…";
+            try
+            {
+                bool updated = await WindowsWidgetInstaller.UpdateRegisteredAsync();
+                if (_disposed) return;
+                if (updated)
+                {
+                    PublishWindowsWidget(true);
+                    status.Text = "Windows 위젯 업데이트 완료 · 저장한 위젯 배치를 표시합니다.";
+                }
+                else status.Text = previous;
+            }
+            catch (Exception)
+            {
+                if (!_disposed) status.Text = "Windows 위젯 자동 업데이트를 완료하지 못했습니다. 위 버튼으로 다시 시도해 주세요.";
+            }
+            finally { if (!_disposed) button.IsEnabled = true; }
         }
 
         private void PublishWindowsWidget(bool running)
@@ -1555,7 +1573,7 @@ namespace CodexUsageMeter
                 status.Text = "등록 완료 · Win+W → 위젯 추가 → Codex 사용량";
                 ShowModal("Windows 위젯 등록 완료", "Win+W를 누르고 위젯 추가에서 ‘Codex 사용량’을 고정하세요.\n\n미터기의 최소화 버튼으로 트레이에 숨겨도 사용량은 계속 갱신됩니다. ‘로그인 시 시작’과 ‘자동 시작 시 트레이로’를 켜면 다음 로그인부터 창 없이 유지됩니다.", null, "확인", null, null, null);
             }
-            catch (Exception ex) { status.Text = "등록되지 않았습니다. 다시 추가할 수 있습니다."; ShowModal("Windows 위젯 등록 실패", ex.Message, null, "확인", null, null, null); }
+            catch (Exception ex) { status.Text = "등록/업데이트를 완료하지 못했습니다. 다시 시도해 주세요."; ShowModal("Windows 위젯 등록 실패", ex.Message, null, "확인", null, null, null); }
             finally { button.IsEnabled = true; }
         }
 
@@ -2009,8 +2027,8 @@ namespace CodexUsageMeter
             {
                 ((TextBlock)window.FindName("Compact" + names[index] + "Value")).Text =
                     (index == 1 && gpu == null) || (index == 3 && disk == null) ? "N/A" : Percent(values[index]);
-                ((System.Windows.Shapes.Path)window.FindName("Compact" + names[index] + "Ring")).Data =
-                    CreateArcGeometry(values[index], 35.0, new Point(48.0, 48.0));
+                Border bar = (Border)window.FindName("Compact" + names[index] + "Bar");
+                bar.Height = ((FrameworkElement)bar.Parent).Height * Math.Max(0, Math.Min(100, values[index])) / 100;
             }
             TextBlock gpuLabel = (TextBlock)window.FindName("CompactGpuLabel"), diskLabel = (TextBlock)window.FindName("CompactDiskLabel");
             gpuLabel.Text = gpu == null ? "GPU" : "GPU " + gpu.Index;
@@ -3276,10 +3294,7 @@ namespace CodexUsageMeter
             _compactDiskValue.Text = "34%";
             _compactDiskValue.ToolTip = "읽기 " + FormatRate(previewSystem.Disks[1].ReadBytesPerSecond) +
                 " · 쓰기 " + FormatRate(previewSystem.Disks[1].WriteBytesPerSecond);
-            _compactCpuRing.Data = CreateArcGeometry(28.0, 35.0, new Point(48.0, 48.0));
-            _compactGpuRing.Data = CreateArcGeometry(41.0, 35.0, new Point(48.0, 48.0));
-            _compactMemoryRing.Data = CreateArcGeometry(63.0, 35.0, new Point(48.0, 48.0));
-            _compactDiskRing.Data = CreateArcGeometry(34.0, 35.0, new Point(48.0, 48.0));
+            RenderCompactSystem(_window, previewSystem);
             _compactNetworkValue.Text = "NET 2 · ↓ 11.3 MB/s   ↑ 684 KB/s";
             UpdateFooter();
         }
@@ -3539,7 +3554,7 @@ namespace CodexUsageMeter
                     "CompactAccount1PrimaryTrack", "CompactAccount1PrimaryRing", "CompactAccount1PrimaryTimeBar", "CompactAccount1PrimaryTimeValue", "CompactAccount1PrimaryRecommendationRing", "CompactAccount1SecondaryTrack", "CompactAccount1SecondaryValue", "CompactAccount1SecondaryRing", "CompactAccount1SecondaryTimeBar", "CompactAccount1SecondaryTimeValue", "CompactAccount1SecondaryRecommendationRing", "CompactAccount1PaceValue", "CompactAccount1ResetValue",
                     "CompactAccount2Card", "CompactAccount2TitleText", "CompactAccount2BadgeText", "CompactAccount2Identity", "CompactAccount2CodexLoginButton", "CompactAccount2PrimaryValue",
                     "CompactAccount2PrimaryTrack", "CompactAccount2PrimaryRing", "CompactAccount2PrimaryTimeBar", "CompactAccount2PrimaryTimeValue", "CompactAccount2PrimaryRecommendationRing", "CompactAccount2SecondaryTrack", "CompactAccount2SecondaryValue", "CompactAccount2SecondaryRing", "CompactAccount2SecondaryTimeBar", "CompactAccount2SecondaryTimeValue", "CompactAccount2SecondaryRecommendationRing", "CompactAccount2PaceValue", "CompactAccount2ResetValue",
-                    "CompactCpuValue", "CompactCpuTrack", "CompactCpuRing", "CompactGpuLabel", "CompactGpuValue", "CompactGpuTrack", "CompactGpuRing", "CompactMemoryValue", "CompactMemoryTrack", "CompactMemoryRing", "CompactDiskLabel", "CompactDiskValue", "CompactDiskTrack", "CompactDiskRing", "CompactNetworkValue",
+                    "CompactCpuValue", "CompactCpuTrack", "CompactCpuBar", "CompactGpuLabel", "CompactGpuValue", "CompactGpuTrack", "CompactGpuBar", "CompactMemoryValue", "CompactMemoryTrack", "CompactMemoryBar", "CompactDiskLabel", "CompactDiskValue", "CompactDiskTrack", "CompactDiskBar", "CompactNetworkValue",
                     "ModalOverlay", "ModalScrollViewer", "ModalTitle", "ModalMessage", "ModalCodePanel", "ModalCode", "ModalPrimaryButton", "ModalSecondaryButton",
                     "SettingsOverlay", "SettingsCloseButton", "SettingsDoneButton", "AccountCountDecreaseButton", "AccountCountValue", "AccountCountIncreaseButton", "FontDecreaseButton", "FontResetButton", "FontIncreaseButton", "FontScaleValue", "AppVersionValue", "UpdateStatusText", "UpdateCheckButton",
                     "AccountPagePreviousButton", "AccountPageText", "AccountPageNextButton"
@@ -3594,14 +3609,11 @@ namespace CodexUsageMeter
                 System.Windows.Shapes.Ellipse weeklyTrack = window.FindName("CompactAccount1SecondaryTrack") as System.Windows.Shapes.Ellipse;
                 System.Windows.Shapes.Path weeklyRing = window.FindName("CompactAccount1SecondaryRing") as System.Windows.Shapes.Path;
                 System.Windows.Shapes.Path weeklyRecommendation = window.FindName("CompactAccount1SecondaryRecommendationRing") as System.Windows.Shapes.Path;
-                System.Windows.Shapes.Ellipse cpuTrack = window.FindName("CompactCpuTrack") as System.Windows.Shapes.Ellipse;
-                System.Windows.Shapes.Path cpuRing = window.FindName("CompactCpuRing") as System.Windows.Shapes.Path;
                 ProgressBar compactPrimaryTimeBar = window.FindName("CompactAccount1PrimaryTimeBar") as ProgressBar;
                 ProgressBar compactWeeklyTimeBar = window.FindName("CompactAccount1SecondaryTimeBar") as ProgressBar;
                 if (primaryTrack.StrokeThickness != primaryRing.StrokeThickness || primaryRing.StrokeThickness != primaryRecommendation.StrokeThickness ||
                     primaryTrack.Width != 70.0 || weeklyTrack.StrokeThickness != weeklyRing.StrokeThickness ||
-                    weeklyRing.StrokeThickness != weeklyRecommendation.StrokeThickness || weeklyTrack.Width != 92.0 ||
-                    cpuTrack.StrokeThickness != cpuRing.StrokeThickness || cpuTrack.Width != 70.0)
+                    weeklyRing.StrokeThickness != weeklyRecommendation.StrokeThickness || weeklyTrack.Width != 92.0)
                 {
                     throw new InvalidOperationException("원형 게이지의 빈 트랙과 채움 호 크기가 일치하지 않습니다.");
                 }

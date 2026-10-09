@@ -325,7 +325,7 @@ namespace CodexUsageMeter
                     choice.Padding = new Thickness(7, 4, 7, 4); choice.HorizontalContentAlignment = HorizontalAlignment.Left;
                     choice.Background = Brush(id == _selectedItem ? "#255B4C" : "#292929"); row.Children.Add(choice); _inspector.Children.Add(row);
                 }
-                _inspector.Children.Add(new TextBlock { Text = "체크를 끄면 항목이 사라지고 다시 켜면 복원됩니다. 항목을 끌어 이동하고 ◢로 크기를 바꾸세요.", TextWrapping = TextWrapping.Wrap, Foreground = Brush("#B5B5BF"), FontSize = 11, Margin = new Thickness(0, 5, 0, 5) });
+                _inspector.Children.Add(new TextBlock { Text = "체크를 끄면 숨기고 다시 켜면 복원됩니다. 끌어서 이동·◢로 크기 조절 시 항목과 카드의 경계·중앙선에 맞춰집니다. Alt를 누르면 자유 조절합니다. 저장한 배치는 자동으로 바뀌지 않습니다.", TextWrapping = TextWrapping.Wrap, Foreground = Brush("#B5B5BF"), FontSize = 11, Margin = new Thickness(0, 5, 0, 5) });
                 _inspector.Children.Add(MakeButton("선택 항목 원래대로", delegate { ResetItems(false); }));
                 _inspector.Children.Add(MakeButton("카드 안쪽 모두 원래대로", delegate { ResetItems(true); }));
             }
@@ -409,6 +409,7 @@ namespace CodexUsageMeter
         {
             if (_contentAdorner != null)
             {
+                _contentAdorner.ClearGuides();
                 AdornerLayer layer = VisualTreeHelper.GetParent(_contentAdorner) as AdornerLayer;
                 if (layer != null) layer.Remove(_contentAdorner);
             }

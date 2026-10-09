@@ -264,7 +264,7 @@ namespace CodexUsageMeter
                 LayoutTile pc = _tiles[mode, 2]; pc.Settings = layout.Card("pc");
                 CardContentLayout.RestoreVisibility(pc);
                 pc.Card.Visibility = pc.Settings.Visible ? Visibility.Visible : Visibility.Collapsed;
-                if (mode == 0) ApplyExpandedPc(pc, fontScale); else ApplyCompactPc(pc, fontScale);
+                if (mode == 0) ApplyExpandedPc(pc, fontScale); else ApplyCompactPc(pc, fontScale, layout.CompactPcSpacing);
                 CardContentLayout.ApplyVisibility(pc);
                 panel.Tiles.Sort((a, b) => layout.Cards.IndexOf(a.Settings).CompareTo(layout.Cards.IndexOf(b.Settings)));
                 _empty[mode].Visibility = panel.Tiles.Any(tile => tile.Card.Visibility == Visibility.Visible) ? Visibility.Collapsed : Visibility.Visible;
@@ -347,18 +347,22 @@ namespace CodexUsageMeter
             items.Columns = count >= 6 ? 2 : 1;
             tile.MinimumHeight = 100 * Math.Max(1, fontScale / 1.3) + Math.Max(1, (int)Math.Ceiling(count / (double)items.Columns)) * 87 * Math.Max(1, fontScale / 1.5);
         }
-        private void ApplyCompactPc(LayoutTile tile, double fontScale)
+        private void ApplyCompactPc(LayoutTile tile, double fontScale, bool compactSpacing)
         {
             Grid body = tile.Content;
             UniformGrid items = body.Children.OfType<UniformGrid>().Single();
             string[] keys = { "cpu", "gpu", "ram", "disk" };
             for (int n = 0; n < keys.Length; n++) items.Children[n].Visibility = tile.Settings.Shows(keys[n]) && tile.Settings.ShowsItem(keys[n]) ? Visibility.Visible : Visibility.Collapsed;
             int count = keys.Count(key => tile.Settings.Shows(key) && tile.Settings.ShowsItem(key));
-            items.Rows = Math.Max(1, (count + 1) / 2); items.Columns = count == 1 ? 1 : 2;
+            // Keep the old card coordinate space for saved custom item positions.
+            bool custom = tile.Settings.ItemLayouts.Count > 0;
+            items.Rows = custom ? Math.Max(1, (count + 1) / 2) : 1;
+            items.Columns = custom ? (count == 1 ? 1 : 2) : Math.Max(1, count);
             items.Visibility = count == 0 ? Visibility.Collapsed : Visibility.Visible;
             body.RowDefinitions[1].Height = count == 0 ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
             Find<TextBlock>("CompactNetworkValue").Visibility = tile.Settings.Shows("network") ? Visibility.Visible : Visibility.Collapsed;
-            tile.MinimumHeight = (50 + (tile.Settings.Shows("network") ? 25 : 0)) * Math.Max(1, fontScale / 1.5) + ((count + 1) / 2) * 108;
+            tile.MinimumHeight = (50 + (tile.Settings.Shows("network") ? 25 : 0)) * Math.Max(1, fontScale / 1.5) +
+                (!compactSpacing ? ((count + 1) / 2) * 108 : count == 0 ? 0 : 96 * Math.Max(1, fontScale / 1.5));
         }
         private T Find<T>(string name) where T : FrameworkElement { return (T)_window.FindName(name); }
     }

@@ -61,9 +61,43 @@ namespace CodexUsageMeter
             report("PASS atomic snapshot replacement records shutdown and the current account count");
             CheckRenderedWidget(report, directory);
             CheckPackageInputs(report, directory);
+            CheckRegisteredUpdate(report);
             CheckSettings(320, 480, 2, directory);
             CheckSettings(460, 780, 1.5, directory);
             report("PASS Windows widget settings scroll and install action remain reachable at narrow widths and 150-200 percent text");
+        }
+
+        private static void CheckRegisteredUpdate(Action<string> report)
+        {
+            Version current = new Version(1, 8, 0, 0);
+            Func<Func<Version>, Action, bool> synchronize = (read, install) =>
+                WindowsWidgetInstaller.SynchronizeRegisteredVersion(current, read, install);
+            int installs = 0;
+            foreach (Version installed in new[] { null, current, new Version(1, 9, 0, 0) })
+            {
+                if (synchronize(() => installed, () => installs++) || installs != 0)
+                    throw new InvalidOperationException("Widget auto-update installed an unrequested widget or replaced a current/newer provider");
+            }
+            Version registered = new Version(1, 6, 0, 0);
+            if (!synchronize(() => registered, () => { installs++; registered = current; }) || installs != 1 ||
+                synchronize(() => registered, () => installs++) || installs != 1)
+                throw new InvalidOperationException("An older registered widget was not upgraded exactly once with the main app");
+            bool failed = false;
+            registered = new Version(1, 6, 0, 0);
+            try { synchronize(() => registered, () => { throw new IOException("offline fixture"); }); }
+            catch (IOException) { failed = true; }
+            if (!failed || registered != new Version(1, 6, 0, 0))
+                throw new InvalidOperationException("Failed widget update was reported as installed or changed the prior registration");
+            failed = false;
+            try { synchronize(() => registered, () => { }); }
+            catch (InvalidOperationException) { failed = true; }
+            if (!failed) throw new InvalidOperationException("A completed installer without a matching registration was accepted");
+            failed = false;
+            installs = 0;
+            try { synchronize(() => { throw new IOException("query fixture"); }, () => installs++); }
+            catch (IOException) { failed = true; }
+            if (!failed || installs != 0) throw new InvalidOperationException("Unknown registration state triggered an installation");
+            report("PASS main-app update upgrades an existing old widget once, skips missing/current/newer providers and preserves failed registration");
         }
 
         private static void CheckPackageInputs(Action<string> report, string directory)
@@ -115,8 +149,8 @@ namespace CodexUsageMeter
             using (var renderer = new WindowsWidgetRenderer())
             {
                 var pages = renderer.Render(accounts, settings, system, 1.5, now);
-                if (pages["Large"].Count != 2 || pages["Medium"].Count != 3 || pages["Small"].Count != 5 ||
-                    !pages["Large"][0]["alt"].Contains("계정 1") || !pages["Large"][1]["alt"].Contains("계정 4") ||
+                if (pages["Large"].Count != 3 || pages["Medium"].Count != 5 || pages["Small"].Count != 5 ||
+                    !pages["Large"][0]["alt"].Contains("계정 1") || !pages["Large"][2]["alt"].Contains("계정 4") ||
                     !pages["Large"][0]["alt"].Contains("0%") || !pages["Large"][0]["alt"].Contains("41%") || !pages["Large"][0]["alt"].Contains("63%") ||
                     pages.Values.SelectMany(value => value).Any(page => page["alt"].Contains("private")))
                     throw new InvalidOperationException("Rendered widget lost accounts, real quota/PC values or leaked identity");
@@ -134,14 +168,19 @@ namespace CodexUsageMeter
                             throw new InvalidOperationException("Widget bitmap does not fit the requested host size");
                     }
                     File.WriteAllBytes(Path.Combine(directory, "widget-" + WindowsWidgetRenderer.Sizes[size] + ".png"), png);
+                    for (int page = 0; page < sizePages.Count; page++)
+                        File.WriteAllBytes(Path.Combine(directory, "widget-" + WindowsWidgetRenderer.Sizes[size] + "-" + (page + 1) + ".png"),
+                            Convert.FromBase64String(sizePages[page]["image"].Substring("data:image/png;base64,".Length)));
                 }
+                CheckSmallGauge(pages["Small"][2]["image"], Color.FromRgb(167, 139, 250), "account weekly");
+                CheckPcBars(renderer.Window, system);
                 string json = WindowsWidgetBridge.BuildJson(accounts, true, now, pages);
                 if (Encoding.UTF8.GetByteCount(json) > 512 * 1024) throw new InvalidOperationException("Rendered snapshot exceeds the provider input limit");
                 File.WriteAllText(Path.Combine(directory, "rendered-snapshot.json"), json);
-                settings.Widget.Card("account3").Visible = settings.Widget.Card("account4").Visible = false;
+                settings.Widget.Card("account2").Visible = settings.Widget.Card("account3").Visible = settings.Widget.Card("account4").Visible = false;
                 pages = renderer.Render(accounts, settings, system, 1.5, now);
                 LayoutTile first = renderer.Layout.Tiles(true).Single(tile => tile.Settings.Id == "account1");
-                if (pages["Large"].Count != 1 || renderer.Layout.Tiles(true).First().Settings.Id != "pc" ||
+                if (pages["Large"].Count != 1 || !pages["Large"][0]["alt"].Contains("PC 상태") ||
                     first.ContentItems().Single(item => item.Id == "subscription").Element.IsVisible)
                     throw new InvalidOperationException("Windows widget did not follow the compact layout order/visibility");
                 LayoutItemSettings position = CardContentLayout.Position(first, first.ContentItems().Single(item => item.Id == "weekly"));
@@ -158,6 +197,48 @@ namespace CodexUsageMeter
                 if (!pages["Large"][0]["alt"].Contains("갱신 대기")) throw new InvalidOperationException("Expired quota was presented as current");
             }
             report("PASS rendered Windows widget: shared gauges/layout, 3 sizes, paging, real zero/PC values, hidden items/order/bounds and private-data exclusion");
+        }
+
+        private static void CheckPcBars(Window window, SystemSnapshot source)
+        {
+            DashboardController.RenderCompactSystem(window, source);
+            foreach (string name in new[] { "Cpu", "Gpu", "Memory", "Disk" })
+            {
+                Border bar = (Border)window.FindName("Compact" + name + "Bar");
+                FrameworkElement track = (FrameworkElement)bar.Parent;
+                double expected = name == "Cpu" ? 28 : name == "Memory" ? 63 : 0;
+                if (track.Width >= track.Height || bar.VerticalAlignment != VerticalAlignment.Bottom ||
+                    Math.Abs(bar.Height / track.Height * 100 - expected) > 0.000001)
+                    throw new InvalidOperationException("PC vertical bar did not represent the measured percentage: " + name);
+                if ((name == "Gpu" || name == "Disk") && ((TextBlock)window.FindName("Compact" + name + "Value")).Text != "N/A")
+                    throw new InvalidOperationException("An unavailable device was shown as a measured zero");
+            }
+            foreach (double percent in new[] { 0.0, 50.0, 100.0 })
+            {
+                DashboardController.RenderCompactSystem(window, new SystemSnapshot { CpuPercent = percent });
+                Border bar = (Border)window.FindName("CompactCpuBar");
+                if (Math.Abs(bar.Height / ((FrameworkElement)bar.Parent).Height - percent / 100) > 0.000001)
+                    throw new InvalidOperationException("PC vertical bar zero/half/full scale is incorrect");
+            }
+            DashboardController.RenderCompactSystem(window, source);
+        }
+
+        private static void CheckSmallGauge(string image, Color ring, string label)
+        {
+            using (var stream = new MemoryStream(Convert.FromBase64String(image.Substring("data:image/png;base64,".Length))))
+            {
+                BitmapSource bitmap = new FormatConvertedBitmap(BitmapFrame.Create(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad), PixelFormats.Bgra32, null, 0);
+                int stride = bitmap.PixelWidth * 4, left = bitmap.PixelWidth, right = -1;
+                byte[] pixels = new byte[stride * bitmap.PixelHeight]; bitmap.CopyPixels(pixels, stride, 0);
+                for (int y = 0; y < bitmap.PixelHeight; y++) for (int x = 0; x < bitmap.PixelWidth; x++)
+                {
+                    int offset = y * stride + x * 4;
+                    if (pixels[offset + 3] > 200 && Math.Abs(pixels[offset] - ring.B) < 12 &&
+                        Math.Abs(pixels[offset + 1] - ring.G) < 12 && Math.Abs(pixels[offset + 2] - ring.R) < 12)
+                    { left = Math.Min(left, x); right = Math.Max(right, x); }
+                }
+                if (right - left < 48) throw new InvalidOperationException("Small " + label + " ring is too small to read: " + (right - left) + " pixels at 2x");
+            }
         }
 
         private static void CheckSettings(int width, int height, double scale, string evidence)

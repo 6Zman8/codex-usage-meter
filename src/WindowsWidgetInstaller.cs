@@ -18,6 +18,7 @@ namespace CodexUsageMeter
     {
         internal const string PackageName = "CodexUsageMeter.WindowsWidget";
         internal const string AssetName = "CodexUsageMeter.WindowsWidget.zip";
+        private static readonly object InstallationLock = new object();
 
         internal static bool DeveloperModeEnabled()
         {
@@ -38,12 +39,71 @@ namespace CodexUsageMeter
         internal static Task<string> InstallAsync()
         {
             return Task.Run(delegate {
-                if (!SupportedWindows()) throw new InvalidOperationException("Windows 11 64비트에서 사용할 수 있습니다.");
-                if (!DeveloperModeEnabled()) throw new InvalidOperationException("Windows 개발자 모드를 켠 뒤 다시 추가해 주세요.");
-                string folder = PreparePackage(Path.Combine(WindowsWidgetBridge.DefaultRoot, "packages"));
-                RegisterPackage(folder);
-                return folder;
+                lock (InstallationLock)
+                {
+                    Version registered = GetRegisteredVersion();
+                    if (registered != null && registered > CurrentPackageVersion) return null;
+                    return InstallCurrentVersion();
+                }
             });
+        }
+
+        // Upgrade only a widget the user already installed. No new installation, downgrade or security-setting change.
+        internal static Task<bool> UpdateRegisteredAsync()
+        {
+            return Task.Run(delegate {
+                if (!SupportedWindows()) return false;
+                lock (InstallationLock)
+                    return SynchronizeRegisteredVersion(CurrentPackageVersion, GetRegisteredVersion,
+                        delegate { InstallCurrentVersion(); });
+            });
+        }
+
+        private static Version CurrentPackageVersion { get { return new Version(UpdateClient.CurrentVersionText + ".0"); } }
+
+        private static string InstallCurrentVersion()
+        {
+            if (!SupportedWindows()) throw new InvalidOperationException("Windows 11 64비트에서 사용할 수 있습니다.");
+            if (!DeveloperModeEnabled()) throw new InvalidOperationException("Windows 개발자 모드를 켠 뒤 다시 추가해 주세요.");
+            string folder = PreparePackage(Path.Combine(WindowsWidgetBridge.DefaultRoot, "packages"));
+            RegisterPackage(folder);
+            return folder;
+        }
+
+        internal static bool SynchronizeRegisteredVersion(Version current, Func<Version> readRegistered, Action install)
+        {
+            Version registered = readRegistered();
+            if (registered == null || registered >= current) return false;
+            install();
+            Version updated = readRegistered();
+            if (updated == null || updated < current)
+                throw new InvalidOperationException("Windows 위젯 업데이트 결과를 확인하지 못했습니다. 설정에서 다시 시도해 주세요.");
+            return true;
+        }
+
+        internal static Version GetRegisteredVersion()
+        {
+            string script = "$ErrorActionPreference='Stop'; $p=Get-AppxPackage -Name '" + PackageName +
+                "' | Sort-Object Version -Descending | Select-Object -First 1; if($p){[Console]::Out.Write($p.Version.ToString())}";
+            string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+            ProcessStartInfo start = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "WindowsPowerShell\\v1.0\\powershell.exe"), "-NoProfile -NonInteractive -EncodedCommand " + encoded) {
+                UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden,
+                RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            using (Process process = Process.Start(start))
+            {
+                Task<string> output = process.StandardOutput.ReadToEndAsync();
+                Task<string> error = process.StandardError.ReadToEndAsync();
+                if (!process.WaitForExit(30000)) throw new InvalidOperationException("Windows 위젯 버전 확인에 시간이 걸립니다. 설정에서 다시 시도해 주세요.");
+                string version = output.Result.Trim();
+                string errorText = error.Result;
+                if (process.ExitCode != 0) throw new InvalidOperationException("Windows 위젯 등록 상태를 확인하지 못했습니다.");
+                if (version.Length == 0) return null;
+                Version registered;
+                if (!Version.TryParse(version, out registered)) throw new InvalidOperationException("Windows 위젯 버전 정보를 읽지 못했습니다.");
+                return registered;
+            }
         }
 
         // Also used by release verification: downloads and validates, but never installs.

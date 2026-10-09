@@ -53,6 +53,8 @@ namespace CodexUsageMeter
     {
         public int Columns { get; set; }
         public bool HideUnavailable { get; set; }
+        // Missing in older LayoutV1 JSON: retain its card heights on upgrade.
+        public bool CompactPcSpacing { get; set; }
         public List<LayoutCardSettings> Cards { get; set; }
 
         public LayoutModeSettings() { Columns = 1; HideUnavailable = true; Cards = new List<LayoutCardSettings>(); }
@@ -100,7 +102,7 @@ namespace CodexUsageMeter
         }
         public static LayoutModeSettings DefaultMode(bool compact)
         {
-            LayoutModeSettings mode = new LayoutModeSettings { Columns = compact ? 1 : 3 };
+            LayoutModeSettings mode = new LayoutModeSettings { Columns = compact ? 1 : 3, CompactPcSpacing = compact };
             for (int number = 1; number <= 4; number++)
                 mode.Cards.Add(new LayoutCardSettings { Id = "account" + number,
                     Sections = new List<string>(compact ? new[] { "short", "weekly", "credits" } :

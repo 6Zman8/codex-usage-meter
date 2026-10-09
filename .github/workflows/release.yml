@@ -89,7 +89,7 @@ jobs:
         shell: pwsh
         run: |
           $test = Start-Process -FilePath '.\bin\CodexUsageMeter.exe' -ArgumentList '--layout-self-test layout-self-test.txt' -WindowStyle Hidden -PassThru
-          if (-not $test.WaitForExit(30000)) {
+          if (-not $test.WaitForExit(180000)) {
             throw 'Layout verification timed out'
           }
           Get-Content -LiteralPath '.\layout-self-test.txt'

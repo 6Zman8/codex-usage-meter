@@ -8,6 +8,8 @@
 
 새 버전에서는 본체 `src/Program.cs`, 제공자 `windows-widget/CodexUsageMeter.WidgetProvider.csproj`, `windows-widget/AppxManifest.xml`의 버전을 함께 맞춥니다. 위젯 빌드 요약의 버전도 확인합니다. CI는 본체와 위젯 패키지의 버전 불일치를 차단합니다.
 
+v1.8.0의 배치 검사는 전체/위젯 모드의 실제 숨김 이동·크기 손잡이를 25~400% 확대와 100~200% 글씨에서 검사합니다. 저장 좌표는 정확한 경계·중앙선과 비교하고 화면의 위치는 렌더링 오차도 확인합니다. `Alt`, 놓기·취소 시 안내선 제거, 이전 LayoutV1 위치·크기·순서·숨김의 무변경 저장/복원을 포함합니다. 행렬 검증에 로컬 약 70초가 걸려 CI 배치 검사 제한은 180초입니다. 제공자 자동 갱신은 가짜 등록 조회/설치 함수로 검사하며 실제 사용자 패키지를 재등록하지 않습니다.
+
 v1.6.0부터 본체의 `--single-instance-self-test`, `--windows-widget-self-test`를 숨김 실행합니다. 전자는 별도 프로세스의 기존 창 복원·시작 경합·숨김 갱신, 후자는 익명 스냅샷·실패/한도 구분·ZIP/해시/패키지 검증·좁은 설정 화면을 확인합니다. 두 검사 모두 전체 검사에도 포함됩니다.
 
 Windows 위젯은 별도 `build-windows-widget.ps1`로 빌드하며 `bin/windows-widget/CodexUsageMeter.WindowsWidget.zip`을 본체와 같은 정식 Release의 추가 자산으로 게시합니다. 본체의 .NET Framework 빌드는 그대로 유지합니다. 위젯 빌드는 카드 및 published EXE 검사를 수행하고, 패키지 manifest와 self-contained 런타임을 함께 보관합니다. 본체 `--windows-widget-download-test 결과파일`은 정확히 같은 버전의 공개 ZIP·SHA-256·패키지 신원을 검증하며 Windows에 등록하지 않습니다. 개발자 모드 변경 및 실제 위젯 고정/표시는 별도의 승인·실기 확인 범위입니다. 최초 사용 경로는 `WINDOWS_WIDGETS.md`를 따릅니다.

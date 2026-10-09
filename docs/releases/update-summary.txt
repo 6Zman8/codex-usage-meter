@@ -1,1 +1,1 @@
-Hide layout items, match Windows Widgets to the meter, and show tray quota; fix Korean tray setup guidance.
+Sync installed Windows Widgets, add magnetic layout alignment and compact PC bars, and preserve saved layouts.

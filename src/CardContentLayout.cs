@@ -78,7 +78,12 @@ namespace CodexUsageMeter
                 GeneralTransform transform = element.TransformToAncestor(tile.Surface);
                 Point origin = transform.Transform(new Point()), xAxis = transform.Transform(new Point(1, 0)), yAxis = transform.Transform(new Point(0, 1));
                 Matrix basis = new Matrix(xAxis.X - origin.X, xAxis.Y - origin.Y, yAxis.X - origin.X, yAxis.Y - origin.Y, origin.X, origin.Y);
-                Matrix inverse = element.RenderTransform.Value;
+                // WPF applies LayoutTransform before RenderTransform. Remove the render
+                // transform in that coordinate space (a single visible ring has a 1.1x layout scale).
+                Matrix layout = element.LayoutTransform.Value, undoLayout = layout;
+                if (!undoLayout.HasInverse) continue;
+                undoLayout.Invert();
+                Matrix inverse = layout; inverse.Append(element.RenderTransform.Value); inverse.Append(undoLayout);
                 if (!inverse.HasInverse) continue;
                 inverse.Invert(); inverse.Append(basis); basis = inverse;
                 if (basis.M11 <= 0 || basis.M22 <= 0) continue;
@@ -98,10 +103,68 @@ namespace CodexUsageMeter
                 double scale = Math.Min(target.Width / natural.Width, target.Height / natural.Height);
                 double left = target.X + (target.Width - natural.Width * scale) / 2, top = target.Y + (target.Height - natural.Height * scale) / 2;
                 Matrix next = new Matrix(scale, 0, 0, scale, (left - natural.X) / basis.M11, (top - natural.Y) / basis.M22);
+                Matrix render = undoLayout; render.Append(next); render.Append(layout); next = render;
                 Matrix current = element.RenderTransform.Value;
                 if (Math.Abs(next.M11 - current.M11) > 0.00001 || Math.Abs(next.OffsetX - current.OffsetX) > 0.0001 || Math.Abs(next.OffsetY - current.OffsetY) > 0.0001)
                     element.RenderTransform = new MatrixTransform(next);
             }
+        }
+    }
+
+    internal static class LayoutSnap
+    {
+        // Coordinates are relative to the card's inner rectangle. Tolerance is converted
+        // from screen DIPs by the caller, so zoom never changes the magnetic distance.
+        internal static Rect Apply(Rect proposed, IEnumerable<Rect> siblings, bool resize,
+            double toleranceX, double toleranceY, out double? guideX, out double? guideY)
+        {
+            double[] xs = new[] { 0.0, 0.5, 1.0 }.Concat(siblings.SelectMany(r => new[] { r.Left, r.Left + r.Width / 2, r.Right })).ToArray();
+            double[] ys = new[] { 0.0, 0.5, 1.0 }.Concat(siblings.SelectMany(r => new[] { r.Top, r.Top + r.Height / 2, r.Bottom })).ToArray();
+            guideX = guideY = null;
+            if (!resize)
+            {
+                double x = Move(proposed.X, proposed.Width, xs, toleranceX, out guideX);
+                double y = Move(proposed.Y, proposed.Height, ys, toleranceY, out guideY);
+                return new Rect(x, y, proposed.Width, proposed.Height);
+            }
+            double factor = 1, best = 1.0000001;
+            double minimum = Math.Max(0.025 / proposed.Width, 0.02 / proposed.Height);
+            double maximum = Math.Min((1 - proposed.X) / proposed.Width, (1 - proposed.Y) / proposed.Height);
+            foreach (double candidate in xs.SelectMany(line => new[] { (line - proposed.X) / proposed.Width, (line - proposed.X) * 2 / proposed.Width })
+                .Concat(ys.SelectMany(line => new[] { (line - proposed.Y) / proposed.Height, (line - proposed.Y) * 2 / proposed.Height })))
+            {
+                if (candidate < minimum || candidate > maximum) continue;
+                double distance = Math.Max(Math.Abs(candidate - 1) * proposed.Width / toleranceX,
+                    Math.Abs(candidate - 1) * proposed.Height / toleranceY);
+                if (distance < best) { best = distance; factor = candidate; }
+            }
+            Rect result = new Rect(proposed.X, proposed.Y, proposed.Width * factor, proposed.Height * factor);
+            if (best <= 1.0000001)
+            {
+                guideX = MatchingLine(result.X, result.Width, xs);
+                guideY = MatchingLine(result.Y, result.Height, ys);
+            }
+            return result;
+        }
+
+        private static double Move(double start, double length, double[] lines, double tolerance, out double? guide)
+        {
+            double best = tolerance + 0.000000001, result = start; guide = null;
+            foreach (double line in lines)
+                foreach (double anchor in new[] { 0.0, 0.5, 1.0 })
+                {
+                    double candidate = line - length * anchor, distance = Math.Abs(candidate - start);
+                    if (candidate < 0 || candidate + length > 1 || distance >= best) continue;
+                    best = distance; result = candidate; guide = line;
+                }
+            return result;
+        }
+
+        private static double? MatchingLine(double start, double length, double[] lines)
+        {
+            foreach (double line in lines)
+                if (Math.Abs(start + length - line) < 0.0000001 || Math.Abs(start + length / 2 - line) < 0.0000001) return line;
+            return null;
         }
     }
 
@@ -115,12 +178,16 @@ namespace CodexUsageMeter
         private readonly Action<string, double, double, double, double> _change;
         private string _signature;
         private Rect _lastBounds = Rect.Empty;
+        private readonly Canvas _guides = new Canvas { IsHitTestVisible = false };
+        internal Func<ModifierKeys> ReadModifiers = () => Keyboard.Modifiers;
 
         internal LayoutContentAdorner(LayoutTile tile, Visual dragSurface, Action<string> select,
             Action<string, double, double, double, double> change) : base(tile.Card)
         {
             _tile = tile; _dragSurface = dragSurface; _select = select; _change = change;
             AddVisualChild(_canvas);
+            Panel.SetZIndex(_guides, 100);
+            Unloaded += delegate { ClearGuides(); };
         }
 
         internal void Refresh(string selected)
@@ -136,6 +203,8 @@ namespace CodexUsageMeter
                     Thumb move = Handle(item, false), resize = Handle(item, true);
                     group.Children.Add(move); group.Children.Add(resize); _canvas.Children.Add(group); _handles.Add(item.Id, group);
                 }
+                _canvas.Children.Add(_guides);
+                ClearGuides();
             }
             foreach (LayoutContentItem item in items)
             {
@@ -174,6 +243,7 @@ namespace CodexUsageMeter
             LayoutItemSettings initial = null; Point anchor = new Point(), start = new Point(); double scaleX = 1, scaleY = 1; Rect inner = Rect.Empty;
             thumb.PreviewMouseLeftButtonDown += delegate { _select(item.Id); };
             thumb.DragStarted += delegate(object sender, DragStartedEventArgs e) {
+                ClearGuides();
                 _select(item.Id); initial = null;
                 LayoutContentItem current = CardContentLayout.VisibleItems(_tile).FirstOrDefault(value => value.Id == item.Id);
                 if (current == null) return;
@@ -197,10 +267,34 @@ namespace CodexUsageMeter
                     width *= factor; height *= factor;
                 }
                 else { x = Math.Max(0, Math.Min(1 - width, x + dx)); y = Math.Max(0, Math.Min(1 - height, y + dy)); }
+                double? guideX = null, guideY = null;
+                if ((ReadModifiers() & ModifierKeys.Alt) == 0)
+                {
+                    Rect[] siblings = CardContentLayout.VisibleItems(_tile).Where(value => value.Id != item.Id)
+                        .Select(value => CardContentLayout.Position(_tile, value))
+                        .Select(value => new Rect(value.X, value.Y, value.Width, value.Height)).ToArray();
+                    Rect snapped = LayoutSnap.Apply(new Rect(x, y, width, height), siblings, resize,
+                        6 / (inner.Width * scaleX), 6 / (inner.Height * scaleY), out guideX, out guideY);
+                    x = snapped.X; y = snapped.Y; width = snapped.Width; height = snapped.Height;
+                }
                 _change(item.Id, x, y, width, height);
                 Refresh(item.Id);
+                ClearGuides();
+                if (guideX.HasValue) AddGuide(inner.X + guideX.Value * inner.Width, inner.Top, inner.X + guideX.Value * inner.Width, inner.Bottom, scaleX);
+                if (guideY.HasValue) AddGuide(inner.Left, inner.Y + guideY.Value * inner.Height, inner.Right, inner.Y + guideY.Value * inner.Height, scaleY);
             };
+            thumb.DragCompleted += delegate { initial = null; ClearGuides(); };
+            thumb.LostMouseCapture += delegate { initial = null; ClearGuides(); };
             return thumb;
+        }
+
+        internal void ClearGuides() { _guides.Children.Clear(); }
+        private void AddGuide(double x1, double y1, double x2, double y2, double scale)
+        {
+            _guides.Children.Add(new System.Windows.Shapes.Line {
+                Tag = "layout-snap-guide", X1 = x1, Y1 = y1, X2 = x2, Y2 = y2,
+                Stroke = LayoutEditor.Brush("#6CCFFF"), StrokeThickness = 1 / scale
+            });
         }
 
         protected override int VisualChildrenCount { get { return 1; } }
