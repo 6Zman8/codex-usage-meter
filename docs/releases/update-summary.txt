@@ -1,1 +1,1 @@
-Hide individual layout items, match Windows Widgets to the meter, and show remaining quota in the system tray.
+Hide layout items, match Windows Widgets to the meter, and show tray quota; fix Korean tray setup guidance.

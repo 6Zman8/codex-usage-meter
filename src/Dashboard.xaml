@@ -352,7 +352,7 @@
               </ComboBox>
             </StackPanel>
             <TextBlock Text="조회 전·오류·갱신 대기·미제공 한도는 --로 표시합니다. 자세한 상태는 숫자 위에 마우스를 올려 확인하세요." Style="{StaticResource Muted}" Margin="0,10,0,0" TextWrapping="Wrap"/>
-            <TextBlock Text="항상 보이게 하려면 Windows 작업표시줄 설정에서 미터기 트���이 아이콘 표시를 켜세요. 날씨 영역과는 별개입니다." Style="{StaticResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap"/>
+            <TextBlock Text="항상 보이게 하려면 Windows 작업표시줄 설정에서 미터기 트레이 아이콘 표시를 켜세요. 날씨 영역과는 별개입니다." Style="{StaticResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap"/>
           </StackPanel>
         </Border>
         <Border Style="{StaticResource SubCard}" Margin="0,8,0,0">
