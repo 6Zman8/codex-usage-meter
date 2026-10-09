@@ -14,6 +14,31 @@ using Microsoft.Win32;
 
 namespace CodexUsageMeter
 {
+    internal enum WindowsWidgetRecognition { Recognized, Missing, Unknown }
+
+    internal sealed class WindowsWidgetInstallResult
+    {
+        internal WindowsWidgetRecognition Recognition;
+        internal string Diagnostics;
+        internal string Status
+        {
+            get { return Recognition == WindowsWidgetRecognition.Recognized ? "등록됨 · 위젯 확장 인식 확인" :
+                Recognition == WindowsWidgetRecognition.Missing ? "등록됨 · 위젯 확장 미인식" : "등록됨 · 위젯 인식 확인 불가"; }
+        }
+        internal string Message
+        {
+            get
+            {
+                string detail = Recognition == WindowsWidgetRecognition.Recognized ?
+                    "Windows 위젯 확장에서 Codex 사용량을 찾았습니다. 보드에 추가·고정된 상태까지 확인한 것은 아닙니다." :
+                    Recognition == WindowsWidgetRecognition.Missing ?
+                    "구성요소는 등록됐지만 Windows 위젯 확장에서 현재 버전을 찾지 못했습니다. 위젯 추가가 완료된 상태가 아닙니다." :
+                    "구성요소는 등록됐지만 위젯 인식 또는 실행 환경을 확인하지 못했습니다. 위젯 추가가 완료됐다고 판단할 수 없습니다.";
+                return detail + "\n\nWindows 키 + W → 위젯 추가에서 확인하세요. 목록에 없으면 ‘진단 복사’를 눌러 결과를 전달해 주세요. 계정·인증정보는 진단에 포함하지 않습니다.";
+            }
+        }
+    }
+
     internal static class WindowsWidgetInstaller
     {
         internal const string PackageName = "CodexUsageMeter.WindowsWidget";
@@ -36,38 +61,103 @@ namespace CodexUsageMeter
             }
         }
 
-        internal static Task<string> InstallAsync()
+        internal static Task<WindowsWidgetInstallResult> InstallAsync()
         {
             return Task.Run(delegate {
                 lock (InstallationLock)
                 {
                     Version registered = GetRegisteredVersion();
-                    if (registered != null && registered > CurrentPackageVersion) return null;
+                    if (registered != null && registered > CurrentPackageVersion)
+                        return new WindowsWidgetInstallResult { Recognition = WindowsWidgetRecognition.Unknown,
+                            Diagnostics = "reason=newer-provider-preserved\nregisteredVersion=" + registered + "\nmeterVersion=" + CurrentPackageVersion };
                     return InstallCurrentVersion();
                 }
             });
         }
 
         // Upgrade only a widget the user already installed. No new installation, downgrade or security-setting change.
-        internal static Task<bool> UpdateRegisteredAsync()
+        internal static Task<WindowsWidgetInstallResult> UpdateRegisteredAsync()
         {
             return Task.Run(delegate {
-                if (!SupportedWindows()) return false;
+                if (!SupportedWindows()) return null;
                 lock (InstallationLock)
-                    return SynchronizeRegisteredVersion(CurrentPackageVersion, GetRegisteredVersion,
-                        delegate { InstallCurrentVersion(); });
+                {
+                    WindowsWidgetInstallResult result = null;
+                    SynchronizeRegisteredVersion(CurrentPackageVersion, GetRegisteredVersion,
+                        delegate { result = InstallCurrentVersion(); });
+                    return result;
+                }
             });
         }
 
         private static Version CurrentPackageVersion { get { return new Version(UpdateClient.CurrentVersionText + ".0"); } }
 
-        private static string InstallCurrentVersion()
+        private static WindowsWidgetInstallResult InstallCurrentVersion()
         {
             if (!SupportedWindows()) throw new InvalidOperationException("Windows 11 64비트에서 사용할 수 있습니다.");
             if (!DeveloperModeEnabled()) throw new InvalidOperationException("Windows 개발자 모드를 켠 뒤 다시 추가해 주세요.");
             string folder = PreparePackage(Path.Combine(WindowsWidgetBridge.DefaultRoot, "packages"));
-            RegisterPackage(folder);
-            return folder;
+            string registration = RegisterPackage(folder);
+            WindowsWidgetInstallResult result = ProbeRecognition(folder);
+            result.Diagnostics = "meterVersion=" + CurrentPackageVersion + "\n" + registration.Trim() + "\n" + result.Diagnostics;
+            return result;
+        }
+
+        private static WindowsWidgetInstallResult ProbeRecognition(string folder)
+        {
+            string output = Path.Combine(Path.GetDirectoryName(folder), "recognition.json");
+            try
+            {
+                ProcessStartInfo start = new ProcessStartInfo(Path.Combine(folder, "CodexUsageMeter.WidgetProvider.exe"),
+                    "--catalog-probe \"" + output + "\"") {
+                    UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden
+                };
+                using (Process process = Process.Start(start))
+                {
+                    if (!process.WaitForExit(30000))
+                    {
+                        process.Kill();
+                        return new WindowsWidgetInstallResult { Recognition = WindowsWidgetRecognition.Unknown, Diagnostics = "recognition=timed-out" };
+                    }
+                    FileInfo report = new FileInfo(output);
+                    if (!report.Exists || report.Length > 65536)
+                        return new WindowsWidgetInstallResult { Recognition = WindowsWidgetRecognition.Unknown,
+                            Diagnostics = "recognition=missing-or-invalid-report\nexitCode=" + process.ExitCode };
+                    WindowsWidgetInstallResult result = ClassifyRecognition(File.ReadAllText(output, Encoding.UTF8));
+                    if (process.ExitCode != 0) result.Recognition = WindowsWidgetRecognition.Unknown;
+                    result.Diagnostics = "probeExitCode=" + process.ExitCode + "\n" + result.Diagnostics;
+                    return result;
+                }
+            }
+            catch (Exception error)
+            {
+                return new WindowsWidgetInstallResult { Recognition = WindowsWidgetRecognition.Unknown,
+                    Diagnostics = "recognition=" + error.GetType().Name + "\nhresult=0x" + error.HResult.ToString("X8") };
+            }
+        }
+
+        internal static WindowsWidgetInstallResult ClassifyRecognition(string json)
+        {
+            WindowsWidgetInstallResult result = new WindowsWidgetInstallResult {
+                Recognition = WindowsWidgetRecognition.Unknown, Diagnostics = json
+            };
+            try
+            {
+                var data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+                if (data == null || !data.ContainsKey("catalogReadSucceeded") || !Object.Equals(data["catalogReadSucceeded"], true) ||
+                    !data.ContainsKey("registered") || !(data["registered"] is bool)) return result;
+                if (!(bool)data["registered"]) { result.Recognition = WindowsWidgetRecognition.Missing; return result; }
+                if (!data.ContainsKey("registeredVersion") || !data.ContainsKey("extensionId")) return result;
+                if (Convert.ToString(data["registeredVersion"]) != CurrentPackageVersion.ToString() ||
+                    Convert.ToString(data["extensionId"]) != "CodexUsageMeterWindowsWidget")
+                { result.Recognition = WindowsWidgetRecognition.Missing; return result; }
+                Dictionary<string, object> runtime = data.ContainsKey("runtime") ? data["runtime"] as Dictionary<string, object> : null;
+                if (runtime == null || !runtime.ContainsKey("nativeWinRtActivation") || !runtime.ContainsKey("providerComInterface") ||
+                    !Object.Equals(runtime["nativeWinRtActivation"], true) || !Object.Equals(runtime["providerComInterface"], true)) return result;
+                result.Recognition = WindowsWidgetRecognition.Recognized;
+            }
+            catch (Exception error) { result.Diagnostics = "recognition=" + error.GetType().Name; }
+            return result;
         }
 
         internal static bool SynchronizeRegisteredVersion(Version current, Func<Version> readRegistered, Action install)
@@ -190,11 +280,13 @@ namespace CodexUsageMeter
                 throw new InvalidDataException("위젯 패키지의 이름·버전·배포자를 확인하지 못했습니다.");
         }
 
-        private static void RegisterPackage(string folder)
+        private static string RegisterPackage(string folder)
         {
             string manifest = Path.Combine(folder, "AppxManifest.xml").Replace("'", "''");
             string script = "$ErrorActionPreference='Stop'; " +
-                "if(-not (Get-AppxPackage -Name MicrosoftWindows.Client.WebExperience)){throw 'Windows Web Experience Pack is missing'}; " +
+                "$hostPackage=Get-AppxPackage -Name MicrosoftWindows.Client.WebExperience; " +
+                "if(-not $hostPackage){throw 'Windows Web Experience Pack is missing'}; " +
+                "Write-Output ('WindowsWebExperiencePack='+$hostPackage.Version); " +
                 "Add-AppxPackage -Register -Path '" + manifest + "' -ForceApplicationShutdown; " +
                 "$p=Get-AppxPackage -Name '" + PackageName + "'; if(-not $p){throw 'Widget registration was not found'}; " +
                 "if($p.Version -ne '" + UpdateClient.CurrentVersionText + ".0'){throw 'Widget version mismatch'}; Write-Output 'PASS widget registered'";
@@ -212,6 +304,7 @@ namespace CodexUsageMeter
                 string log = output.Result + Environment.NewLine + error.Result;
                 File.WriteAllText(Path.Combine(Path.GetDirectoryName(folder), "registration.log"), log, Encoding.UTF8);
                 if (process.ExitCode != 0) throw new InvalidOperationException("Windows 위젯 등록에 실패했습니다. 개발자 모드와 Windows Web Experience Pack을 확인해 주세요.\n\n등록 기록: " + Path.Combine(Path.GetDirectoryName(folder), "registration.log"));
+                return log;
             }
         }
 

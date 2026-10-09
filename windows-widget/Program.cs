@@ -62,14 +62,23 @@ internal static class Program
     }
     private static int CatalogProbe(string output)
     {
-        var report=new JsonObject{["catalogReadSucceeded"]=false,["registered"]=false,["expectedPackageName"]="CodexUsageMeter.WindowsWidget"};
+        var report=new JsonObject{
+            ["catalogReadSucceeded"]=false,["registered"]=false,["expectedPackageName"]="CodexUsageMeter.WindowsWidget",
+            ["windowsVersion"]=Environment.OSVersion.Version.ToString(),["architecture"]=RuntimeInformation.OSArchitecture.ToString(),
+            ["providerVersion"]=typeof(Program).Assembly.GetName().Version!.ToString(),["runtime"]=ReadRuntimeStatus()
+        };
         try
         {
             var catalog=AppExtensionCatalog.Open("com.microsoft.windows.widgets");
             var extensions=catalog.FindAllAsync().AsTask().GetAwaiter().GetResult();
             var extension=extensions.FirstOrDefault(x=>x.Package.Id.Name=="CodexUsageMeter.WindowsWidget");
             report["catalogReadSucceeded"]=true;report["registered"]=extension is not null;
-            if(extension is not null){report["packageFullName"]=extension.Package.Id.FullName;report["extensionId"]=extension.Id;}
+            if(extension is not null)
+            {
+                var version=extension.Package.Id.Version;
+                report["registeredVersion"]=$"{version.Major}.{version.Minor}.{version.Build}.{version.Revision}";
+                report["extensionId"]=extension.Id;
+            }
         }
         catch(Exception error){report["errorType"]=error.GetType().Name;report["hresult"]=$"0x{error.HResult:X8}";}
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
@@ -77,6 +86,13 @@ internal static class Program
         return report["catalogReadSucceeded"]!.GetValue<bool>()?0:1;
     }
     private static int RuntimeProbe(string output)
+    {
+        var report=ReadRuntimeStatus();
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
+        File.WriteAllText(output,report.ToJsonString(new JsonSerializerOptions{WriteIndented=true}));
+        return report["nativeWinRtActivation"]!.GetValue<bool>() && report["providerComInterface"]!.GetValue<bool>()?0:1;
+    }
+    private static JsonObject ReadRuntimeStatus()
     {
         var report=new JsonObject{["nativeWinRtActivation"]=false,["providerComInterface"]=false};
         try
@@ -94,9 +110,7 @@ internal static class Program
             finally{Marshal.Release(pointer);}
         }
         catch(Exception error){report["errorType"]=error.GetType().Name;report["hresult"]=$"0x{error.HResult:X8}";report["message"]=error.Message;}
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
-        File.WriteAllText(output,report.ToJsonString(new JsonSerializerOptions{WriteIndented=true}));
-        return report["nativeWinRtActivation"]!.GetValue<bool>() && report["providerComInterface"]!.GetValue<bool>()?0:1;
+        return report;
     }
 }
 

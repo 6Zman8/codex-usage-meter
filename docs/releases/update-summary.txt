@@ -1,1 +1,1 @@
-Sync installed Windows Widgets, add magnetic layout alignment and compact PC bars, and preserve saved layouts.
+Fix compact PC bar layout and editing boxes, and verify widget recognition after registration.

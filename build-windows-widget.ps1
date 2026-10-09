@@ -11,7 +11,7 @@ $sourceRoot = Join-Path $projectRoot 'windows-widget'
 $toolRoot = Join-Path $projectRoot 'obj\widget-tools'
 $packageRoot = Join-Path $projectRoot 'bin\windows-widget\package'
 $outputZip = Join-Path $projectRoot 'bin\windows-widget\CodexUsageMeter.WindowsWidget.zip'
-if (-not $LogDirectory) { $LogDirectory = Join-Path $projectRoot 'work\v1.8.0\widget-provider' }
+if (-not $LogDirectory) { $LogDirectory = Join-Path $projectRoot 'work\v1.8.1\widget-provider' }
 New-Item -ItemType Directory -Path $toolRoot,$packageRoot,$LogDirectory -Force | Out-Null
 
 if (-not $DotNetPath) {
@@ -140,6 +140,6 @@ if ($zipTemporary -ne $outputZip) {
     $oldZip = Join-Path $LogDirectory ('previous-widget-'+[Guid]::NewGuid().ToString('N')+'.zip')
     [IO.File]::Replace($zipTemporary,$outputZip,$oldZip)
 }
-$summary = [ordered]@{ Version='1.8.0.0'; Architecture='x64'; PackageFolder=$packageRoot; Zip=$outputZip; Sha256=(Get-FileHash -LiteralPath $outputZip -Algorithm SHA256).Hash; Bytes=(Get-Item -LiteralPath $outputZip).Length; Tests=$result.total; NativeWinRtAndComProbe=$true; UnpackagedLaunchProbe=$true; MakeAppxValidated=$true; Registered=$false }
+$summary = [ordered]@{ Version='1.8.1.0'; Architecture='x64'; PackageFolder=$packageRoot; Zip=$outputZip; Sha256=(Get-FileHash -LiteralPath $outputZip -Algorithm SHA256).Hash; Bytes=(Get-Item -LiteralPath $outputZip).Length; Tests=$result.total; NativeWinRtAndComProbe=$true; UnpackagedLaunchProbe=$true; MakeAppxValidated=$true; Registered=$false }
 $summary | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $LogDirectory 'build-summary.json') -Encoding UTF8
 $summary | ConvertTo-Json -Compress

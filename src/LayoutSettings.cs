@@ -53,11 +53,11 @@ namespace CodexUsageMeter
     {
         public int Columns { get; set; }
         public bool HideUnavailable { get; set; }
-        // Missing in older LayoutV1 JSON: retain its card heights on upgrade.
-        public bool CompactPcSpacing { get; set; }
+        public bool PcBarLayout { get; set; }
+        public List<LayoutItemSettings> PreviousPcItemLayouts { get; set; }
         public List<LayoutCardSettings> Cards { get; set; }
 
-        public LayoutModeSettings() { Columns = 1; HideUnavailable = true; Cards = new List<LayoutCardSettings>(); }
+        public LayoutModeSettings() { Columns = 1; HideUnavailable = true; Cards = new List<LayoutCardSettings>(); PreviousPcItemLayouts = new List<LayoutItemSettings>(); }
         public LayoutCardSettings Card(string id) { return Cards.First(card => card.Id == id); }
         public int[] VisibleAccounts(int count)
         {
@@ -102,7 +102,7 @@ namespace CodexUsageMeter
         }
         public static LayoutModeSettings DefaultMode(bool compact)
         {
-            LayoutModeSettings mode = new LayoutModeSettings { Columns = compact ? 1 : 3, CompactPcSpacing = compact };
+            LayoutModeSettings mode = new LayoutModeSettings { Columns = compact ? 1 : 3, PcBarLayout = compact };
             for (int number = 1; number <= 4; number++)
                 mode.Cards.Add(new LayoutCardSettings { Id = "account" + number,
                     Sections = new List<string>(compact ? new[] { "short", "weekly", "credits" } :
@@ -146,6 +146,15 @@ namespace CodexUsageMeter
             foreach (LayoutCardSettings card in defaults.Cards)
                 if (!cards.Any(value => value.Id == card.Id)) cards.Add(card);
             input.Cards = cards;
+            if (compact && !input.PcBarLayout)
+            {
+                // Convert only the obsolete PC interior once. Keep the old coordinates
+                // recoverable when the user saves, without resetting other cards or hidden items.
+                LayoutCardSettings pc = input.Card("pc");
+                input.PreviousPcItemLayouts = pc.ItemLayouts;
+                pc.ItemLayouts = new List<LayoutItemSettings>();
+                input.PcBarLayout = true;
+            }
             return input;
         }
     }

@@ -26,6 +26,8 @@ v1.8.0부터 본체를 업데이트하고 실행하면 이미 등록한 구버�
 
 작은 크기는 카드 1장과 페이지 안내를 표시하고 화면을 눌러 다음 카드로 넘깁니다. 카드가 1장이면 누를 때 미터기가 열립니다. 중간 크기는 1장, 큰 크기는 최대 2장씩 표시하며 열기·새로고침·다음 카드 버튼을 제공합니다. Windows의 제목줄·고정·메뉴는 그대로 유지합니다.
 
+v1.8.1부터 설치 결과는 패키지 등록과 위젯 확장 인식을 구분합니다. **인식 확인**도 실제 보드 고정 성공을 뜻하지 않습니다. 목록에 없으면 설치 결과의 **진단 복사**로 Windows 빌드·아키텍처·Web Experience Pack·제공자 버전과 인식/실행 검사 결과를 전달하세요. **미인식/확인 불가**를 추가 완료로 표시하지 않습니다. 단축키는 Ctrl+W가 아니라 **Windows 키 + W**입니다.
+
 Windows에서 개발자 모드를 허용하지 않는 관리 PC에서는 이 로컬 등록판을 사용할 수 없습니다. 개발자 모드를 켜지 않는 일반 배포는 Microsoft Store 배포 절차가 별도로 필요하며, 현재 GitHub Release를 Store 앱으로 설명하지 않습니다.
 
 공식 근거: [Microsoft Widgets 샘플과 배포 조건](https://github.com/microsoft/WindowsAppSDK-Samples/blob/main/Samples/Widgets/README.md), [패키지 등록 명령](https://learn.microsoft.com/en-us/powershell/module/appx/add-appxpackage).

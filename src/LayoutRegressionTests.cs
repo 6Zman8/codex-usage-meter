@@ -38,6 +38,7 @@ namespace CodexUsageMeter
             VerifyItemVisibility(report);
             VerifySnapping(report, previewDirectory);
             VerifyUpgradeLayout(report);
+            VerifyPcBarLayout(report, evidenceDirectory);
             CheckAccountAlignmentAndFit(report, previewDirectory);
             SubscriptionRegressionTests.Run(report);
             AccountSubscriptionRegressionTests.Run(report);
@@ -346,8 +347,10 @@ namespace CodexUsageMeter
                 legacy.Widget.Card("account1").ItemLayouts.Add(new LayoutItemSettings { Id = "countdown", X = 0.5501, Y = 0.3028, Width = 0.1271, Height = 0.4169 });
                 fixture.Layout(legacy, true); fixture.Render(900, 780);
                 LayoutItemSettings restored = CardContentLayout.Position(tile, tile.ContentItems().Single(item => item.Id == "countdown"));
-                Require(Math.Abs(restored.Y - 0.3028) < 0.002 && Math.Abs(restored.Height - 0.4169) < 0.002,
-                    "v1.5.0 saved countdown was shrunk by the roomier default: y=" + restored.Y + ", h=" + restored.Height);
+                LayoutItemSettings savedCountdown = legacy.Widget.Card("account1").ItemLayouts.Single(item => item.Id == "countdown");
+                Require(savedCountdown.Y == 0.3028 && savedCountdown.Height == 0.4169 &&
+                    restored.Y >= savedCountdown.Y - 0.002 && restored.Y + restored.Height <= savedCountdown.Y + savedCountdown.Height + 0.002,
+                    "compact PC conversion changed the account's saved coordinates or let its countdown escape the saved rectangle");
                 fixture.Layout(LayoutSettings.Defaults(), false); fixture.Render(1280, 820);
                 if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "default-spacing-expanded.png"));
             }
@@ -742,6 +745,74 @@ namespace CodexUsageMeter
                 }
             }
             report("PASS magnetic alignment: item/card edges and centers, aspect resize, six screen DIPs at 25-400% zoom, 100-200% text, Alt, guide cleanup and cancel");
+        }
+
+        private static void VerifyPcBarLayout(Action<string> report, string evidenceDirectory)
+        {
+            LayoutSettings old = LayoutSettings.Defaults();
+            old.Widget.PcBarLayout = false;
+            old.Widget.Move("pc", "account1");
+            old.Widget.Card("pc").SetItemVisible("network", false);
+            old.Widget.Card("pc").ItemLayouts.Add(new LayoutItemSettings { Id = "cpu", X = 0.12, Y = 0.61, Width = 0.4, Height = 0.3 });
+            old.Expanded.Card("pc").ItemLayouts.Add(new LayoutItemSettings { Id = "cpu", X = 0.17, Y = 0.27, Width = 0.31, Height = 0.28 });
+            old.Widget.Card("account1").ItemLayouts.Add(new LayoutItemSettings { Id = "weekly", X = 0.14, Y = 0.28, Width = 0.32, Height = 0.4 });
+            LayoutSettings converted = LayoutSettings.Parse(old.ToJson());
+            Require(converted.Widget.PcBarLayout && converted.Widget.Card("pc").ItemLayouts.Count == 0 &&
+                converted.Widget.PreviousPcItemLayouts.Single().Y == 0.61 &&
+                converted.Widget.Cards[0].Id == "pc" && !converted.Widget.Card("pc").ShowsItem("network") &&
+                converted.Expanded.Card("pc").ItemLayouts.Single().X == 0.17 &&
+                converted.Widget.Card("account1").ItemLayouts.Single().X == 0.14, "PC conversion lost recoverable positions, visibility, order or another card");
+            converted.Widget.Card("pc").ItemLayouts.Add(new LayoutItemSettings { Id = "cpu", X = 0.23, Y = 0.11, Width = 0.12, Height = 0.6 });
+            Require(converted.Copy().ToJson() == converted.ToJson(), "a later reload reset the new PC bar arrangement");
+            using (Fixture fixture = new Fixture())
+            {
+                LayoutSettings settings = LayoutSettings.Defaults();
+                settings.Widget.UseSingleAccount(1, true); settings.Widget.Columns = 2;
+                foreach (double font in new[] { 1.0, 1.5, 2.0 })
+                {
+                    fixture.Layout(settings, true); fixture.FontScale(font); fixture.Render(900, 780);
+                    var tiles = Descendants<CardLayoutPanel>(fixture.Root).Single(panel => panel.IsVisible).Tiles;
+                    LayoutTile pc = tiles.Single(tile => tile.Settings.Id == "pc");
+                    Require(pc.Bounds.Height < tiles.Single(tile => tile.Settings.Id == "account1").Bounds.Height,
+                        "compact PC card was stretched to match a taller account card");
+                }
+                settings.Widget.Card("account1").Visible = false;
+                fixture.FontScale(1.5);
+                LayoutEditor editor = fixture.Editor(settings, true, state => { }, state => { });
+                RenderEditor(editor, root => {
+                    Descendants<Button>(root).Single(button => Convert.ToString(button.Content) == "PC 상태").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    editor.SetItemEditing(true); root.UpdateLayout();
+                    LayoutTile pc = Descendants<CardLayoutPanel>(root).Where(panel => panel.IsVisible).SelectMany(panel => panel.Tiles)
+                        .Single(tile => tile.Settings.Id == "pc");
+                    Func<LayoutContentItem, Rect> bounds = item => item.Element.TransformToAncestor(root).TransformBounds(new Rect(item.Element.RenderSize));
+                    var bars = pc.ContentItems().Where(item => new[] { "cpu", "gpu", "ram", "disk" }.Contains(item.Id)).ToArray();
+                    for (int i = 1; i < bars.Length; i++)
+                    {
+                        Rect first = bounds(bars[0]), previous = bounds(bars[i - 1]), current = bounds(bars[i]);
+                        Require(current.Left > previous.Right && Math.Abs(current.Top - first.Top) < 1,
+                            "PC bars did not form a single compact row");
+                    }
+                    foreach (LayoutContentItem item in bars)
+                    {
+                        StackPanel content = (StackPanel)item.Element;
+                        Rect actual = bounds(item);
+                        Thumb handle = Descendants<Thumb>(root).Single(value => Convert.ToString(value.Tag) == "move:" + item.Id);
+                        Rect box = handle.TransformToAncestor(root).TransformBounds(new Rect(handle.RenderSize));
+                        Require(Math.Abs(box.Width - actual.Width) < 1 && Math.Abs(box.Height - actual.Height) < 1 &&
+                            Math.Abs(content.ActualWidth - content.Children.OfType<FrameworkElement>().Max(child => child.DesiredSize.Width)) < 1,
+                            "PC adjustment box still covers a circular-gauge cell instead of the bar, label and value");
+                    }
+                    Capture(root, 1220, 860, Path.Combine(evidenceDirectory, "pc-bar-editor.png"));
+                    LayoutItemSettings cpu = CardContentLayout.Position(pc, bars[0]);
+                    editor.EditItem("cpu", cpu.X, cpu.Y, cpu.Width, cpu.Height); root.UpdateLayout();
+                    Require(pc.Content.Children.OfType<UniformGrid>().Single().Rows == 1, "editing a PC bar restored the obsolete 2x2 layout");
+                    editor.SetItemVisible("gpu", false); root.UpdateLayout();
+                    Require(!bars.Single(item => item.Id == "gpu").Element.IsVisible &&
+                        pc.Content.Children.OfType<UniformGrid>().Single().Columns == 3, "hidden PC bars left an unused grid cell");
+                }, null);
+                editor.Close();
+            }
+            report("PASS PC bars: one-time recoverable migration, one row after editing, tight adjustment boxes, reduced independent card height and saved new positions");
         }
 
         private static void VerifyUpgradeLayout(Action<string> report)

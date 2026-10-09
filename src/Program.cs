@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.8.0.0")]
-[assembly: AssemblyFileVersion("1.8.0.0")]
+[assembly: AssemblyVersion("1.8.1.0")]
+[assembly: AssemblyFileVersion("1.8.1.0")]
 
 namespace CodexUsageMeter
 {
@@ -1512,12 +1512,12 @@ namespace CodexUsageMeter
             status.Text = "Windows 위젯 버전 확인 중…";
             try
             {
-                bool updated = await WindowsWidgetInstaller.UpdateRegisteredAsync();
+                WindowsWidgetInstallResult updated = await WindowsWidgetInstaller.UpdateRegisteredAsync();
                 if (_disposed) return;
-                if (updated)
+                if (updated != null)
                 {
                     PublishWindowsWidget(true);
-                    status.Text = "Windows 위젯 업데이트 완료 · 저장한 위젯 배치를 표시합니다.";
+                    status.Text = updated.Status;
                 }
                 else status.Text = previous;
             }
@@ -1568,10 +1568,11 @@ namespace CodexUsageMeter
             button.IsEnabled = false; status.Text = "정식 위젯 구성요소를 다운로드·검증·등록하는 중…";
             try
             {
-                await WindowsWidgetInstaller.InstallAsync();
+                WindowsWidgetInstallResult result = await WindowsWidgetInstaller.InstallAsync();
                 PublishWindowsWidget(true);
-                status.Text = "등록 완료 · Win+W → 위젯 추가 → Codex 사용량";
-                ShowModal("Windows 위젯 등록 완료", "Win+W를 누르고 위젯 추가에서 ‘Codex 사용량’을 고정하세요.\n\n미터기의 최소화 버튼으로 트레이에 숨겨도 사용량은 계속 갱신됩니다. ‘로그인 시 시작’과 ‘자동 시작 시 트레이로’를 켜면 다음 로그인부터 창 없이 유지됩니다.", null, "확인", null, null, null);
+                status.Text = result.Status;
+                ShowModal("Windows 위젯 확인 결과", result.Message, null, "확인", "진단 복사", null,
+                    delegate { if (!TrySetClipboardText(result.Diagnostics)) SetFooterText("진단을 복사하지 못했습니다. 다시 시도해 주세요."); });
             }
             catch (Exception ex) { status.Text = "등록/업데이트를 완료하지 못했습니다. 다시 시도해 주세요."; ShowModal("Windows 위젯 등록 실패", ex.Message, null, "확인", null, null, null); }
             finally { button.IsEnabled = true; }

@@ -62,9 +62,32 @@ namespace CodexUsageMeter
             CheckRenderedWidget(report, directory);
             CheckPackageInputs(report, directory);
             CheckRegisteredUpdate(report);
+            CheckRecognition(report);
             CheckSettings(320, 480, 2, directory);
             CheckSettings(460, 780, 1.5, directory);
             report("PASS Windows widget settings scroll and install action remain reachable at narrow widths and 150-200 percent text");
+        }
+
+        private static void CheckRecognition(Action<string> report)
+        {
+            string current = UpdateClient.CurrentVersionText + ".0";
+            string detected = "{\"catalogReadSucceeded\":true,\"registered\":true,\"registeredVersion\":\"" + current +
+                "\",\"extensionId\":\"CodexUsageMeterWindowsWidget\",\"runtime\":{\"nativeWinRtActivation\":true,\"providerComInterface\":true}}";
+            WindowsWidgetInstallResult found = WindowsWidgetInstaller.ClassifyRecognition(detected);
+            if (found.Recognition != WindowsWidgetRecognition.Recognized || !found.Message.Contains("고정된 상태까지 확인한 것은 아닙니다") ||
+                !found.Message.Contains("Windows 키 + W") || !found.Message.Contains("진단 복사"))
+                throw new InvalidOperationException("Catalog recognition was confused with a pinned, visible widget");
+            foreach (string json in new[] { "{\"catalogReadSucceeded\":true,\"registered\":false}",
+                detected.Replace(current, "1.6.0.0"), detected.Replace("CodexUsageMeterWindowsWidget", "wrong-extension") })
+                if (WindowsWidgetInstaller.ClassifyRecognition(json).Recognition != WindowsWidgetRecognition.Missing)
+                    throw new InvalidOperationException("Missing/stale widget extension was announced as available");
+            foreach (string json in new[] { "broken", "{}", "{\"catalogReadSucceeded\":false,\"registered\":false}",
+                detected.Replace("\"nativeWinRtActivation\":true", "\"nativeWinRtActivation\":false"),
+                detected.Replace("\"providerComInterface\":true", "\"providerComInterface\":false"),
+                "{\"catalogReadSucceeded\":true,\"registered\":true}" })
+                if (WindowsWidgetInstaller.ClassifyRecognition(json).Recognition != WindowsWidgetRecognition.Unknown)
+                    throw new InvalidOperationException("An unreadable catalog or failed runtime was announced as verified");
+            report("PASS widget installation distinguishes recognized/missing/unknown extensions, checks runtime/version and never claims a visible or pinned widget");
         }
 
         private static void CheckRegisteredUpdate(Action<string> report)
