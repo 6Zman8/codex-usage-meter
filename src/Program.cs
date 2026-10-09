@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.8.1.0")]
-[assembly: AssemblyFileVersion("1.8.1.0")]
+[assembly: AssemblyVersion("1.8.2.0")]
+[assembly: AssemblyFileVersion("1.8.2.0")]
 
 namespace CodexUsageMeter
 {
@@ -1242,15 +1242,9 @@ namespace CodexUsageMeter
         {
             if (_customMaximized) return;
             _window.WindowState = WindowState.Normal;
-            _restoreBounds = new Rect(_window.Left, _window.Top,
-                Math.Max(1.0, _window.ActualWidth > 0.0 ? _window.ActualWidth : _window.Width),
-                Math.Max(1.0, _window.ActualHeight > 0.0 ? _window.ActualHeight : _window.Height));
-            Rect workArea = GetCurrentWorkArea();
+            _restoreBounds = WindowPlacement.Bounds(_window);
             _customMaximized = true;
-            _window.Left = workArea.Left;
-            _window.Top = workArea.Top;
-            _window.Width = workArea.Width;
-            _window.Height = workArea.Height;
+            WindowPlacement.Maximize(_window);
             UpdateMaximizedChrome();
             _window.UpdateLayout();
         }
@@ -1261,10 +1255,7 @@ namespace CodexUsageMeter
             _customMaximized = false;
             if (_restoreBounds.Width > 0.0 && _restoreBounds.Height > 0.0)
             {
-                _window.Left = _restoreBounds.Left;
-                _window.Top = _restoreBounds.Top;
-                _window.Width = _restoreBounds.Width;
-                _window.Height = _restoreBounds.Height;
+                WindowPlacement.SetBounds(_window, _restoreBounds);
             }
             UpdateMaximizedChrome();
             _window.UpdateLayout();
@@ -1285,30 +1276,9 @@ namespace CodexUsageMeter
             _compactShell.CornerRadius = new CornerRadius(0.0);
         }
 
-        private Rect GetCurrentWorkArea()
-        {
-            try
-            {
-                IntPtr handle = new WindowInteropHelper(_window).Handle;
-                Forms.Screen screen = Forms.Screen.FromHandle(handle);
-                System.Drawing.Rectangle pixels = screen.WorkingArea;
-                if (_windowSource != null && _windowSource.CompositionTarget != null)
-                {
-                    Matrix fromDevice = _windowSource.CompositionTarget.TransformFromDevice;
-                    Point topLeft = fromDevice.Transform(new Point(pixels.Left, pixels.Top));
-                    Point bottomRight = fromDevice.Transform(new Point(pixels.Right, pixels.Bottom));
-                    return new Rect(topLeft, bottomRight);
-                }
-            }
-            catch { }
-            return SystemParameters.WorkArea;
-        }
-
         private bool IsInsideCurrentWorkArea()
         {
-            Rect workArea = GetCurrentWorkArea();
-            return Math.Abs(_window.Left - workArea.Left) < 2.0 && Math.Abs(_window.Top - workArea.Top) < 2.0 &&
-                _window.ActualWidth <= workArea.Width + 2.0 && _window.ActualHeight <= workArea.Height + 2.0;
+            return WindowPlacement.Bounds(_window) == WindowPlacement.WorkArea(_window);
         }
 
         private void CloseButtonClick(object sender, RoutedEventArgs e)

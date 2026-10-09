@@ -220,22 +220,13 @@ namespace CodexUsageMeter
             if (_maximized)
             {
                 _maximized = false; ResizeMode = ResizeMode.CanResizeWithGrip;
-                Left = _normalBounds.Left; Top = _normalBounds.Top; Width = _normalBounds.Width; Height = _normalBounds.Height;
+                WindowPlacement.SetBounds(this, _normalBounds);
             }
             else
             {
-                _normalBounds = new Rect(Left, Top, ActualWidth > 0 ? ActualWidth : Width, ActualHeight > 0 ? ActualHeight : Height);
-                Rect workArea = SystemParameters.WorkArea;
-                IntPtr handle = new WindowInteropHelper(this).Handle;
-                HwndSource source = HwndSource.FromHwnd(handle);
-                if (source != null && source.CompositionTarget != null)
-                {
-                    System.Drawing.Rectangle pixels = System.Windows.Forms.Screen.FromHandle(handle).WorkingArea;
-                    Matrix fromDevice = source.CompositionTarget.TransformFromDevice;
-                    workArea = new Rect(fromDevice.Transform(new Point(pixels.Left, pixels.Top)), fromDevice.Transform(new Point(pixels.Right, pixels.Bottom)));
-                }
+                _normalBounds = WindowPlacement.Bounds(this);
                 _maximized = true; ResizeMode = ResizeMode.NoResize;
-                Left = workArea.Left; Top = workArea.Top; Width = workArea.Width; Height = workArea.Height;
+                WindowPlacement.Maximize(this);
             }
             _maximize.Content = _maximized ? "❐" : "□"; _maximize.ToolTip = _maximized ? "이전 크기로 복원" : "최대화";
         }

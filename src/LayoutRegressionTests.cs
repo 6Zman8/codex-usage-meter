@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Windows;
 using System.Windows.Controls;
@@ -240,29 +241,39 @@ namespace CodexUsageMeter
 
         private static void VerifyEditorZoom(Action<string> report, string previewDirectory)
         {
+            VerifyWindowPlacement(report);
             using (Fixture fixture = new Fixture())
             {
                 LayoutSettings settings = LayoutSettings.Defaults();
                 LayoutEditor editor = fixture.Editor(settings, false, state => { }, state => { });
                 new WindowInteropHelper(editor).EnsureHandle();
-                double originalWidth = editor.Width, originalHeight = editor.Height;
-                double originalLeft = editor.Left, originalTop = editor.Top;
+                Rect originalBounds = WindowPlacement.Bounds(editor);
                 string originalLayout = editor.Draft.ToJson();
                 RenderEditor(editor, root => {
                     Button maximize = Descendants<Button>(root).FirstOrDefault(button => button.Name == "LayoutMaximizeButton");
                     Require(maximize != null, "layout editor has no maximize/restore control");
-                    maximize.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    Require(Convert.ToString(maximize.ToolTip) == "이전 크기로 복원" && editor.Width >= originalWidth && editor.Height >= originalHeight,
-                        "maximize did not enlarge the real hidden editor window");
-                    maximize.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    Require(editor.Width == originalWidth && editor.Height == originalHeight && editor.Left == originalLeft && editor.Top == originalTop,
-                        "restore lost the original editor bounds");
+                    foreach (long context in new long[] { -1, -2, -4 })
+                    {
+                        IntPtr previous = WindowPlacement.SetThreadDpiAwarenessContext(new IntPtr(context));
+                        Require(previous != IntPtr.Zero, "could not enter editor test DPI context");
+                        try
+                        {
+                            maximize.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                            Require(Convert.ToString(maximize.ToolTip) == "이전 크기로 복원", "maximize control did not change state");
+                            AssertWorkArea(editor);
+                            maximize.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                            Require(WindowPlacement.Bounds(editor) == originalBounds, "restore lost the original editor bounds");
+                        }
+                        finally { WindowPlacement.SetThreadDpiAwarenessContext(previous); }
+                    }
                     Border title = Descendants<Border>(root).Single(item => item.Name == "LayoutTitleBar");
                     for (int n = 0; n < 2; n++)
                     {
                         var click = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonDownEvent };
                         typeof(MouseButtonEventArgs).GetProperty("ClickCount").SetValue(click, 2, null); title.RaiseEvent(click);
                         Require(click.Handled && Convert.ToString(maximize.Content) == (n == 0 ? "❐" : "□"), "title double-click did not toggle maximize");
+                        if (n == 0) AssertWorkArea(editor);
+                        else Require(WindowPlacement.Bounds(editor) == originalBounds, "double-click restore changed window bounds");
                     }
                     ScrollViewer scroll = Descendants<ScrollViewer>(root).Single(item => item.Name == "LayoutPreviewScroll");
                     editor.SetPreviewZoom(2); root.UpdateLayout();
@@ -310,6 +321,66 @@ namespace CodexUsageMeter
                 editor.Close();
             }
             report("PASS editor: maximize/restore and preview zoom remain usable without changing saved card dimensions");
+        }
+
+        private static void AssertWorkArea(Window window)
+        {
+            IntPtr handle = new WindowInteropHelper(window).Handle;
+            IntPtr previous = WindowPlacement.SetThreadDpiAwarenessContext(WindowPlacement.GetWindowDpiAwarenessContext(handle));
+            try
+            {
+                WindowPlacement.MonitorInfo monitor = new WindowPlacement.MonitorInfo { Size = Marshal.SizeOf(typeof(WindowPlacement.MonitorInfo)) };
+                WindowPlacement.NativeRect actual = new WindowPlacement.NativeRect();
+                Require(WindowPlacement.GetMonitorInfo(WindowPlacement.MonitorFromWindow(handle, 2), ref monitor) &&
+                    WindowPlacement.GetWindowRect(handle, out actual), "native window/monitor query failed");
+                Require(actual.Left == monitor.Work.Left && actual.Top == monitor.Work.Top &&
+                    actual.Right == monitor.Work.Right && actual.Bottom == monitor.Work.Bottom,
+                    "maximized window does not exactly fill the native monitor work area");
+            }
+            finally { WindowPlacement.SetThreadDpiAwarenessContext(previous); }
+        }
+
+        private static void VerifyWindowPlacement(Action<string> report)
+        {
+            using (Fixture fixture = new Fixture())
+            {
+                Window window = fixture.Window;
+                new WindowInteropHelper(window).EnsureHandle();
+                Rect original = WindowPlacement.Bounds(window);
+                foreach (bool compact in new[] { false, true })
+                {
+                    fixture.Set("_compactMode", compact);
+                    foreach (long context in new long[] { -1, -2, -4 })
+                    {
+                        IntPtr previous = WindowPlacement.SetThreadDpiAwarenessContext(new IntPtr(context));
+                        Require(previous != IntPtr.Zero, "could not enter test DPI context");
+                        IntPtr active = WindowPlacement.GetThreadDpiAwarenessContext();
+                        try
+                        {
+                            fixture.Call("ApplyCustomMaximize"); AssertWorkArea(window);
+                            fixture.Call("RestoreCustomMaximize");
+                            Require(WindowPlacement.Bounds(window) == original, "dashboard maximize/restore lost native bounds");
+                            Require(WindowPlacement.GetThreadDpiAwarenessContext() == active, "maximize changed the caller DPI context");
+                            foreach (int dpi in new[] { 96, 144, 192 })
+                            {
+                                // Physical 4K work areas, with left/top/bottom taskbars and an off-primary origin.
+                                int taskbar = 48 * dpi / 96;
+                                foreach (Rect work in new[] { new Rect(0, 0, 3840, 2160 - taskbar),
+                                    new Rect(-3840 + taskbar, 0, 3840 - taskbar, 2160),
+                                    new Rect(3840, -2160 + taskbar, 3840, 2160 - taskbar) })
+                                {
+                                    WindowPlacement.SetBounds(window, work);
+                                    Require(WindowPlacement.Bounds(window) == work, "4K pixel bounds changed with DPI/origin/taskbar: " + dpi);
+                                }
+                            }
+                            WindowPlacement.SetBounds(window, original);
+                        }
+                        finally { WindowPlacement.SetThreadDpiAwarenessContext(previous); }
+                    }
+                }
+                window.Close();
+            }
+            report("PASS native maximize: exact monitor edges, restore, caller DPI context; 4K 100/150/200% taskbar/origin fixtures");
         }
 
         private static void VerifyDefaultSpacing(Action<string> report, string previewDirectory)

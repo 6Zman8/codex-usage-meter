@@ -127,6 +127,7 @@ $arguments += @(
     (Join-Path $sourceRoot 'LayoutRegressionTests.cs'),
     (Join-Path $sourceRoot 'LayoutSettings.cs'),
     (Join-Path $sourceRoot 'LayoutEditor.cs'),
+    (Join-Path $sourceRoot 'WindowPlacement.cs'),
     (Join-Path $sourceRoot 'DashboardLayout.cs'),
     (Join-Path $sourceRoot 'CardContentLayout.cs'),
     (Join-Path $sourceRoot 'DarkTheme.cs'),

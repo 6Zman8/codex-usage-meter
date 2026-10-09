@@ -1,1 +1,1 @@
-Fix compact PC bar layout and editing boxes, and verify widget recognition after registration.
+Fix editor and dashboard maximize/restore using native monitor work-area coordinates.
