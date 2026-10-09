@@ -248,7 +248,7 @@ namespace CodexUsageMeter
                 LayoutEditor editor = fixture.Editor(settings, false, state => { }, state => { });
                 new WindowInteropHelper(editor).EnsureHandle();
                 Rect originalBounds = WindowPlacement.Bounds(editor);
-                string originalLayout = editor.Draft.ToJson();
+                LayoutSettings originalLayout = editor.Draft.Copy();
                 RenderEditor(editor, root => {
                     Button maximize = Descendants<Button>(root).FirstOrDefault(button => button.Name == "LayoutMaximizeButton");
                     Require(maximize != null, "layout editor has no maximize/restore control");
@@ -293,8 +293,10 @@ namespace CodexUsageMeter
                     editor.SetPreviewZoom(0); root.UpdateLayout();
                     Require(editor.PreviewZoom == 0.25 && !Descendants<Button>(root).Single(button => button.Name == "LayoutZoomOut").IsEnabled, "zoom lower bound failed");
                     editor.FitPreview(); root.UpdateLayout();
-                    Require(scroll.ScrollableWidth < 1 && scroll.ScrollableHeight < 1 && editor.Draft.ToJson() == originalLayout,
-                        "fit-to-screen changed saved layout or left unreachable content");
+                    Require(scroll.ScrollableWidth < 1 && scroll.ScrollableHeight < 1 && editor.Draft.ToJson() == originalLayout.ToJson(),
+                        "fit-to-screen changed saved layout or left unreachable content: scroll=" +
+                        scroll.ScrollableWidth + "x" + scroll.ScrollableHeight + " zoom=" + editor.PreviewZoom +
+                        " layoutUnchanged=" + (editor.Draft.ToJson() == originalLayout.ToJson()));
                     editor.SetPreviewZoom(1.5); root.UpdateLayout();
                     editor.SetItemEditing(true); root.UpdateLayout();
                     scroll.ScrollToTop(); scroll.ScrollToLeftEnd(); root.UpdateLayout();
@@ -361,18 +363,28 @@ namespace CodexUsageMeter
                             fixture.Call("RestoreCustomMaximize");
                             Require(WindowPlacement.Bounds(window) == original, "dashboard maximize/restore lost native bounds");
                             Require(WindowPlacement.GetThreadDpiAwarenessContext() == active, "maximize changed the caller DPI context");
-                            foreach (int dpi in new[] { 96, 144, 192 })
+                            // WPF caps normal windows at the real desktop's maximum tracking size.
+                            // Only the synthetic 4K fixture supplies a matching limit on smaller CI desktops.
+                            HwndSource source = HwndSource.FromHwnd(new WindowInteropHelper(window).Handle);
+                            HwndSourceHook fixtureLimits = Allow4KFixture;
+                            source.AddHook(fixtureLimits);
+                            try
                             {
-                                // Physical 4K work areas, with left/top/bottom taskbars and an off-primary origin.
-                                int taskbar = 48 * dpi / 96;
-                                foreach (Rect work in new[] { new Rect(0, 0, 3840, 2160 - taskbar),
-                                    new Rect(-3840 + taskbar, 0, 3840 - taskbar, 2160),
-                                    new Rect(3840, -2160 + taskbar, 3840, 2160 - taskbar) })
+                                foreach (int dpi in new[] { 96, 144, 192 })
                                 {
-                                    WindowPlacement.SetBounds(window, work);
-                                    Require(WindowPlacement.Bounds(window) == work, "4K pixel bounds changed with DPI/origin/taskbar: " + dpi);
+                                    int taskbar = 48 * dpi / 96;
+                                    foreach (Rect work in new[] { new Rect(0, 0, 3840, 2160 - taskbar),
+                                        new Rect(-3840 + taskbar, 0, 3840 - taskbar, 2160),
+                                        new Rect(3840, -2160 + taskbar, 3840, 2160 - taskbar) })
+                                    {
+                                        WindowPlacement.SetBounds(window, work);
+                                        Rect actual = WindowPlacement.Bounds(window);
+                                        Require(actual == work, "4K pixel bounds changed with DPI/origin/taskbar: " + dpi +
+                                            " expected=" + work + " actual=" + actual);
+                                    }
                                 }
                             }
+                            finally { source.RemoveHook(fixtureLimits); }
                             WindowPlacement.SetBounds(window, original);
                         }
                         finally { WindowPlacement.SetThreadDpiAwarenessContext(previous); }
@@ -381,6 +393,25 @@ namespace CodexUsageMeter
                 window.Close();
             }
             report("PASS native maximize: exact monitor edges, restore, caller DPI context; 4K 100/150/200% taskbar/origin fixtures");
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MinMaxInfo
+        {
+            internal int ReservedX, ReservedY, MaxSizeX, MaxSizeY, MaxPositionX, MaxPositionY;
+            internal int MinTrackX, MinTrackY, MaxTrackX, MaxTrackY;
+        }
+
+        private static IntPtr Allow4KFixture(IntPtr window, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (message == 0x0024)
+            {
+                MinMaxInfo limits = (MinMaxInfo)Marshal.PtrToStructure(lParam, typeof(MinMaxInfo));
+                limits.MaxTrackX = Math.Max(limits.MaxTrackX, 3840);
+                limits.MaxTrackY = Math.Max(limits.MaxTrackY, 2160);
+                Marshal.StructureToPtr(limits, lParam, false);
+            }
+            return IntPtr.Zero;
         }
 
         private static void VerifyDefaultSpacing(Action<string> report, string previewDirectory)
