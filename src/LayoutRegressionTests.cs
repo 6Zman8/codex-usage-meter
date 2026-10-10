@@ -875,8 +875,9 @@ namespace CodexUsageMeter
                     fixture.Layout(settings, true); fixture.FontScale(font); fixture.Render(900, 780);
                     var tiles = Descendants<CardLayoutPanel>(fixture.Root).Single(panel => panel.IsVisible).Tiles;
                     LayoutTile pc = tiles.Single(tile => tile.Settings.Id == "pc");
-                    Require(pc.Bounds.Height < tiles.Single(tile => tile.Settings.Id == "account1").Bounds.Height,
-                        "compact PC card was stretched to match a taller account card");
+                    LayoutTile account = tiles.Single(tile => tile.Settings.Id == "account1");
+                    Require(Math.Abs(pc.Bounds.Height / account.Bounds.Height - pc.MinimumHeight / account.MinimumHeight) < 0.001,
+                        "compact PC card lost its independent content height");
                 }
                 settings.Widget.Card("account1").Visible = false;
                 fixture.FontScale(1.5);
@@ -896,14 +897,30 @@ namespace CodexUsageMeter
                     }
                     foreach (LayoutContentItem item in bars)
                     {
-                        StackPanel content = (StackPanel)item.Element;
                         Rect actual = bounds(item);
                         Thumb handle = Descendants<Thumb>(root).Single(value => Convert.ToString(value.Tag) == "move:" + item.Id);
                         Rect box = handle.TransformToAncestor(root).TransformBounds(new Rect(handle.RenderSize));
-                        Require(Math.Abs(box.Width - actual.Width) < 1 && Math.Abs(box.Height - actual.Height) < 1 &&
-                            Math.Abs(content.ActualWidth - content.Children.OfType<FrameworkElement>().Max(child => child.DesiredSize.Width)) < 1,
-                            "PC adjustment box still covers a circular-gauge cell instead of the bar, label and value");
+                        Require(Math.Abs(box.Width - actual.Width) < 1 && Math.Abs(box.Height - actual.Height) < 1,
+                            "PC adjustment box does not match the bar, label and reserved percentage field");
                     }
+                    foreach (double zoom in new[] { 0.25, 1.0, 4.0 })
+                    {
+                        editor.SetPreviewZoom(zoom); root.UpdateLayout();
+                        Rect[] before = bars.Select(bounds).ToArray();
+                        foreach (double value in new[] { 9.0, 10.0, 100.0, 9.0 })
+                        {
+                            DashboardController.RenderCompactSystem(fixture.Window, new SystemSnapshot { CpuPercent = value, MemoryPercent = value });
+                            root.UpdateLayout();
+                            for (int i = 0; i < bars.Length; i++)
+                            {
+                                RequireSamePcBounds(before[i], bounds(bars[i]), "editor zoom " + zoom + " item " + bars[i].Id);
+                                Thumb handle = Descendants<Thumb>(root).Single(thumb => Convert.ToString(thumb.Tag) == "move:" + bars[i].Id);
+                                Rect box = handle.TransformToAncestor(root).TransformBounds(new Rect(handle.RenderSize));
+                                RequireSamePcBounds(bounds(bars[i]), box, "editor adjustment box " + bars[i].Id, 1);
+                            }
+                        }
+                    }
+                    editor.SetPreviewZoom(1); root.UpdateLayout();
                     Capture(root, 1220, 860, Path.Combine(evidenceDirectory, "pc-bar-editor.png"));
                     LayoutItemSettings cpu = CardContentLayout.Position(pc, bars[0]);
                     editor.EditItem("cpu", cpu.X, cpu.Y, cpu.Width, cpu.Height); root.UpdateLayout();
@@ -915,6 +932,87 @@ namespace CodexUsageMeter
                 editor.Close();
             }
             report("PASS PC bars: one-time recoverable migration, one row after editing, tight adjustment boxes, reduced independent card height and saved new positions");
+            VerifyPcChartStability(report, evidenceDirectory);
+        }
+
+        private static void RequireSamePcBounds(Rect expected, Rect actual, string label, double tolerance = 0.05)
+        {
+            Require(Math.Abs(expected.X - actual.X) <= tolerance && Math.Abs(expected.Y - actual.Y) <= tolerance &&
+                Math.Abs(expected.Width - actual.Width) <= tolerance && Math.Abs(expected.Height - actual.Height) <= tolerance,
+                "PC chart moved or resized when only a reading changed: " + label + " before=" + expected + " after=" + actual);
+        }
+
+        private static void VerifyPcChartStability(Action<string> report, string directory)
+        {
+            string[] names = { "Cpu", "Gpu", "Memory", "Disk" };
+            using (var fixture = new Fixture())
+            {
+                LayoutSettings settings = LayoutSettings.Defaults();
+                foreach (LayoutCardSettings card in settings.Widget.Cards) card.Visible = card.Id == "pc";
+                foreach (bool custom in new[] { false, true })
+                {
+                    settings.Widget.Card("pc").ItemLayouts.Clear();
+                    if (custom)
+                        settings.Widget.Card("pc").ItemLayouts.Add(new LayoutItemSettings { Id = "cpu", X = 0.137, Y = 0.21, Width = 0.18, Height = 0.62 });
+                    string saved = settings.Copy().ToJson();
+                    foreach (double font in new[] { 1.0, 1.5, 2.0 })
+                    foreach (int width in new[] { 320, 460, 900 })
+                    {
+                        fixture.Layout(settings, true); fixture.FontScale(font); fixture.Render(width, 480);
+                        LayoutTile pc = Descendants<CardLayoutPanel>(fixture.Root).Single(panel => panel.IsVisible).Tiles.Single(tile => tile.Settings.Id == "pc");
+                        Func<FrameworkElement, Rect> bounds = element => element.TransformToAncestor(fixture.Root).TransformBounds(new Rect(element.RenderSize));
+                        Rect[] before = null;
+                        foreach (double percent in new[] { 9.0, 10.0, 99.0, 100.0, 0.0, 9.0 })
+                        {
+                            var system = new SystemSnapshot { CpuPercent = percent, MemoryPercent = percent };
+                            system.Gpus.Add(new GpuSnapshot { Index = percent == 100 ? 10 : 0, Percent = percent, Name = "가상 GPU" });
+                            system.Disks.Add(new DiskSnapshot { Index = percent == 100 ? 10 : 0, Percent = percent, Name = "가상 디스크" });
+                            DashboardController.RenderCompactSystem(fixture.Window, system);
+                            fixture.Render(width, 480);
+                            Rect[] current = names.Select(name => bounds((FrameworkElement)fixture.Window.FindName("Compact" + name + "Track")))
+                                .Concat(pc.ContentItems().Where(item => names.Select(name => name.ToLowerInvariant() == "memory" ? "ram" : name.ToLowerInvariant()).Contains(item.Id))
+                                    .Select(item => bounds(item.Element))).Concat(new[] { bounds(pc.Card) }).ToArray();
+                            if (before == null) before = current;
+                            for (int i = 0; i < current.Length; i++)
+                                RequireSamePcBounds(before[i], current[i], "font=" + font + " width=" + width + " custom=" + custom);
+                            for (int i = 0; i < names.Length; i++)
+                            {
+                                Border bar = (Border)fixture.Window.FindName("Compact" + names[i] + "Bar");
+                                TextBlock value = (TextBlock)fixture.Window.FindName("Compact" + names[i] + "Value");
+                                Require(value.Text == percent.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%" &&
+                                    Math.Abs(bar.Height / ((FrameworkElement)bar.Parent).Height - percent / 100) < 0.000001,
+                                    "PC chart changed the reading or fill fraction");
+                                FormattedText measured = new FormattedText(value.Text, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                                    new Typeface(value.FontFamily, value.FontStyle, value.FontWeight, value.FontStretch), value.FontSize, value.Foreground);
+                                Require(measured.WidthIncludingTrailingWhitespace <= value.ActualWidth + 0.1, "PC percentage is clipped: " + names[i]);
+                            }
+                            Canvas guides = (Canvas)fixture.Window.FindName("CompactPcChartGuides");
+                            if (!custom)
+                            {
+                                Require(guides.IsVisible && current.Take(4).All(rect => Math.Abs(rect.Bottom - current[0].Bottom) < 0.1),
+                                    "Default PC tracks do not share a visible percentage axis and baseline");
+                                var lines = guides.Children.OfType<System.Windows.Shapes.Line>().ToArray();
+                                for (int tick = 0; tick < 5; tick++)
+                                {
+                                    Point location = guides.TranslatePoint(new Point(lines[tick].X1, lines[tick].Y1), fixture.Root);
+                                    Require(Math.Abs(location.Y - (current[0].Top + current[0].Height * tick / 4)) < 0.1,
+                                        "PC percentage grid does not align with the rendered track");
+                                }
+                            }
+                        }
+                        Require(settings.Copy().ToJson() == saved, "PC chart rendering changed stored positions, sizes or visibility");
+                        if (!custom && font == 1.5 && width != 900)
+                        {
+                            var sample = new SystemSnapshot { CpuPercent = 28, MemoryPercent = 62 };
+                            sample.Gpus.Add(new GpuSnapshot { Percent = 47 }); sample.Disks.Add(new DiskSnapshot { Percent = 3 });
+                            DashboardController.RenderCompactSystem(fixture.Window, sample); fixture.Render(width, 480);
+                            Capture(pc.Host, (int)Math.Ceiling(pc.Host.ActualWidth), (int)Math.Ceiling(pc.Host.ActualHeight),
+                                Path.Combine(directory, "pc-chart-" + width + ".png"));
+                        }
+                    }
+                }
+            }
+            report("PASS PC chart: fixed track/item/card bounds through 0/9/10/99/100%, changing device labels, 320/460/900 widths, 100-200% fonts, saved placement and shared percentage grid");
         }
 
         private static void VerifyUpgradeLayout(Action<string> report)

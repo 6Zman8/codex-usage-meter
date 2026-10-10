@@ -1,1 +1,1 @@
-Fix editor and dashboard maximize/restore using native monitor work-area coordinates.
+Redesign PC status with a dark shared-scale bar chart and keep meter sizes stable as readings change.

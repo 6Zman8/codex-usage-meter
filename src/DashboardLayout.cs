@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Shapes;
 
 namespace CodexUsageMeter
 {
@@ -193,6 +195,7 @@ namespace CodexUsageMeter
                 quota.SetBinding(FrameworkElement.WidthProperty, new System.Windows.Data.Binding("Width") { Source = card });
             }
             foreach (LayoutTile tile in _tiles) tile.ContentItems = delegate { return DescribeItems(tile); };
+            _tiles[1, 2].Content.LayoutUpdated += delegate { UpdatePcChartGuides(_tiles[1, 2]); };
         }
 
         private List<LayoutContentItem> DescribeItems(LayoutTile tile)
@@ -354,14 +357,62 @@ namespace CodexUsageMeter
             UniformGrid items = body.Children.OfType<UniformGrid>().Single();
             string[] keys = { "cpu", "gpu", "ram", "disk" };
             for (int n = 0; n < keys.Length; n++) items.Children[n].Visibility = tile.Settings.Shows(keys[n]) && tile.Settings.ShowsItem(keys[n]) ? Visibility.Visible : Visibility.Collapsed;
+            foreach (StackPanel metric in items.Children)
+            {
+                TextBlock[] texts = metric.Children.OfType<TextBlock>().ToArray();
+                FormattedText name = MeasurePcText(texts[0], "CPU GPU RAM 디스크 0");
+                FormattedText value = MeasurePcText(texts[1], "100%");
+                // Reserve the complete percentage field, never the current reading's width.
+                // CardContentLayout must not rescale a saved item when 9% becomes 10%.
+                metric.Width = Math.Max(42, Math.Ceiling(value.WidthIncludingTrailingWhitespace) + 8);
+                texts[0].Height = Math.Ceiling(name.Height);
+                texts[1].Height = Math.Ceiling(value.Height);
+            }
             int count = keys.Count(key => tile.Settings.Shows(key) && tile.Settings.ShowsItem(key));
             items.Rows = 1; items.Columns = Math.Max(1, count);
+            TextBlock tick = Find<Canvas>("CompactPcChartGuides").Children.OfType<TextBlock>().First();
+            double tickInset = Math.Ceiling(MeasurePcText(tick, "100%").Height / 2);
+            items.Margin = new Thickness(32 * Math.Max(1, fontScale / 1.5), 8, 0, tickInset);
             tile.KeepNaturalHeight = true;
             items.Visibility = count == 0 ? Visibility.Collapsed : Visibility.Visible;
             body.RowDefinitions[1].Height = count == 0 ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
             Find<TextBlock>("CompactNetworkValue").Visibility = tile.Settings.Shows("network") ? Visibility.Visible : Visibility.Collapsed;
+            items.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
             tile.MinimumHeight = (50 + (tile.Settings.Shows("network") ? 25 : 0)) * Math.Max(1, fontScale / 1.5) +
-                (count == 0 ? 0 : 96 * Math.Max(1, fontScale / 1.5));
+                (count == 0 ? 0 : items.DesiredSize.Height);
+        }
+
+        private static FormattedText MeasurePcText(TextBlock text, string sample)
+        {
+            return new FormattedText(sample, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface(text.FontFamily, text.FontStyle, text.FontWeight, text.FontStretch), text.FontSize, text.Foreground);
+        }
+
+        private void UpdatePcChartGuides(LayoutTile tile)
+        {
+            Canvas guides = Find<Canvas>("CompactPcChartGuides");
+            Rect[] tracks = new[] { "Cpu", "Gpu", "Memory", "Disk" }.Select(name => Find<Border>("Compact" + name + "Track"))
+                .Where(track => track.IsVisible && track.ActualHeight > 0)
+                .Select(track => track.TransformToAncestor(tile.Content).TransformBounds(new Rect(track.RenderSize))).ToArray();
+            // A shared percentage axis is meaningful only while the visible tracks
+            // share a top and baseline. Free placement keeps its saved coordinates.
+            bool aligned = tracks.Length > 0 && tracks.All(track =>
+                Math.Abs(track.Top - tracks[0].Top) < 0.1 && Math.Abs(track.Bottom - tracks[0].Bottom) < 0.1);
+            guides.Visibility = aligned ? Visibility.Visible : Visibility.Hidden;
+            if (!aligned) return;
+            Point origin = guides.TranslatePoint(new Point(), tile.Content);
+            double left = tile.Content.Children.OfType<UniformGrid>().Single().Margin.Left;
+            Line[] lines = guides.Children.OfType<Line>().ToArray();
+            TextBlock[] labels = guides.Children.OfType<TextBlock>().ToArray();
+            for (int i = 0; i < lines.Length; i++)
+            {
+                double y = tracks[0].Top - origin.Y + tracks[0].Height * i / 4.0;
+                lines[i].X1 = left; lines[i].X2 = guides.ActualWidth;
+                lines[i].Y1 = lines[i].Y2 = y;
+                labels[i].Width = left - 5;
+                Canvas.SetLeft(labels[i], 0);
+                Canvas.SetTop(labels[i], y - labels[i].ActualHeight / 2);
+            }
         }
         private T Find<T>(string name) where T : FrameworkElement { return (T)_window.FindName(name); }
     }

@@ -16,9 +16,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>CodexUsageMeter.WidgetProvider</AssemblyName>
     <RootNamespace>CodexUsageMeter.WindowsWidget</RootNamespace>
-    <Version>1.8.3</Version>
-    <AssemblyVersion>1.8.3.0</AssemblyVersion>
-    <FileVersion>1.8.3.0</FileVersion>
+    <Version>1.8.4</Version>
+    <AssemblyVersion>1.8.4.0</AssemblyVersion>
+    <FileVersion>1.8.4.0</FileVersion>
     <ApplicationManifest>provider.manifest</ApplicationManifest>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>

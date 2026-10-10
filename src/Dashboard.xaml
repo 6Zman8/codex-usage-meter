@@ -19,6 +19,23 @@
       <Setter Property="BorderThickness" Value="1"/><Setter Property="CornerRadius" Value="10"/><Setter Property="Padding" Value="10"/>
     </Style>
     <Style x:Key="Muted" TargetType="TextBlock"><Setter Property="Foreground" Value="#A1A1AA"/><Setter Property="FontSize" Value="11"/></Style>
+    <Style x:Key="PcMetricName" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="#D4D4D8"/><Setter Property="FontSize" Value="11"/>
+      <Setter Property="FontWeight" Value="SemiBold"/><Setter Property="TextAlignment" Value="Center"/>
+      <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+    </Style>
+    <Style x:Key="PcMetricValue" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="17"/><Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="TextAlignment" Value="Center"/><Setter Property="Typography.NumeralAlignment" Value="Tabular"/>
+    </Style>
+    <Style x:Key="PcChartTick" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="8"/><Setter Property="Foreground" Value="#99999F"/>
+      <Setter Property="TextAlignment" Value="Right"/><Setter Property="Typography.NumeralAlignment" Value="Tabular"/>
+    </Style>
+    <Style x:Key="PcChartGridLine" TargetType="Line">
+      <Setter Property="Stroke" Value="#414145"/><Setter Property="StrokeThickness" Value="0.8"/>
+      <Setter Property="StrokeDashArray" Value="2,4"/>
+    </Style>
     <Style TargetType="Button">
       <Setter Property="Background" Value="#292929"/><Setter Property="Foreground" Value="#F4F4F5"/>
       <Setter Property="BorderBrush" Value="#454545"/><Setter Property="BorderThickness" Value="1"/>
@@ -294,11 +311,35 @@
           <Border Grid.Row="4" Style="{StaticResource SubCard}" Padding="13,10">
             <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
               <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="PC 상태" FontWeight="SemiBold" FontSize="12"/><StackPanel Grid.Column="1" Orientation="Horizontal"><Ellipse Width="6" Height="6" Fill="#34D399" Margin="0,0,5,0" VerticalAlignment="Center"/><TextBlock Text="LIVE" Foreground="#6EE7B7" FontSize="8" FontWeight="Bold"/></StackPanel></Grid>
-              <UniformGrid Grid.Row="1" Rows="1" Columns="4" Margin="0,6,0,0">
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Text="CPU" Foreground="#7DD3FC" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center"/><Grid Width="18" Height="50" HorizontalAlignment="Center" Margin="0,4"><Border x:Name="CompactCpuTrack" Background="#343434" CornerRadius="3"/><Border x:Name="CompactCpuBar" Background="#38BDF8" CornerRadius="3" Height="0" VerticalAlignment="Bottom"/></Grid><TextBlock x:Name="CompactCpuValue" Text="--" Foreground="#F4F4F5" FontWeight="Bold" FontSize="13" TextAlignment="Center"/></StackPanel>
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock x:Name="CompactGpuLabel" Text="GPU" Foreground="#C4B5FD" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center"/><Grid Width="18" Height="50" HorizontalAlignment="Center" Margin="0,4"><Border x:Name="CompactGpuTrack" Background="#343434" CornerRadius="3"/><Border x:Name="CompactGpuBar" Background="#A78BFA" CornerRadius="3" Height="0" VerticalAlignment="Bottom"/></Grid><TextBlock x:Name="CompactGpuValue" Text="--" Foreground="#F4F4F5" FontWeight="Bold" FontSize="13" TextAlignment="Center"/></StackPanel>
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock Text="RAM" Foreground="#FCD34D" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center"/><Grid Width="18" Height="50" HorizontalAlignment="Center" Margin="0,4"><Border x:Name="CompactMemoryTrack" Background="#343434" CornerRadius="3"/><Border x:Name="CompactMemoryBar" Background="#FBBF24" CornerRadius="3" Height="0" VerticalAlignment="Bottom"/></Grid><TextBlock x:Name="CompactMemoryValue" Text="--" Foreground="#F4F4F5" FontWeight="Bold" FontSize="13" TextAlignment="Center"/></StackPanel>
-                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"><TextBlock x:Name="CompactDiskLabel" Text="디스크" Foreground="#F9A8D4" FontSize="9" FontWeight="SemiBold" HorizontalAlignment="Center"/><Grid Width="18" Height="50" HorizontalAlignment="Center" Margin="0,4"><Border x:Name="CompactDiskTrack" Background="#343434" CornerRadius="3"/><Border x:Name="CompactDiskBar" Background="#F472B6" CornerRadius="3" Height="0" VerticalAlignment="Bottom"/></Grid><TextBlock x:Name="CompactDiskValue" Text="--" Foreground="#F4F4F5" FontWeight="Bold" FontSize="13" TextAlignment="Center"/></StackPanel>
+              <Canvas x:Name="CompactPcChartGuides" Grid.Row="1" IsHitTestVisible="False" ClipToBounds="True">
+                <Line Style="{StaticResource PcChartGridLine}"/><Line Style="{StaticResource PcChartGridLine}"/>
+                <Line Style="{StaticResource PcChartGridLine}"/><Line Style="{StaticResource PcChartGridLine}"/>
+                <Line Style="{StaticResource PcChartGridLine}" StrokeDashArray=""/>
+                <TextBlock Text="100%" Style="{StaticResource PcChartTick}"/><TextBlock Text="75%" Style="{StaticResource PcChartTick}"/>
+                <TextBlock Text="50%" Style="{StaticResource PcChartTick}"/><TextBlock Text="25%" Style="{StaticResource PcChartTick}"/>
+                <TextBlock Text="0%" Style="{StaticResource PcChartTick}"/>
+              </Canvas>
+              <UniformGrid Grid.Row="1" Rows="1" Columns="4" Margin="32,8,0,0">
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                  <TextBlock Text="CPU" Style="{StaticResource PcMetricName}"/>
+                  <TextBlock x:Name="CompactCpuValue" Text="--" Foreground="#38BDF8" Style="{StaticResource PcMetricValue}"/>
+                  <Grid Width="28" Height="104" HorizontalAlignment="Center" Margin="0,8,0,0"><Border x:Name="CompactCpuTrack" Background="#303033" CornerRadius="7"/><Border x:Name="CompactCpuBar" Background="#38BDF8" CornerRadius="7" Height="0" VerticalAlignment="Bottom"/></Grid>
+                </StackPanel>
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                  <TextBlock x:Name="CompactGpuLabel" Text="GPU" Style="{StaticResource PcMetricName}"/>
+                  <TextBlock x:Name="CompactGpuValue" Text="--" Foreground="#A78BFA" Style="{StaticResource PcMetricValue}"/>
+                  <Grid Width="28" Height="104" HorizontalAlignment="Center" Margin="0,8,0,0"><Border x:Name="CompactGpuTrack" Background="#303033" CornerRadius="7"/><Border x:Name="CompactGpuBar" Background="#A78BFA" CornerRadius="7" Height="0" VerticalAlignment="Bottom"/></Grid>
+                </StackPanel>
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                  <TextBlock Text="RAM" Style="{StaticResource PcMetricName}"/>
+                  <TextBlock x:Name="CompactMemoryValue" Text="--" Foreground="#FBBF24" Style="{StaticResource PcMetricValue}"/>
+                  <Grid Width="28" Height="104" HorizontalAlignment="Center" Margin="0,8,0,0"><Border x:Name="CompactMemoryTrack" Background="#303033" CornerRadius="7"/><Border x:Name="CompactMemoryBar" Background="#FBBF24" CornerRadius="7" Height="0" VerticalAlignment="Bottom"/></Grid>
+                </StackPanel>
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                  <TextBlock x:Name="CompactDiskLabel" Text="디스크" Style="{StaticResource PcMetricName}"/>
+                  <TextBlock x:Name="CompactDiskValue" Text="--" Foreground="#F472B6" Style="{StaticResource PcMetricValue}"/>
+                  <Grid Width="28" Height="104" HorizontalAlignment="Center" Margin="0,8,0,0"><Border x:Name="CompactDiskTrack" Background="#303033" CornerRadius="7"/><Border x:Name="CompactDiskBar" Background="#F472B6" CornerRadius="7" Height="0" VerticalAlignment="Bottom"/></Grid>
+                </StackPanel>
               </UniformGrid>
               <TextBlock x:Name="CompactNetworkValue" Grid.Row="2" Text="↓ --   ↑ --" Style="{StaticResource Muted}" FontSize="9" HorizontalAlignment="Center" Margin="0,4,0,0"/>
             </Grid>

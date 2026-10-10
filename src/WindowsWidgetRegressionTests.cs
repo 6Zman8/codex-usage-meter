@@ -218,6 +218,7 @@ namespace CodexUsageMeter
                 accounts[0].LastSnapshot.Primary.ResetsAt = now;
                 pages = renderer.Render(accounts, settings, system, 1.5, now);
                 if (!pages["Large"][0]["alt"].Contains("갱신 대기")) throw new InvalidOperationException("Expired quota was presented as current");
+                CheckStablePcChart(renderer, directory);
             }
             report("PASS rendered Windows widget: shared gauges/layout, 3 sizes, paging, real zero/PC values, hidden items/order/bounds and private-data exclusion");
         }
@@ -244,6 +245,53 @@ namespace CodexUsageMeter
                     throw new InvalidOperationException("PC vertical bar zero/half/full scale is incorrect");
             }
             DashboardController.RenderCompactSystem(window, source);
+        }
+
+        private static void CheckStablePcChart(WindowsWidgetRenderer renderer, string directory)
+        {
+            LayoutSettings settings = LayoutSettings.Defaults();
+            string saved = settings.Copy().ToJson();
+            Rect[] expected = null;
+            foreach (double percent in new[] { 9.0, 10.0, 100.0, 0.0, 9.0 })
+            {
+                var system = new SystemSnapshot { CpuPercent = percent, MemoryPercent = percent };
+                var pages = renderer.Render(new AccountState[0], settings, system, 1.5, DateTime.UtcNow);
+                LayoutTile pc = renderer.Layout.Tiles(true).Single(tile => tile.Settings.Id == "pc");
+                Rect[] bounds = new[] { "Cpu", "Gpu", "Memory", "Disk" }.Select(name => {
+                    var track = (FrameworkElement)renderer.Window.FindName("Compact" + name + "Track");
+                    return track.TransformToAncestor(pc.Content).TransformBounds(new Rect(track.RenderSize));
+                }).ToArray();
+                if (expected == null) expected = bounds;
+                for (int i = 0; i < bounds.Length; i++)
+                    if (Math.Abs(bounds[i].X - expected[i].X) > 0.05 || Math.Abs(bounds[i].Y - expected[i].Y) > 0.05 ||
+                        Math.Abs(bounds[i].Width - expected[i].Width) > 0.05 || Math.Abs(bounds[i].Height - expected[i].Height) > 0.05)
+                        throw new InvalidOperationException("Windows PC widget changes track geometry with the reading");
+                if (!((Canvas)renderer.Window.FindName("CompactPcChartGuides")).IsVisible ||
+                    ((TextBlock)renderer.Window.FindName("CompactGpuValue")).Text != "N/A" ||
+                    settings.Copy().ToJson() != saved)
+                    throw new InvalidOperationException("Windows PC widget lost its grid, missing-device state or saved settings");
+                foreach (string size in WindowsWidgetRenderer.Sizes)
+                {
+                    if (pages[size].Count != 1 || !pages[size][0]["alt"].Contains(percent.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%"))
+                        throw new InvalidOperationException("PC widget lost its current reading in " + size);
+                    if (percent == 100)
+                        File.WriteAllBytes(Path.Combine(directory, "pc-chart-" + size + ".png"),
+                            Convert.FromBase64String(pages[size][0]["image"].Substring("data:image/png;base64,".Length)));
+                }
+                Grid root = (Grid)((FrameworkElement)renderer.Window.FindName("CompactLayout")).Parent;
+                foreach (int height in WindowsWidgetRenderer.Heights)
+                {
+                    root.Measure(new Size(300, height)); root.Arrange(new Rect(0, 0, 300, height)); root.UpdateLayout();
+                    Canvas guides = (Canvas)renderer.Window.FindName("CompactPcChartGuides");
+                    foreach (TextBlock label in guides.Children.OfType<TextBlock>())
+                    {
+                        Rect rectangle = label.TransformToAncestor(guides).TransformBounds(new Rect(label.RenderSize));
+                        if (rectangle.Top < -0.1 || rectangle.Bottom > guides.ActualHeight + 0.1 ||
+                            rectangle.Left < -0.1 || rectangle.Right > guides.ActualWidth + 0.1)
+                            throw new InvalidOperationException("PC axis label is clipped at widget height " + height + ": " + label.Text);
+                    }
+                }
+            }
         }
 
         private static void CheckSmallGauge(string image, Color ring, string label)
