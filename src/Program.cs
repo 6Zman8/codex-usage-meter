@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.0.0")]
-[assembly: AssemblyFileVersion("1.9.0.0")]
+[assembly: AssemblyVersion("1.9.1.0")]
+[assembly: AssemblyFileVersion("1.9.1.0")]
 
 namespace CodexUsageMeter
 {
@@ -2220,6 +2220,12 @@ namespace CodexUsageMeter
             if (view == null || view.Client == null || _switchingAccount) return;
             AccountState state = view.State;
             if (state == null) return;
+            if (_compactMode)
+            {
+                if (CanReconnect(view))
+                    await StartAccountLoginAsync(view, state.Client, state.Label);
+                return;
+            }
             ContextMenu menu = new ContextMenu();
             if (view.Client.Provider.Create != null)
             {
@@ -2242,6 +2248,13 @@ namespace CodexUsageMeter
             menu.PlacementTarget = _compactMode ? (UIElement)view.CompactLoginButton : view.LoginButton;
             menu.IsOpen = true;
             await Task.FromResult(0);
+        }
+
+        private static bool CanReconnect(AccountView view)
+        {
+            return view.Client != null && view.Client.Provider.Create != null &&
+                ((view.LastSnapshot != null && view.LastSnapshot.IsAuthenticated) ||
+                (view.Client.ProfileRoot != null && AccountProviders.HasRetainedCredentials(view.Client)));
         }
 
         private async Task ChangeAccountProviderAsync(AccountState state, AccountProvider provider, AccountView origin)
@@ -2599,7 +2612,8 @@ namespace CodexUsageMeter
             foreach (FrameworkElement element in view.CodexExtras) element.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
             view.LoginButton.Content = snapshot.IsAuthenticated ? "연결 ▾" : "연결";
             view.LoginButton.Visibility = Visibility.Visible;
-            view.CompactLoginButton.Visibility = Visibility.Visible;
+            view.CompactLoginButton.Content = "재연결";
+            view.CompactLoginButton.Visibility = CanReconnect(view) ? Visibility.Visible : Visibility.Collapsed;
             if (!snapshot.IsAuthenticated)
             {
                 view.Identity.Text = "연결되지 않음";

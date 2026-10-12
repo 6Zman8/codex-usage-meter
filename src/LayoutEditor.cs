@@ -36,6 +36,7 @@ namespace CodexUsageMeter
         private readonly Dictionary<UIElement, object> _previewHitTests = new Dictionary<UIElement, object>();
         private readonly Dictionary<Button, bool> _buttonFocus = new Dictionary<Button, bool>();
         private readonly double _originalWidth, _originalHeight;
+        private readonly Size _actualPreviewSize;
         private readonly bool _originalCompact;
         private readonly object _originalForeground, _originalFont;
         private bool _compact, _restored, _refreshing, _addedResources;
@@ -60,6 +61,7 @@ namespace CodexUsageMeter
             _dashboardRoot = (FrameworkElement)dashboard.Content;
             if (_dashboardRoot == null) throw new InvalidOperationException("대시보드 미리보기를 열 수 없습니다.");
             _originalWidth = _dashboardRoot.Width; _originalHeight = _dashboardRoot.Height;
+            _actualPreviewSize = _dashboardRoot.RenderSize;
             _originalForeground = _dashboardRoot.ReadLocalValue(Control.ForegroundProperty);
             _originalFont = _dashboardRoot.ReadLocalValue(Control.FontFamilyProperty);
             Title = "대시보드 배치 편집"; Width = Math.Min(1220, SystemParameters.WorkArea.Width - 40);
@@ -210,8 +212,9 @@ namespace CodexUsageMeter
         { return id == "pc" ? "PC 상태" : "계정 " + id.Substring(7); }
         private void SetViewport(int preset)
         {
-            _dashboardRoot.Width = preset == 1 ? (_compact ? 320 : 900) : preset == 2 ? (_compact ? 900 : 1600) : (_compact ? 460 : 1280);
-            _dashboardRoot.Height = preset == 1 ? (_compact ? 480 : 620) : (_compact ? 780 : 820);
+            bool actual = preset == 0 && _compact == _originalCompact && _actualPreviewSize.Width > 0 && _actualPreviewSize.Height > 0;
+            _dashboardRoot.Width = actual ? _actualPreviewSize.Width : preset == 1 ? (_compact ? 320 : 900) : preset == 2 ? (_compact ? 900 : 1600) : (_compact ? 460 : 1280);
+            _dashboardRoot.Height = actual ? _actualPreviewSize.Height : preset == 1 ? (_compact ? 480 : 620) : (_compact ? 780 : 820);
             _previewSize.Text = "미리보기  ·  " + _dashboardRoot.Width + " × " + _dashboardRoot.Height;
             if (_fitZoom) FitPreview(); else UpdatePreviewZoom();
         }

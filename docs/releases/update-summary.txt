@@ -1,1 +1,1 @@
-Claude accounts (live login unverified), provider badges, and 30-minute PC history.
+Fix card header alignment, widget reconnect controls, and actual-size layout previews.

@@ -35,6 +35,7 @@ namespace CodexUsageMeter
             Require(itemLayout.Copy().ToJson().Contains("\"X\":0.2"), "individual item positions and sizes did not survive save/reload");
             VerifyEditorZoom(report, previewDirectory);
             VerifyDefaultSpacing(report, previewDirectory);
+            VerifyCardCorrections(report);
             VerifyContentLayout(report, previewDirectory);
             VerifyItemVisibility(report);
             VerifySnapping(report, previewDirectory);
@@ -412,6 +413,140 @@ namespace CodexUsageMeter
                 Marshal.StructureToPtr(limits, lParam, false);
             }
             return IntPtr.Zero;
+        }
+
+        private static void VerifyCardCorrections(Action<string> report)
+        {
+            using (Fixture fixture = new Fixture())
+            {
+                LayoutSettings settings = LayoutSettings.Defaults();
+                foreach (bool compact in new[] { true, false })
+                {
+                    fixture.Layout(settings, compact);
+                    foreach (int[] size in compact ? new[] { new[] { 320, 480 }, new[] { 900, 820 } } : new[] { new[] { 900, 620 }, new[] { 1600, 820 } })
+                    {
+                    fixture.Render(size[0], size[1]);
+                    foreach (LayoutTile tile in Descendants<CardLayoutPanel>(fixture.Root).Single(panel => panel.IsVisible).Tiles)
+                    {
+                        FrameworkElement header = tile.ContentItems().Single(item => item.Id == "header").Element;
+                        Rect bounds = header.TransformToAncestor(tile.Card).TransformBounds(new Rect(header.RenderSize));
+                        Rect inner = CardContentLayout.InnerBounds(tile);
+                        Require(Math.Abs(bounds.Left - inner.Left) < 1 && Math.Abs(bounds.Right - inner.Right) < 1,
+                            "default header is not edge anchored: compact=" + compact + " card=" + tile.Settings.Id + " header=" + bounds + " inner=" + inner);
+                    }
+                    }
+                }
+                fixture.Layout(settings, true); fixture.Render(613, 947);
+                LayoutTile pc = Descendants<CardLayoutPanel>(fixture.Root).Single(panel => panel.IsVisible).Tiles.Single(tile => tile.Settings.Id == "pc");
+                Grid pcHeader = (Grid)pc.ContentItems().Single(item => item.Id == "header").Element;
+                Button history = (Button)fixture.Window.FindName("CompactPcHistoryButton");
+                StackPanel actions = (StackPanel)history.Parent;
+                TextBlock live = actions.Children.OfType<TextBlock>().Single(text => text.Text == "LIVE");
+                Rect actionBounds = actions.TransformToAncestor(pcHeader).TransformBounds(new Rect(actions.RenderSize));
+                Rect titleBounds = pcHeader.Children.OfType<TextBlock>().Single().TransformToAncestor(pcHeader).TransformBounds(
+                    new Rect(pcHeader.Children.OfType<TextBlock>().Single().RenderSize));
+                Require(titleBounds.Left < 1 && actionBounds.Right > pcHeader.ActualWidth - 1 &&
+                    titleBounds.Right <= actionBounds.Left && live.IsVisible && history.IsVisible,
+                    "PC title/history/LIVE do not occupy left and right header groups");
+                Canvas actualGuides = (Canvas)fixture.Window.FindName("CompactPcChartGuides");
+                double[] actualTicks = actualGuides.Children.OfType<System.Windows.Shapes.Line>()
+                    .Select(line => actualGuides.TranslatePoint(new Point(line.X1, line.Y1), fixture.Root).Y).ToArray();
+                Rect[] actualLabels = actualGuides.Children.OfType<TextBlock>()
+                    .Select(label => label.TransformToAncestor(fixture.Root).TransformBounds(new Rect(label.RenderSize))).ToArray();
+                foreach (AccountView view in new[] { fixture.First, fixture.Second })
+                {
+                    Require(view.CompactLoginButton.Visibility == Visibility.Visible && Convert.ToString(view.CompactLoginButton.Content) == "재연결",
+                        "authenticated widget lost reconnect");
+                    Require(view.CompactCodexLoginButton.Visibility == Visibility.Visible, "widget lost Codex switch");
+                    AccountSnapshot snapshot = view.LastSnapshot;
+                    fixture.Call("UpdateAccount", view, new AccountSnapshot());
+                    Require(view.CompactLoginButton.Visibility == Visibility.Collapsed && view.LoginButton.Visibility == Visibility.Visible,
+                        "new connection is not full-mode only");
+                    ((System.Threading.Tasks.Task)fixture.Call("BeginLoginAsync", view)).GetAwaiter().GetResult();
+                    fixture.Call("UpdateAccount", view, snapshot);
+                }
+                string profile = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)),
+                    "work", "card-reconnect-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(profile);
+                using (System.Threading.SemaphoreSlim gate = new System.Threading.SemaphoreSlim(1, 1))
+                {
+                    fixture.Set("_accountOperationGate", gate);
+                    AccountView view = fixture.First;
+                    IUsageAccount original = view.Client;
+                    AccountSnapshot originalSnapshot = view.LastSnapshot;
+                    CardLoginAccount fake = new CardLoginAccount(profile);
+                    view.Client = view.State.Client = fake;
+                    try
+                    {
+                        fixture.Call("UpdateAccount", view, new AccountSnapshot());
+                        Require(view.CompactLoginButton.Visibility == Visibility.Collapsed && view.LoginButton.Visibility == Visibility.Visible,
+                            "fresh fixture connection is not full-mode only");
+                        ((System.Threading.Tasks.Task)fixture.Call("BeginLoginAsync", view)).GetAwaiter().GetResult();
+                        Require(fake.LoginCalls == 0, "compact fresh connection routed to login");
+                        fixture.Call("UpdateAccount", view, new AccountSnapshot { IsAuthenticated = true });
+                        Require(view.CompactLoginButton.Visibility == Visibility.Visible, "authenticated fixture lost reconnect");
+                        ((System.Threading.Tasks.Task)fixture.Call("BeginLoginAsync", view)).GetAwaiter().GetResult();
+                        Require(fake.LoginCalls == 1, "authenticated reconnect did not route to provider login");
+                        File.WriteAllText(Path.Combine(profile, fake.Provider.CredentialFile), "{}");
+                        fixture.Call("UpdateAccount", view, new AccountSnapshot());
+                        Require(view.CompactLoginButton.Visibility == Visibility.Visible && Convert.ToString(view.CompactLoginButton.Content) == "재연결",
+                            "retained but expired authentication lost reconnect");
+                        ((System.Threading.Tasks.Task)fixture.Call("BeginLoginAsync", view)).GetAwaiter().GetResult();
+                        Require(fake.LoginCalls == 2 && view.Status.Text.Contains("isolated fake login"),
+                            "expired reconnect did not route to isolated provider login");
+                    }
+                    finally
+                    {
+                        view.Client = view.State.Client = original;
+                        fixture.Call("UpdateAccount", view, originalSnapshot);
+                    }
+                }
+                LayoutEditor editor = fixture.Editor(settings, true, state => { }, state => { });
+                RenderEditor(editor, root => {
+                    Require(fixture.Root.Width == 613 && fixture.Root.Height == 947, "preview does not use actual dashboard content size");
+                    ComboBox viewport = Descendants<ComboBox>(root).Single(box => box.Items.Count == 3 && Convert.ToString(box.Items[0]) == "기본 창 크기");
+                    viewport.SelectedIndex = 1;
+                    Require(fixture.Root.Width == 320 && fixture.Root.Height == 480, "narrow preset changed");
+                    viewport.SelectedIndex = 2;
+                    Require(fixture.Root.Width == 900 && fixture.Root.Height == 780, "wide preset changed");
+                    viewport.SelectedIndex = 0;
+                    editor.SwitchMode(false); editor.SwitchMode(true); root.UpdateLayout();
+                    Require(fixture.Root.Width == 613 && fixture.Root.Height == 947, "mode switch lost actual preview size");
+                    Canvas guides = (Canvas)fixture.Window.FindName("CompactPcChartGuides");
+                    Require(guides.Visibility == Visibility.Visible && guides.Children.OfType<System.Windows.Shapes.Line>().Count(line => line.X2 > line.X1) == 5,
+                        "editor lost PC percentage guides");
+                    Require(guides.Children.OfType<TextBlock>().All(label => label.Visibility == Visibility.Visible && label.Width > 0),
+                        "editor lost PC percentage labels");
+                    double[] previewTicks = guides.Children.OfType<System.Windows.Shapes.Line>()
+                        .Select(line => guides.TranslatePoint(new Point(line.X1, line.Y1), fixture.Root).Y).ToArray();
+                    Require(actualTicks.Zip(previewTicks, (a, b) => Math.Abs(a - b) < 0.1).All(equal => equal),
+                        "actual and preview PC percentage grids differ");
+                    Rect[] previewLabels = guides.Children.OfType<TextBlock>()
+                        .Select(label => label.TransformToAncestor(fixture.Root).TransformBounds(new Rect(label.RenderSize))).ToArray();
+                    for (int i = 0; i < actualLabels.Length; i++)
+                        RequireSamePcBounds(actualLabels[i], previewLabels[i], "actual/preview percentage label");
+                }, null);
+                editor.RestoreDashboard(); editor.Close();
+            }
+            report("PASS card header edge anchoring, authenticated/expired reconnect routes to fake login, fresh full-only connection, actual-size preview/presets/mode restore, editor PC guides");
+        }
+
+        private sealed class CardLoginAccount : IUsageAccount
+        {
+            private readonly string _profile;
+            internal int LoginCalls;
+            internal CardLoginAccount(string profile) { _profile = profile; }
+            public AccountProvider Provider { get { return AccountProviders.Codex; } }
+            public string ProfileRoot { get { return _profile; } }
+            public event EventHandler AccountChanged { add { } remove { } }
+            public System.Threading.Tasks.Task<AccountSnapshot> RefreshAsync() { return System.Threading.Tasks.Task.FromResult(new AccountSnapshot()); }
+            public System.Threading.Tasks.Task<AccountLoginPrompt> StartLoginAsync()
+            {
+                LoginCalls++;
+                throw new InvalidOperationException("isolated fake login");
+            }
+            public System.Threading.Tasks.Task LogoutAsync() { return System.Threading.Tasks.Task.FromResult(0); }
+            public void Dispose() { }
         }
 
         private static void VerifyDefaultSpacing(Action<string> report, string previewDirectory)
@@ -924,10 +1059,10 @@ namespace CodexUsageMeter
                     Capture(root, 1220, 860, Path.Combine(evidenceDirectory, "pc-bar-editor.png"));
                     LayoutItemSettings cpu = CardContentLayout.Position(pc, bars[0]);
                     editor.EditItem("cpu", cpu.X, cpu.Y, cpu.Width, cpu.Height); root.UpdateLayout();
-                    Require(pc.Content.Children.OfType<UniformGrid>().Single().Rows == 1, "editing a PC bar restored the obsolete 2x2 layout");
+                    Require(Descendants<UniformGrid>(pc.Content).Single().Rows == 1, "editing a PC bar restored the obsolete 2x2 layout");
                     editor.SetItemVisible("gpu", false); root.UpdateLayout();
                     Require(!bars.Single(item => item.Id == "gpu").Element.IsVisible &&
-                        pc.Content.Children.OfType<UniformGrid>().Single().Columns == 3, "hidden PC bars left an unused grid cell");
+                        Descendants<UniformGrid>(pc.Content).Single().Columns == 3, "hidden PC bars left an unused grid cell");
                 }, null);
                 editor.Close();
             }

@@ -26,6 +26,10 @@ namespace CodexUsageMeter
         internal WindowsWidgetRenderer()
         {
             Layout = new DashboardLayoutView(Window);
+            // The fixed 100-DIP Small image must scale a complete natural card.
+            // Reserving an unscaled header first leaves almost no height for its gauges.
+            // Interactive dashboard/editor cards still fit their header to the viewport.
+            foreach (LayoutTile tile in Layout.Tiles(true)) tile.FitNaturalContent = true;
             _root = (Grid)Window.Content;
             _root.Resources.MergedDictionaries.Add(Window.Resources);
             _root.SetValue(Control.FontFamilyProperty, Window.FontFamily);

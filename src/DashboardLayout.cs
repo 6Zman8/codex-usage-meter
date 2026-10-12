@@ -23,6 +23,7 @@ namespace CodexUsageMeter
         public LayoutCardSettings Settings;
         public double MinimumHeight;
         public bool KeepNaturalHeight;
+        public bool FitNaturalContent;
         public Rect Bounds;
     }
 
@@ -98,7 +99,10 @@ namespace CodexUsageMeter
                     tile.Content.VerticalAlignment = custom ? VerticalAlignment.Top : VerticalAlignment.Stretch;
                     tile.Content.Height = Double.NaN;
                     tile.Content.Measure(new Size(innerWidth, Double.PositiveInfinity));
-                    tile.Content.Height = Math.Max(innerHeight, tile.Content.DesiredSize.Height);
+                    // Automatic grids must use the card viewport: their star rows fit
+                    // the body, while the header continues to span both card edges.
+                    // Saved free placements retain their original natural coordinate space.
+                    tile.Content.Height = custom || tile.FitNaturalContent ? Math.Max(innerHeight, tile.Content.DesiredSize.Height) : innerHeight;
                     tile.Surface.Width = innerWidth;
                     tile.Surface.Height = tile.ShowingHistory ? Math.Max(170, innerHeight) : custom ? innerHeight : tile.Content.Height;
                     tile.Surface.ClipToBounds = custom;
@@ -130,6 +134,7 @@ namespace CodexUsageMeter
         private readonly Grid[] _compactQuotas = new Grid[2];
         private readonly Viewbox[] _compactQuotaHosts = new Viewbox[2];
         private bool _editing;
+        private readonly UniformGrid _compactPcItems;
 
         internal IEnumerable<LayoutTile> Tiles(bool compact) { return _panels[compact ? 1 : 0].Tiles; }
 
@@ -195,6 +200,18 @@ namespace CodexUsageMeter
                 quota.SetBinding(FrameworkElement.WidthProperty, new System.Windows.Data.Binding("Width") { Source = card });
             }
             foreach (LayoutTile tile in _tiles) tile.ContentItems = delegate { return DescribeItems(tile); };
+            // Fit the chart row, not the entire PC card: the header must retain
+            // the full viewport width even when the natural chart is taller.
+            Grid pcContent = _tiles[1, 2].Content;
+            _compactPcItems = pcContent.Children.OfType<UniformGrid>().Single();
+            Canvas guides = Find<Canvas>("CompactPcChartGuides");
+            pcContent.Children.Remove(_compactPcItems); pcContent.Children.Remove(guides);
+            Grid chart = new Grid();
+            Grid.SetRow(_compactPcItems, 0); Grid.SetRow(guides, 0);
+            chart.Children.Add(guides); chart.Children.Add(_compactPcItems);
+            chart.SetBinding(FrameworkElement.WidthProperty, new System.Windows.Data.Binding("Width") { Source = pcContent });
+            Viewbox chartHost = new Viewbox { Child = chart, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
+            Grid.SetRow(chartHost, 1); pcContent.Children.Add(chartHost);
             _tiles[1, 2].Content.LayoutUpdated += delegate { UpdatePcChartGuides(_tiles[1, 2]); };
         }
 
@@ -229,7 +246,7 @@ namespace CodexUsageMeter
             }
             else
             {
-                UniformGrid items = body.Children.OfType<UniformGrid>().Single();
+                UniformGrid items = compact ? _compactPcItems : body.Children.OfType<UniformGrid>().Single();
                 string[] keys = { "cpu", "gpu", "ram", "disk" }, names = { "CPU", "GPU", "RAM", "디스크" };
                 for (int i = 0; i < items.Children.Count; i++)
                 {
@@ -357,7 +374,7 @@ namespace CodexUsageMeter
         private void ApplyCompactPc(LayoutTile tile, double fontScale)
         {
             Grid body = tile.Content;
-            UniformGrid items = body.Children.OfType<UniformGrid>().Single();
+            UniformGrid items = _compactPcItems;
             string[] keys = { "cpu", "gpu", "ram", "disk" };
             for (int n = 0; n < keys.Length; n++) items.Children[n].Visibility = tile.Settings.Shows(keys[n]) && tile.Settings.ShowsItem(keys[n]) ? Visibility.Visible : Visibility.Collapsed;
             foreach (StackPanel metric in items.Children)
@@ -395,21 +412,23 @@ namespace CodexUsageMeter
         {
             Canvas guides = Find<Canvas>("CompactPcChartGuides");
             Rect[] tracks = new[] { "Cpu", "Gpu", "Memory", "Disk" }.Select(name => Find<Border>("Compact" + name + "Track"))
-                .Where(track => track.IsVisible && track.ActualHeight > 0)
-                .Select(track => track.TransformToAncestor(tile.Content).TransformBounds(new Rect(track.RenderSize))).ToArray();
+                .Where(track => track.Visibility == Visibility.Visible &&
+                    ((FrameworkElement)track.Parent).Visibility == Visibility.Visible &&
+                    ((FrameworkElement)((FrameworkElement)track.Parent).Parent).Visibility == Visibility.Visible &&
+                    track.ActualHeight > 0)
+                .Select(track => track.TransformToVisual(guides).TransformBounds(new Rect(track.RenderSize))).ToArray();
             // A shared percentage axis is meaningful only while the visible tracks
             // share a top and baseline. Free placement keeps its saved coordinates.
             bool aligned = tracks.Length > 0 && tracks.All(track =>
                 Math.Abs(track.Top - tracks[0].Top) < 0.1 && Math.Abs(track.Bottom - tracks[0].Bottom) < 0.1);
             guides.Visibility = aligned ? Visibility.Visible : Visibility.Hidden;
             if (!aligned) return;
-            Point origin = guides.TranslatePoint(new Point(), tile.Content);
-            double left = tile.Content.Children.OfType<UniformGrid>().Single().Margin.Left;
+            double left = _compactPcItems.Margin.Left;
             Line[] lines = guides.Children.OfType<Line>().ToArray();
             TextBlock[] labels = guides.Children.OfType<TextBlock>().ToArray();
             for (int i = 0; i < lines.Length; i++)
             {
-                double y = tracks[0].Top - origin.Y + tracks[0].Height * i / 4.0;
+                double y = tracks[0].Top + tracks[0].Height * i / 4.0;
                 lines[i].X1 = left; lines[i].X2 = guides.ActualWidth;
                 lines[i].Y1 = lines[i].Y2 = y;
                 labels[i].Width = left - 5;
