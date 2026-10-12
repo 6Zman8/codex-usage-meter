@@ -261,7 +261,7 @@ namespace CodexUsageMeter
                             throw new InvalidOperationException("A widget page changed its required pixel dimensions");
                     }
             foreach (string name in new[] { "CompactPcHistoryButton", "CompactAccount1HistoryButton", "CompactAccount2HistoryButton",
-                "CompactAccount1LoginButton", "CompactAccount2LoginButton", "CompactAccount1CodexLoginButton", "CompactAccount2CodexLoginButton" })
+                "CompactAccount1CodexLoginButton", "CompactAccount2CodexLoginButton" })
                 if (((Button)window.FindName(name)).Visibility != Visibility.Collapsed)
                     throw new InvalidOperationException("Static widget images expose an inactive control: " + name);
             string json = WindowsWidgetBridge.BuildJson(accounts, true, now, pages);

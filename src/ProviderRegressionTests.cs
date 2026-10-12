@@ -356,7 +356,10 @@ namespace CodexUsageMeter
                     "Provider header replaced account identification or lost its distinct symbol/name.");
                 Require(((Button)window.FindName(prefix + "Account2CodexLoginButton")).Visibility == Visibility.Collapsed &&
                     ((TextBlock)window.FindName(prefix + "Account2SubscriptionValue")).Visibility == Visibility.Collapsed, "Claude exposes unsupported switches/billing.");
-                Require(((Button)window.FindName(prefix + "Account2LoginButton")).Visibility == Visibility.Visible, "Provider selection/reconnect inaccessible.");
+                if (prefix.Length == 0)
+                    Require(((Button)window.FindName("Account2LoginButton")).Visibility == Visibility.Visible, "Provider selection/reconnect inaccessible.");
+                else
+                    Require(window.FindName("CompactAccount2LoginButton") == null, "Compact mode exposes generic provider login.");
             }
             Require(((TextBlock)window.FindName("CompactAccount2ResetValue")).Visibility == Visibility.Collapsed, "Claude exposes reset-credit discovery.");
             Type viewType = second.GetType();

@@ -455,12 +455,14 @@ namespace CodexUsageMeter
                     .Select(label => label.TransformToAncestor(fixture.Root).TransformBounds(new Rect(label.RenderSize))).ToArray();
                 foreach (AccountView view in new[] { fixture.First, fixture.Second })
                 {
-                    Require(view.CompactLoginButton.Visibility == Visibility.Visible && Convert.ToString(view.CompactLoginButton.Content) == "재연결",
-                        "authenticated widget lost reconnect");
+                    StackPanel headerActions = (StackPanel)view.CompactCodexLoginButton.Parent;
+                    Require(headerActions.Children.OfType<Button>().Count() == 2 &&
+                        headerActions.Children.OfType<Button>().Last() == view.CompactCodexLoginButton,
+                        "compact header must contain only history and the original rightmost Codex action");
                     Require(view.CompactCodexLoginButton.Visibility == Visibility.Visible, "widget lost Codex switch");
                     AccountSnapshot snapshot = view.LastSnapshot;
                     fixture.Call("UpdateAccount", view, new AccountSnapshot());
-                    Require(view.CompactLoginButton.Visibility == Visibility.Collapsed && view.LoginButton.Visibility == Visibility.Visible,
+                    Require(view.LoginButton.Visibility == Visibility.Visible,
                         "new connection is not full-mode only");
                     ((System.Threading.Tasks.Task)fixture.Call("BeginLoginAsync", view)).GetAwaiter().GetResult();
                     fixture.Call("UpdateAccount", view, snapshot);
@@ -474,26 +476,22 @@ namespace CodexUsageMeter
                     AccountView view = fixture.First;
                     IUsageAccount original = view.Client;
                     AccountSnapshot originalSnapshot = view.LastSnapshot;
-                    CardLoginAccount fake = new CardLoginAccount(profile);
+                    CompactLoginGuardAccount fake = new CompactLoginGuardAccount(profile);
                     view.Client = view.State.Client = fake;
                     try
                     {
                         fixture.Call("UpdateAccount", view, new AccountSnapshot());
-                        Require(view.CompactLoginButton.Visibility == Visibility.Collapsed && view.LoginButton.Visibility == Visibility.Visible,
+                        Require(view.LoginButton.Visibility == Visibility.Visible,
                             "fresh fixture connection is not full-mode only");
                         ((System.Threading.Tasks.Task)fixture.Call("BeginLoginAsync", view)).GetAwaiter().GetResult();
                         Require(fake.LoginCalls == 0, "compact fresh connection routed to login");
                         fixture.Call("UpdateAccount", view, new AccountSnapshot { IsAuthenticated = true });
-                        Require(view.CompactLoginButton.Visibility == Visibility.Visible, "authenticated fixture lost reconnect");
                         ((System.Threading.Tasks.Task)fixture.Call("BeginLoginAsync", view)).GetAwaiter().GetResult();
-                        Require(fake.LoginCalls == 1, "authenticated reconnect did not route to provider login");
+                        Require(fake.LoginCalls == 0, "compact authenticated connection routed to provider login");
                         File.WriteAllText(Path.Combine(profile, fake.Provider.CredentialFile), "{}");
                         fixture.Call("UpdateAccount", view, new AccountSnapshot());
-                        Require(view.CompactLoginButton.Visibility == Visibility.Visible && Convert.ToString(view.CompactLoginButton.Content) == "재연결",
-                            "retained but expired authentication lost reconnect");
                         ((System.Threading.Tasks.Task)fixture.Call("BeginLoginAsync", view)).GetAwaiter().GetResult();
-                        Require(fake.LoginCalls == 2 && view.Status.Text.Contains("isolated fake login"),
-                            "expired reconnect did not route to isolated provider login");
+                        Require(fake.LoginCalls == 0, "compact retained connection routed to provider login");
                     }
                     finally
                     {
@@ -528,14 +526,14 @@ namespace CodexUsageMeter
                 }, null);
                 editor.RestoreDashboard(); editor.Close();
             }
-            report("PASS card header edge anchoring, authenticated/expired reconnect routes to fake login, fresh full-only connection, actual-size preview/presets/mode restore, editor PC guides");
+            report("PASS card header edge anchoring, history and original rightmost Codex action only, no compact provider login in fresh/authenticated/retained states, full-only connection, actual-size preview/presets/mode restore, editor PC guides");
         }
 
-        private sealed class CardLoginAccount : IUsageAccount
+        private sealed class CompactLoginGuardAccount : IUsageAccount
         {
             private readonly string _profile;
             internal int LoginCalls;
-            internal CardLoginAccount(string profile) { _profile = profile; }
+            internal CompactLoginGuardAccount(string profile) { _profile = profile; }
             public AccountProvider Provider { get { return AccountProviders.Codex; } }
             public string ProfileRoot { get { return _profile; } }
             public event EventHandler AccountChanged { add { } remove { } }

@@ -156,7 +156,6 @@ namespace CodexUsageMeter
             DashboardController.RenderCompactAccount(Window, _views[slot - 1], display, slot);
             string prefix = "CompactAccount" + slot;
             Find<TextBlock>(prefix + "TitleText").Text = AccountProviders.For(display).CardTitle("계정 " + state.Number);
-            Find<Button>(prefix + "LoginButton").Visibility = Visibility.Collapsed;
             Find<Button>(prefix + "CodexLoginButton").Visibility = Visibility.Collapsed;
             Find<TextBlock>(prefix + "BadgeText").Text = state.Number.ToString();
             string plan = original == null ? "" : (original.PlanType ?? "").ToLowerInvariant();

@@ -1,1 +1,1 @@
-Fix card header alignment, widget reconnect controls, and actual-size layout previews.
+Remove the duplicate widget login button; preserve the original Codex action and full-mode connections.
