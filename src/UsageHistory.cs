@@ -64,6 +64,8 @@ namespace CodexUsageMeter
         {
             if (snapshot == null || !snapshot.IsAuthenticated || !String.IsNullOrEmpty(snapshot.Error) ||
                 String.IsNullOrEmpty(snapshot.HistoryKey) || snapshot.RateLimitsObservedAtUtc == default(DateTime)) return;
+            if (AccountProviders.For(snapshot).Id != "codex" && (!snapshot.IdentityVerified ||
+                snapshot.HistoryKey != ProviderAccountKey(snapshot.ProviderId, snapshot.RemoteAccountId, snapshot.RemoteOrganizationId))) return;
             DateTime observed = snapshot.RateLimitsObservedAtUtc.ToUniversalTime();
             UsageHistorySample sample = new UsageHistorySample { FirstUtc = observed, LastUtc = observed,
                 Plan = snapshot.PlanType ?? "", Primary = Capture(snapshot.Primary, observed), Secondary = Capture(snapshot.Secondary, observed) };
@@ -85,7 +87,7 @@ namespace CodexUsageMeter
                 Directory.CreateDirectory(directory);
                 Save(monthPath, month);
                 Save(accountPath, new UsageHistoryAccount { Key = snapshot.HistoryKey,
-                    Label = String.IsNullOrWhiteSpace(snapshot.Email) ? "ChatGPT 계정" : snapshot.Email, LastUtc = observed });
+                    Label = String.IsNullOrWhiteSpace(snapshot.Email) ? AccountProviders.For(snapshot).DisplayName + " 계정" : snapshot.Email, LastUtc = observed });
             }
         }
 
@@ -187,9 +189,25 @@ namespace CodexUsageMeter
             return Path.Combine(_root, key);
         }
 
+        internal static string ProviderAccountKey(string providerId, string accountId, string organizationId)
+        {
+            if (String.IsNullOrWhiteSpace(providerId) || providerId == "codex" || !providerId.All(c => c >= 'a' && c <= 'z') ||
+                String.IsNullOrWhiteSpace(accountId) || String.IsNullOrWhiteSpace(organizationId)) return null;
+            using (SHA256 hash = SHA256.Create())
+                return providerId + "-" + String.Concat(hash.ComputeHash(Encoding.UTF8.GetBytes(
+                    providerId + "\n" + accountId + "\n" + organizationId)).Select(b => b.ToString("x2")));
+        }
+
         private static bool ValidKey(string key)
         {
-            return key != null && key.Length == 64 && key.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+            if (key == null) return false;
+            int split = key.IndexOf('-');
+            if (split >= 0)
+            {
+                if (split == 0 || !key.Substring(0, split).All(c => c >= 'a' && c <= 'z')) return false;
+                key = key.Substring(split + 1);
+            }
+            return key.Length == 64 && key.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
         }
 
         private static bool ValidPercent(double value) { return !Double.IsNaN(value) && !Double.IsInfinity(value) && value >= 0 && value <= 100; }

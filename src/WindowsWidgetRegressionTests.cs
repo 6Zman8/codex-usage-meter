@@ -159,6 +159,7 @@ namespace CodexUsageMeter
 
         private static void CheckRenderedWidget(Action<string> report, string directory)
         {
+            CheckLosslessPng();
             DateTime now = DateTime.UtcNow;
             var accounts = Enumerable.Range(1, 4).Select(number => new AccountState { Number = number, Label = "private-label",
                 LastSnapshot = new AccountSnapshot { Email = "private@example.test", IsAuthenticated = true, PlanType = "prolite", RateLimitsObservedAtUtc = now,
@@ -197,8 +198,7 @@ namespace CodexUsageMeter
                 }
                 CheckSmallGauge(pages["Small"][2]["image"], Color.FromRgb(167, 139, 250), "account weekly");
                 CheckPcBars(renderer.Window, system);
-                string json = WindowsWidgetBridge.BuildJson(accounts, true, now, pages);
-                if (Encoding.UTF8.GetByteCount(json) > 512 * 1024) throw new InvalidOperationException("Rendered snapshot exceeds the provider input limit");
+                string json = CheckWidgetPayload(accounts, now, pages, renderer.Window);
                 File.WriteAllText(Path.Combine(directory, "rendered-snapshot.json"), json);
                 settings.Widget.Card("account2").Visible = settings.Widget.Card("account3").Visible = settings.Widget.Card("account4").Visible = false;
                 pages = renderer.Render(accounts, settings, system, 1.5, now);
@@ -219,8 +219,78 @@ namespace CodexUsageMeter
                 pages = renderer.Render(accounts, settings, system, 1.5, now);
                 if (!pages["Large"][0]["alt"].Contains("갱신 대기")) throw new InvalidOperationException("Expired quota was presented as current");
                 CheckStablePcChart(renderer, directory);
+                accounts[0].LastSnapshot.Primary.ResetsAt = now.AddHours(1);
+                accounts[1].LastSnapshot.ProviderId = accounts[3].LastSnapshot.ProviderId = "claude";
+                accounts[1].LastSnapshot.PlanType = accounts[3].LastSnapshot.PlanType = "max";
+                LayoutSettings mixed = LayoutSettings.Defaults();
+                mixed.Widget.Move("pc", "account1");
+                foreach (double scale in new[] { 1.5, 2.0 })
+                {
+                    pages = renderer.Render(accounts, mixed, system, scale, now);
+                    CheckWidgetPayload(accounts, now, pages, renderer.Window);
+                    if (pages["Small"].Count != 5 || pages["Medium"].Count != 5 || pages["Large"].Count != 3)
+                        throw new InvalidOperationException("Mixed-provider paging lost a card");
+                    foreach (var sizePages in pages.Values)
+                    {
+                        string titles = String.Join(" · ", sizePages.Select(page => page["alt"]));
+                        if (!titles.Contains("◎ GPT/Codex") || !titles.Contains("✳ Claude") ||
+                            titles.Contains("private") || titles.Contains("secret") ||
+                            Enumerable.Range(1, 4).Any(number => !titles.Contains("계정 " + number)))
+                            throw new InvalidOperationException("Mixed-provider widget lost identification or leaked private data");
+                        foreach (var page in sizePages)
+                            if (page["alt"].Contains("✳ Claude") && !page["alt"].Contains("GPT/Codex") &&
+                                (page["alt"].Contains("초기화권") || page["alt"].Contains("구독 날짜")))
+                                throw new InvalidOperationException("Widget layout restored unsupported Claude content");
+                    }
+                }
             }
-            report("PASS rendered Windows widget: shared gauges/layout, 3 sizes, paging, real zero/PC values, hidden items/order/bounds and private-data exclusion");
+            report("PASS rendered Windows widget: shared gauges/layout, 3 sizes, mixed providers at 150/200%, lossless pixels, complete payload budget, hidden controls and privacy");
+        }
+
+        private static string CheckWidgetPayload(AccountState[] accounts, DateTime now,
+            Dictionary<string, List<Dictionary<string, string>>> pages, Window window)
+        {
+            string[] sizes = { "Small", "Medium", "Large" };
+            int[] heights = { 200, 388, 700 };
+            for (int size = 0; size < sizes.Length; size++)
+                foreach (var page in pages[sizes[size]])
+                    using (var stream = new MemoryStream(Convert.FromBase64String(page["image"].Substring("data:image/png;base64,".Length))))
+                    {
+                        BitmapFrame frame = BitmapFrame.Create(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+                        if (frame.PixelWidth != 600 || frame.PixelHeight != heights[size])
+                            throw new InvalidOperationException("A widget page changed its required pixel dimensions");
+                    }
+            foreach (string name in new[] { "CompactPcHistoryButton", "CompactAccount1HistoryButton", "CompactAccount2HistoryButton",
+                "CompactAccount1LoginButton", "CompactAccount2LoginButton", "CompactAccount1CodexLoginButton", "CompactAccount2CodexLoginButton" })
+                if (((Button)window.FindName(name)).Visibility != Visibility.Collapsed)
+                    throw new InvalidOperationException("Static widget images expose an inactive control: " + name);
+            string json = WindowsWidgetBridge.BuildJson(accounts, true, now, pages);
+            int bytes = Encoding.UTF8.GetByteCount(json);
+            if (bytes > 512 * 1024) throw new InvalidOperationException("Rendered snapshot exceeds the provider input limit: " + bytes + " bytes");
+            return json;
+        }
+
+        private static void CheckLosslessPng()
+        {
+            byte[] pixels = { 17, 53, 91, 255, 91, 53, 17, 128, 0, 0, 0, 0,
+                255, 191, 0, 255, 20, 40, 60, 64, 250, 240, 230, 200 };
+            BitmapSource bitmap = BitmapSource.Create(3, 2, 192, 192, PixelFormats.Bgra32, null, pixels, 12);
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            using (var original = new MemoryStream())
+            {
+                encoder.Save(original);
+                byte[] encoded = WindowsWidgetRenderer.ReencodePng(original.ToArray());
+                original.Position = 0;
+                using (var compressed = new MemoryStream(encoded))
+                {
+                    var before = new FormatConvertedBitmap(BitmapFrame.Create(original, BitmapCreateOptions.None, BitmapCacheOption.OnLoad), PixelFormats.Bgra32, null, 0);
+                    var after = new FormatConvertedBitmap(BitmapFrame.Create(compressed, BitmapCreateOptions.None, BitmapCacheOption.OnLoad), PixelFormats.Bgra32, null, 0);
+                    byte[] left = new byte[24], right = new byte[24];
+                    before.CopyPixels(left, 12, 0); after.CopyPixels(right, 12, 0);
+                    if (!left.SequenceEqual(right)) throw new InvalidOperationException("PNG compression changed color or alpha pixels");
+                }
+            }
         }
 
         private static void CheckPcBars(Window window, SystemSnapshot source)

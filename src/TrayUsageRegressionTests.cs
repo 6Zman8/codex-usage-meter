@@ -33,7 +33,7 @@ namespace CodexUsageMeter
             }).ToArray();
             var settings = new TrayUsageSettings { AccountNumber = 3 };
             TrayUsageDisplay display = TrayUsageDisplay.Build(accounts, settings, now);
-            Require(display.Text == "15" && display.ToolTip == "Codex · 계정 3 · 주간 한도 · 잔여 15%", "Selected account/long limit");
+            Require(display.Text == "15" && display.ToolTip == "GPT/Codex · 계정 3 · 주간 한도 · 잔여 15%", "Selected account/long limit");
             settings.Secondary = false;
             Require(TrayUsageDisplay.Build(accounts, settings, now).Text == "61", "Short limit selection");
             settings.AccountNumber = 4;

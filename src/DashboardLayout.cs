@@ -16,7 +16,7 @@ namespace CodexUsageMeter
         public Viewbox Host;
         public Grid Content;
         public Grid Surface;
-        public UsageHistoryView History;
+        public HistoryView History;
         public bool ShowingHistory { get { return History != null && History.Visibility == Visibility.Visible; } }
         public Func<List<LayoutContentItem>> ContentItems;
         public readonly Dictionary<FrameworkElement, Visibility> SuppressedItems = new Dictionary<FrameworkElement, Visibility>();
@@ -133,7 +133,7 @@ namespace CodexUsageMeter
 
         internal IEnumerable<LayoutTile> Tiles(bool compact) { return _panels[compact ? 1 : 0].Tiles; }
 
-        internal void ShowHistory(int slot, bool compact, UsageHistoryView history)
+        internal void ShowHistory(int slot, bool compact, HistoryView history)
         {
             HideHistory(slot, compact);
             LayoutTile tile = _tiles[compact ? 1 : 0, slot];
@@ -261,8 +261,9 @@ namespace CodexUsageMeter
                     tile.Settings = layout.Card("account" + (view.State == null ? slot + 1 : view.State.Number));
                     tile.Card.Visibility = view.State != null && tile.Settings.Visible ? Visibility.Visible : Visibility.Collapsed;
                     bool shortQuota = tile.Settings.Shows("short"), weekly = tile.Settings.Shows("weekly");
-                    if (mode == 0) ApplyExpandedAccount(tile, shortQuota, weekly, fontScale);
-                    else ApplyCompactAccount(slot, tile, shortQuota, weekly, fontScale);
+                    AccountProvider provider = AccountProviders.For(view.LastSnapshot);
+                    if (mode == 0) ApplyExpandedAccount(tile, shortQuota, weekly, fontScale, provider.Supports(AccountCapabilities.CodexExtras));
+                    else ApplyCompactAccount(slot, tile, shortQuota, weekly, fontScale, provider);
                     CardContentLayout.ApplyVisibility(tile);
                 }
                 LayoutTile pc = _tiles[mode, 2]; pc.Settings = layout.Card("pc");
@@ -275,10 +276,10 @@ namespace CodexUsageMeter
                 panel.InvalidateMeasure();
             }
         }
-        private static void ApplyExpandedAccount(LayoutTile tile, bool shortQuota, bool weekly, double fontScale)
+        private static void ApplyExpandedAccount(LayoutTile tile, bool shortQuota, bool weekly, double fontScale, bool extras)
         {
             Grid body = tile.Content;
-            bool[] show = { true, shortQuota, weekly, tile.Settings.Shows("credits"), tile.Settings.Shows("stats"), tile.Settings.Shows("calendar") };
+            bool[] show = { true, shortQuota, weekly, extras && tile.Settings.Shows("credits"), extras && tile.Settings.Shows("stats"), extras && tile.Settings.Shows("calendar") };
             string[] ids = { "header", "short", "weekly", "credits", "stats", "calendar" };
             for (int row = 1; row <= 5; row++) show[row] = show[row] && tile.Settings.ShowsItem(ids[row]);
             for (int row = 1; row <= 5; row++)
@@ -293,7 +294,7 @@ namespace CodexUsageMeter
             }
             tile.MinimumHeight = (95 + (show[1] ? 82 : 0) + (show[2] ? 82 : 0) + (show[3] ? 82 : 0) + (show[4] ? 62 : 0)) * Math.Max(1, fontScale / 1.3) + (show[5] ? 235 : 0);
         }
-        private void ApplyCompactAccount(int slot, LayoutTile tile, bool shortQuota, bool weekly, double fontScale)
+        private void ApplyCompactAccount(int slot, LayoutTile tile, bool shortQuota, bool weekly, double fontScale, AccountProvider provider)
         {
             Grid quota = _compactQuotas[slot];
             bool shortRing = shortQuota && tile.Settings.ShowsItem("short"), weeklyRing = weekly && tile.Settings.ShowsItem("weekly");
@@ -332,8 +333,10 @@ namespace CodexUsageMeter
             string prefix = "CompactAccount" + (slot + 1);
             ((FrameworkElement)Find<ProgressBar>(prefix + "PrimaryTimeBar").Parent).Visibility = shortQuota ? Visibility.Visible : Visibility.Collapsed;
             ((FrameworkElement)Find<ProgressBar>(prefix + "SecondaryTimeBar").Parent).Visibility = weekly ? Visibility.Visible : Visibility.Collapsed;
-            bool credits = tile.Settings.Shows("credits") && tile.Settings.ShowsItem("credits");
+            bool credits = provider.Supports(AccountCapabilities.CodexExtras) && tile.Settings.Shows("credits") && tile.Settings.ShowsItem("credits");
             Find<TextBlock>(prefix + "ResetValue").Visibility = credits ? Visibility.Visible : Visibility.Collapsed;
+            Find<TextBlock>(prefix + "SubscriptionValue").Visibility =
+                provider.Supports(AccountCapabilities.ChatGptSubscription) ? Visibility.Visible : Visibility.Collapsed;
             Grid body = tile.Content;
             body.RowDefinitions[1].Height = hasQuota ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
             tile.MinimumHeight = (85 + (credits ? 23 : 0)) * Math.Max(1, fontScale / 1.5) + (hasQuota ? 132 : 0);

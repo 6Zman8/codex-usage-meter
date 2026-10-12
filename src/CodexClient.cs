@@ -21,6 +21,12 @@ namespace CodexUsageMeter
 
     internal sealed class AccountSnapshot
     {
+        public string ProviderId { get; set; }
+        public string RemoteAccountId { get; set; }
+        public string RemoteOrganizationId { get; set; }
+        public bool IdentityVerified { get; set; }
+        public AccountErrorKind ErrorKind { get; set; }
+        public DateTime? RetryAfterUtc { get; set; }
         public bool IsAuthenticated { get; set; }
         public string Email { get; set; }
         public string PlanType { get; set; }
@@ -142,6 +148,7 @@ namespace CodexUsageMeter
         public async Task<AccountSnapshot> RefreshAsync()
         {
             AccountSnapshot snapshot = new AccountSnapshot();
+            snapshot.ProviderId = "codex";
             snapshot.UpdatedAt = DateTime.Now;
             snapshot.ResetCredits = new List<ResetCreditInfo>();
             snapshot.DailyUsage = new List<DailyUsageBucket>();
@@ -165,14 +172,20 @@ namespace CodexUsageMeter
 
                 try
                 {
-                    string historyKey = UsageHistoryStore.AccountKey(WebSubscriptionStore.AccountId(_profileRoot, snapshot.Email), snapshot.Email);
+                    string accountId = WebSubscriptionStore.AccountId(_profileRoot, snapshot.Email);
+                    string historyKey = UsageHistoryStore.AccountKey(accountId, snapshot.Email);
                     Dictionary<string, object> limitResult = await ReadWithReconnectAsync(
                         "account/rateLimits/read",
                         new Dictionary<string, object>());
                     ParseRateLimits(limitResult, snapshot);
                     snapshot.RateLimitsObservedAtUtc = DateTime.UtcNow;
                     string confirmedKey = UsageHistoryStore.AccountKey(WebSubscriptionStore.AccountId(_profileRoot, snapshot.Email), snapshot.Email);
-                    if (historyKey != null && historyKey == confirmedKey) snapshot.HistoryKey = historyKey;
+                    if (historyKey != null && historyKey == confirmedKey)
+                    {
+                        snapshot.HistoryKey = historyKey;
+                        snapshot.RemoteAccountId = accountId;
+                        snapshot.IdentityVerified = true;
+                    }
                     else snapshot.HistoryError = "계정 식별을 확인하지 못해 이번 사용량은 이력에 저장하지 않았습니다.";
                 }
                 catch (Exception ex)

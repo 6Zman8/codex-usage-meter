@@ -131,13 +131,13 @@ namespace CodexUsageMeter
         }
 
         internal AccountSwitcher(string defaultCodexHome, string accountsRoot, ICodexDesktopLifecycle lifecycle,
-            IAccountSwitchJournal journal)
+            IAccountSwitchJournal journal, Func<int, bool> isCodexSlot = null)
         {
             if (String.IsNullOrWhiteSpace(defaultCodexHome)) throw new ArgumentNullException("defaultCodexHome");
             if (String.IsNullOrWhiteSpace(accountsRoot)) throw new ArgumentNullException("accountsRoot");
             if (lifecycle == null) throw new ArgumentNullException("lifecycle");
             if (journal == null) throw new ArgumentNullException("journal");
-            _store = new CodexAuthFileStore(defaultCodexHome, accountsRoot);
+            _store = new CodexAuthFileStore(defaultCodexHome, accountsRoot, isCodexSlot);
             _lifecycle = lifecycle;
             _journal = journal;
         }
@@ -160,6 +160,8 @@ namespace CodexUsageMeter
 
         public AccountSwitchResult SwitchTo(int targetAccountNumber, int? currentAccountNumber)
         {
+            if (!_store.IsCodexSlot(targetAccountNumber))
+                return AccountSwitchResult.Failed(false, "Codex에 연결된 계정 칸만 전환할 수 있습니다.");
             if (targetAccountNumber < 1)
             {
                 return AccountSwitchResult.Failed(false, "전환할 계정 번호가 올바르지 않습니다.");
@@ -345,19 +347,26 @@ namespace CodexUsageMeter
         private readonly string _defaultAuthPath;
         private readonly string _accountsRoot;
         private readonly JavaScriptSerializer _json;
+        private readonly Func<int, bool> _isCodexSlot;
 
-        public CodexAuthFileStore(string defaultCodexHome, string accountsRoot)
+        public CodexAuthFileStore(string defaultCodexHome, string accountsRoot, Func<int, bool> isCodexSlot = null)
         {
             _defaultAuthPath = Path.Combine(defaultCodexHome, "auth.json");
             _accountsRoot = accountsRoot;
             _json = new JavaScriptSerializer { MaxJsonLength = MaximumAuthBytes };
+            _isCodexSlot = isCodexSlot ?? (number => true);
         }
 
+        internal bool IsCodexSlot(int number) { return number > 0 && _isCodexSlot(number); }
         public bool DefaultExists { get { return File.Exists(_defaultAuthPath); } }
 
         public CodexAuthRecord ReadDefault() { return ReadValidated(_defaultAuthPath); }
 
-        public CodexAuthRecord ReadAccount(int accountNumber) { return ReadValidated(AccountPath(accountNumber)); }
+        public CodexAuthRecord ReadAccount(int accountNumber)
+        {
+            if (!IsCodexSlot(accountNumber)) throw new InvalidDataException("Codex에 연결되지 않은 계정 칸입니다.");
+            return ReadValidated(AccountPath(accountNumber));
+        }
 
         public int? DetectActiveAccountNumber(int accountCount)
         {
@@ -368,6 +377,7 @@ namespace CodexUsageMeter
 
             for (int number = 1; number <= accountCount; number++)
             {
+                if (!IsCodexSlot(number)) continue;
                 try
                 {
                     CodexAuthRecord candidate = ReadAccount(number);

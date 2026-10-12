@@ -16,7 +16,7 @@ namespace CodexUsageMeter
     {
         public static void Run(Action<string> report)
         {
-            TestQueuedAccountTarget("BeginLoginAsync");
+            TestQueuedAccountTarget("StartAccountLoginAsync");
             TestQueuedAccountTarget("LogoutConfirmed");
             report("PASS queued login and logout retain the clicked account after page changes");
             HashSet<int> ids = new HashSet<int> { 10 };
@@ -117,7 +117,7 @@ namespace CodexUsageMeter
                     BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
                     typeof(DashboardController).GetField("_accountOperationGate", fields).SetValue(controller, gate);
                     typeof(DashboardController).GetField("_refreshing", fields).SetValue(controller, true);
-                    AccountView view = new AccountView { Client = first, Label = "계정 1",
+                    AccountView view = new AccountView { Client = new CodexUsageAccount(first), Label = "계정 1",
                         LoginButton = new Button(), LogoutButton = new Button(), Status = new TextBlock() };
                     SynchronizationContext previous = SynchronizationContext.Current;
                     DispatcherTimer timer = new DispatcherTimer();
@@ -126,9 +126,10 @@ namespace CodexUsageMeter
                     try
                     {
                         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext());
-                        typeof(DashboardController).GetMethod(operation, fields).Invoke(controller, new object[] { view });
+                        typeof(DashboardController).GetMethod(operation, fields).Invoke(controller,
+                            operation == "StartAccountLoginAsync" ? new object[] { view, null, null } : new object[] { view });
                         Require(attemptedAccount == 0, "Operation must wait behind the existing account refresh.");
-                        view.Client = nextPage;
+                        view.Client = new CodexUsageAccount(nextPage);
                         view.Label = "계정 3";
                         view.Status.Text = "next page status";
                         gate.Release();

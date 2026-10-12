@@ -11,7 +11,7 @@ $sourceRoot = Join-Path $projectRoot 'windows-widget'
 $toolRoot = Join-Path $projectRoot 'obj\widget-tools'
 $packageRoot = Join-Path $projectRoot 'bin\windows-widget\package'
 $outputZip = Join-Path $projectRoot 'bin\windows-widget\CodexUsageMeter.WindowsWidget.zip'
-if (-not $LogDirectory) { $LogDirectory = Join-Path $projectRoot 'work\v1.8.4\widget-provider' }
+if (-not $LogDirectory) { $LogDirectory = Join-Path $projectRoot 'work\v1.9.0\widget-provider' }
 New-Item -ItemType Directory -Path $toolRoot,$packageRoot,$LogDirectory -Force | Out-Null
 
 if (-not $DotNetPath) {

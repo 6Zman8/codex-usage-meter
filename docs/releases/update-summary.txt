@@ -1,1 +1,1 @@
-Redesign PC status with a dark shared-scale bar chart and keep meter sizes stable as readings change.
+Claude accounts (live login unverified), provider badges, and 30-minute PC history.

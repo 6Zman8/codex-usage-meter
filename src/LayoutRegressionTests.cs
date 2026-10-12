@@ -1118,7 +1118,7 @@ namespace CodexUsageMeter
                     Require(tiles[0].History != null && tiles[0].Content.Visibility == Visibility.Collapsed &&
                         tiles[1].History == null && cardBounds == tiles[0].Bounds && neighborBounds == tiles[1].Bounds,
                         "history did not replace only the selected card while preserving card bounds");
-                    UsageHistoryView history = tiles[0].History;
+                    UsageHistoryView history = (UsageHistoryView)tiles[0].History;
                     Require(history.ActualWidth > 280 && history.ActualHeight > 150 && history.Parent == tiles[0].Surface,
                         "history is not hosted inside the card: " + history.ActualWidth + " x " + history.ActualHeight + ", compact=" + compact + ", parent=" + history.Parent);
                     fixture.Call("BindAccountPage"); fixture.Render(width, height);
@@ -1186,7 +1186,8 @@ namespace CodexUsageMeter
                         .Invoke(null, new object[] { "예시 계정 " + n, n == 1 ? "prolite" : "plus", 75.0, 98.0, 2, 0 });
                     if (n == 1) snapshot.Primary = null;
                     if (n <= 2) snapshot.Subscription = new AccountSubscriptionInfo { Date = DateTime.Today.AddDays(n == 1 ? 25 : 9), Kind = n == 1 ? "change" : "renewal", NextPlan = n == 1 ? "plus" : null, CheckedAt = DateTime.Now };
-                    Accounts.Add(new AccountState { Number = n, Label = "계정 " + n, LastSnapshot = snapshot });
+                    Accounts.Add(new AccountState { Number = n, Label = "계정 " + n,
+                        Client = new UnsupportedUsageAccount(AccountProviders.Codex), LastSnapshot = snapshot });
                 }
                 Set("_layouts", LayoutSettings.Defaults());
                 Set("_layoutView", new DashboardLayoutView(Window));

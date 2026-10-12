@@ -10,6 +10,7 @@ namespace CodexUsageMeter
 {
     internal sealed class GpuSnapshot
     {
+        public bool Available { get; set; }
         public int Index { get; set; }
         public string Key { get; set; }
         public string Name { get; set; }
@@ -18,6 +19,7 @@ namespace CodexUsageMeter
 
     internal sealed class DiskSnapshot
     {
+        public bool Available { get; set; }
         public int Index { get; set; }
         public string Key { get; set; }
         public string Name { get; set; }
@@ -29,6 +31,7 @@ namespace CodexUsageMeter
 
     internal sealed class NetworkSnapshot
     {
+        public bool RatesAvailable { get; set; }
         public string Key { get; set; }
         public string Name { get; set; }
         public string Detail { get; set; }
@@ -49,6 +52,8 @@ namespace CodexUsageMeter
         }
 
         public double CpuPercent { get; set; }
+        public bool CpuAvailable { get; set; }
+        public bool MemoryAvailable { get; set; }
         public double GpuPercent { get; set; }
         public bool GpuAvailable { get; set; }
         public List<GpuSnapshot> Gpus { get; private set; }
@@ -114,7 +119,7 @@ namespace CodexUsageMeter
             {
                 SystemSnapshot snapshot = new SystemSnapshot();
                 List<string> warnings = new List<string>();
-                try { snapshot.CpuPercent = ReadCpu(); } catch { warnings.Add("CPU"); }
+                try { snapshot.CpuPercent = ReadCpu(); snapshot.CpuAvailable = true; } catch { warnings.Add("CPU"); }
                 try { ReadMemory(snapshot); } catch { warnings.Add("RAM"); }
                 try { ReadDisk(snapshot); } catch { warnings.Add("디스크"); }
                 try { ReadGpu(snapshot); } catch { warnings.Add("GPU"); }
@@ -155,6 +160,7 @@ namespace CodexUsageMeter
             snapshot.MemoryTotalGb = status.TotalPhysical / 1073741824.0;
             snapshot.MemoryUsedGb = (status.TotalPhysical - status.AvailablePhysical) / 1073741824.0;
             snapshot.MemoryPercent = Clamp(status.MemoryLoad);
+            snapshot.MemoryAvailable = true;
         }
 
         private void ReadDisk(SystemSnapshot snapshot)
@@ -180,6 +186,7 @@ namespace CodexUsageMeter
                         disk.Percent = Clamp(SafeDouble(item["PercentDiskTime"]));
                         disk.ReadBytesPerSecond = Math.Max(0.0, SafeDouble(item["DiskReadBytesPersec"]));
                         disk.WriteBytesPerSecond = Math.Max(0.0, SafeDouble(item["DiskWriteBytesPersec"]));
+                        disk.Available = item["PercentDiskTime"] != null && item["DiskReadBytesPersec"] != null && item["DiskWriteBytesPersec"] != null;
                         snapshot.Disks.Add(disk);
                         snapshot.DiskPercent = Math.Max(snapshot.DiskPercent, disk.Percent);
                         snapshot.DiskReadBytesPerSecond += disk.ReadBytesPerSecond;
@@ -195,6 +202,7 @@ namespace CodexUsageMeter
         {
             Dictionary<string, Dictionary<string, double>> adapterEngines = new Dictionary<string, Dictionary<string, double>>(StringComparer.OrdinalIgnoreCase);
             Dictionary<string, int> adapterInstanceCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            HashSet<string> unavailableAdapters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
                 "root\\CIMV2", "SELECT Name,UtilizationPercentage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine"))
             {
@@ -206,6 +214,7 @@ namespace CodexUsageMeter
                         string adapterKey = GetGpuAdapterKey(instanceName);
                         string engineKey = GetGpuEngineKey(instanceName);
                         if (String.IsNullOrWhiteSpace(adapterKey) || String.IsNullOrWhiteSpace(engineKey)) continue;
+                        if (item["UtilizationPercentage"] == null) unavailableAdapters.Add(adapterKey);
                         Dictionary<string, double> engines;
                         if (!adapterEngines.TryGetValue(adapterKey, out engines))
                         {
@@ -271,6 +280,7 @@ namespace CodexUsageMeter
                 gpu.Key = "gpu:" + (engineAdapterKey ?? ("controller:" + index.ToString()));
                 gpu.Name = index < _gpuDescriptors.Count ? _gpuDescriptors[index].Name : "그래픽 어댑터";
                 gpu.Percent = Clamp(busiestEngine);
+                gpu.Available = engineAdapterKey != null && !unavailableAdapters.Contains(engineAdapterKey);
                 snapshot.Gpus.Add(gpu);
                 snapshot.GpuPercent = Math.Max(snapshot.GpuPercent, gpu.Percent);
             }
@@ -305,6 +315,9 @@ namespace CodexUsageMeter
                 double sendRate = 0.0;
                 long previousReceived;
                 long previousSent;
+                bool ratesAvailable = countersAvailable &&
+                    _previousNetworkReceived.TryGetValue(normalizedId, out previousReceived) && received >= previousReceived &&
+                    _previousNetworkSent.TryGetValue(normalizedId, out previousSent) && sent >= previousSent;
                 if (countersAvailable && _previousNetworkReceived.TryGetValue(normalizedId, out previousReceived) && received >= previousReceived)
                     receiveRate = (received - previousReceived) / seconds;
                 if (countersAvailable && _previousNetworkSent.TryGetValue(normalizedId, out previousSent) && sent >= previousSent)
@@ -322,6 +335,7 @@ namespace CodexUsageMeter
                 network.Name = String.IsNullOrWhiteSpace(adapter.Name) ? adapter.Description : adapter.Name;
                 network.Detail = adapter.Description;
                 network.Connected = adapter.OperationalStatus == OperationalStatus.Up;
+                network.RatesAvailable = ratesAvailable && network.Connected;
                 network.LinkSpeedBitsPerSecond = speed;
                 network.ReceiveBytesPerSecond = receiveRate;
                 network.SendBytesPerSecond = sendRate;

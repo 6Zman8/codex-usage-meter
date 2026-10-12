@@ -57,6 +57,7 @@ namespace CodexUsageMeter
                 Find<Button>(prefix + "HistoryButton").Visibility = Visibility.Collapsed;
                 Find<Button>(prefix + "CodexLoginButton").Visibility = Visibility.Collapsed;
             }
+            Find<Button>("CompactPcHistoryButton").Visibility = Visibility.Collapsed;
             DashboardController.CollectFontTargets(_root, Window, _fonts, new HashSet<DependencyObject>());
             Window.Content = null;
             _surface = new HwndSource(new HwndSourceParameters("CodexUsageMeter.WidgetRender") {
@@ -108,7 +109,7 @@ namespace CodexUsageMeter
                     {
                         encoder.Save(stream);
                         pages.Add(new Dictionary<string, string> {
-                            { "image", "data:image/png;base64," + Convert.ToBase64String(stream.ToArray()) },
+                            { "image", "data:image/png;base64," + Convert.ToBase64String(ReencodePng(stream.ToArray())) },
                             { "alt", String.Join(" · ", VisibleText(_root)) }
                         });
                     }
@@ -116,6 +117,18 @@ namespace CodexUsageMeter
                 result.Add(Sizes[size], pages);
             }
             return result;
+        }
+
+        internal static byte[] ReencodePng(byte[] png)
+        {
+            // GDI+ compresses these WPF PNGs more tightly without changing pixels or host resolution.
+            using (MemoryStream input = new MemoryStream(png))
+            using (System.Drawing.Image image = System.Drawing.Image.FromStream(input))
+            using (MemoryStream output = new MemoryStream())
+            {
+                image.Save(output, System.Drawing.Imaging.ImageFormat.Png);
+                return output.ToArray();
+            }
         }
 
         private void RenderAccount(int slot, AccountState state, DateTime now)
@@ -128,18 +141,22 @@ namespace CodexUsageMeter
                 original.RateLimitsObservedAtUtc - now > TimeSpan.FromMinutes(1));
             // Only display fields enter the isolated surface; identity and raw errors never do.
             var display = new AccountSnapshot {
+                ProviderId = state.Client == null ? (original == null ? null : original.ProviderId) : state.Client.Provider.Id,
                 IsAuthenticated = status == "ok", Primary = status == "ok" && !expired ? original.Primary : null,
                 Secondary = status == "ok" && !expired ? original.Secondary : null,
                 ResetCreditCount = status == "ok" ? original.ResetCreditCount : null,
                 ResetCredits = status == "ok" ? original.ResetCredits : null,
                 Subscription = status == "ok" ? original.Subscription : null
             };
+            _views[slot - 1].LastSnapshot = display;
             DashboardController.RenderCompactAccount(Window, _views[slot - 1], display, slot);
             string prefix = "CompactAccount" + slot;
-            Find<TextBlock>(prefix + "TitleText").Text = "계정 " + state.Number;
+            Find<TextBlock>(prefix + "TitleText").Text = AccountProviders.For(display).CardTitle("계정 " + state.Number);
+            Find<Button>(prefix + "LoginButton").Visibility = Visibility.Collapsed;
+            Find<Button>(prefix + "CodexLoginButton").Visibility = Visibility.Collapsed;
             Find<TextBlock>(prefix + "BadgeText").Text = state.Number.ToString();
             string plan = original == null ? "" : (original.PlanType ?? "").ToLowerInvariant();
-            string[] known = { "free", "plus", "pro", "prolite", "business", "team", "enterprise", "edu" };
+            string[] known = { "free", "plus", "pro", "prolite", "business", "team", "enterprise", "edu", "max" };
             plan = !known.Contains(plan) ? "" : plan == "prolite" ? "Pro Lite" : Char.ToUpperInvariant(plan[0]) + plan.Substring(1);
             string notice = expired ? "초기화됨 · 갱신 대기" : stale ? "오래됨 · 마지막 기록" :
                 status == "error" ? "조회 실패" : status == "unlinked" ? "연결 안 됨" : status == "waiting" ? "조회 중" : "";

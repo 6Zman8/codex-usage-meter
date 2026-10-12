@@ -115,7 +115,7 @@ namespace CodexUsageMeter
             Require(codeBounds.Top >= 0 && codeBounds.Bottom <= scroll.ActualHeight + 0.5,
                 "The connection code must be reachable by scrolling.");
             AccountView chromeView = new AccountView {
-                Client = (CodexRpcClient)FormatterServices.GetUninitializedObject(typeof(CodexRpcClient)),
+                Client = new CodexUsageAccount((CodexRpcClient)FormatterServices.GetUninitializedObject(typeof(CodexRpcClient))),
                 LastSnapshot = new AccountSnapshot { IsAuthenticated = true, Email = "chrome@example.invalid", PlanType = "plus" }
             };
             typeof(DashboardController).GetMethod("ConnectWebSubscription", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(controller, new object[] { chromeView });

@@ -62,7 +62,8 @@ namespace CodexUsageMeter
             string text = notice == null
                 ? Math.Round(Math.Max(0, Math.Min(100, limit.RemainingPercent))).ToString("0", CultureInfo.InvariantCulture)
                 : "--";
-            string tooltip = "Codex · 계정 " + settings.AccountNumber + " · " + name + " · " + (notice ?? "잔여 " + text + "%");
+            AccountProvider provider = account != null && account.Client != null ? account.Client.Provider : AccountProviders.For(snapshot);
+            string tooltip = provider.DisplayName + " · 계정 " + settings.AccountNumber + " · " + name + " · " + (notice ?? "잔여 " + text + "%");
             return new TrayUsageDisplay { Text = text, ToolTip = tooltip.Length > 63 ? tooltip.Substring(0, 63) : tooltip };
         }
     }

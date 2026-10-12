@@ -11,7 +11,8 @@ using System.Windows.Media;
 
 namespace CodexUsageMeter
 {
-    internal sealed class UsageHistoryView : UserControl
+    internal abstract class HistoryView : UserControl { internal abstract void Reload(); }
+    internal sealed class UsageHistoryView : HistoryView
     {
         private readonly UsageHistoryStore _store;
         private readonly ComboBox _accounts = new ComboBox { MinWidth = 90, Margin = new Thickness(6, 0, 8, 0) };
@@ -85,7 +86,7 @@ namespace CodexUsageMeter
 
         internal void SelectAccount(string key) { _selectedKey = key; Reload(); }
 
-        internal void Reload()
+        internal override void Reload()
         {
             _loading = true;
             try

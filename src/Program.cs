@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.8.4.0")]
-[assembly: AssemblyFileVersion("1.8.4.0")]
+[assembly: AssemblyVersion("1.9.0.0")]
+[assembly: AssemblyFileVersion("1.9.0.0")]
 
 namespace CodexUsageMeter
 {
@@ -37,6 +37,19 @@ namespace CodexUsageMeter
         public static int Main(string[] args)
         {
             WebViewRuntime.Register();
+            if (args.Length == 2 && (args[0] == "--provider-self-test" || args[0] == "--system-history-self-test"))
+            {
+                StringBuilder report = new StringBuilder();
+                try
+                {
+                    string testRoot = Path.GetDirectoryName(Path.GetFullPath(args[1]));
+                    if (args[0] == "--provider-self-test") ProviderRegressionTests.Run(line => report.AppendLine(line), testRoot);
+                    else SystemHistoryRegressionTests.Run(line => report.AppendLine(line), testRoot);
+                    File.WriteAllText(args[1], report.ToString());
+                    return 0;
+                }
+                catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
+            }
             if (args.Length == 2 && args[0] == "--tray-usage-self-test")
             {
                 StringBuilder report = new StringBuilder();
@@ -342,7 +355,7 @@ namespace CodexUsageMeter
     {
         public int Number;
         public string Label;
-        public CodexRpcClient Client;
+        public IUsageAccount Client;
         public AccountSnapshot LastSnapshot;
         public int CalendarMonthOffset;
     }
@@ -350,7 +363,7 @@ namespace CodexUsageMeter
     internal sealed class AccountView
     {
         public string Label;
-        public CodexRpcClient Client;
+        public IUsageAccount Client;
         public AccountState State;
         public Border Container;
         public Border CompactContainer;
@@ -360,6 +373,8 @@ namespace CodexUsageMeter
         public TextBlock CompactBadgeText;
         public TextBlock Identity;
         public Button LoginButton;
+        public Button CompactLoginButton;
+        public FrameworkElement[] CodexExtras;
         public Button CodexLoginButton;
         public Button CompactCodexLoginButton;
         public Button LogoutButton;
@@ -450,6 +465,7 @@ namespace CodexUsageMeter
         private readonly string _accountsRoot;
         private readonly AccountSwitcher _accountSwitcher;
         private readonly SystemMonitor _systemMonitor;
+        private readonly SystemHistory _systemHistory = new SystemHistory();
         private readonly DispatcherTimer _systemTimer;
         private readonly DispatcherTimer _accountTimer;
         private readonly Button _refreshButton;
@@ -582,7 +598,8 @@ namespace CodexUsageMeter
             _accounts = new List<AccountState>();
             IAccountSwitchJournal switchJournal = new FileAccountSwitchJournal();
             _accountSwitcher = new AccountSwitcher(defaultCodexHome, _accountsRoot,
-                new CodexDesktopLifecycle(switchJournal), switchJournal);
+                new CodexDesktopLifecycle(switchJournal), switchJournal,
+                number => _accounts.Any(state => state.Number == number && state.Client.Provider.Id == "codex"));
 
             _account1 = CreateAccountView(1, "계정 1", null);
             _account2 = CreateAccountView(2, "계정 2", null);
@@ -668,6 +685,8 @@ namespace CodexUsageMeter
             _fontTargetElements = new HashSet<DependencyObject>();
 
             _systemMonitor = new SystemMonitor();
+            Find<Button>("PcHistoryButton").Click += delegate { ShowSystemHistory(false); };
+            Find<Button>("CompactPcHistoryButton").Click += delegate { ShowSystemHistory(true); };
             _systemTimer = new DispatcherTimer();
             _systemTimer.Interval = TimeSpan.FromSeconds(1);
             _systemTimer.Tick += SystemTimerTick;
@@ -791,7 +810,7 @@ namespace CodexUsageMeter
             }
         }
 
-        private AccountView CreateAccountView(int number, string label, CodexRpcClient client)
+        private AccountView CreateAccountView(int number, string label, IUsageAccount client)
         {
             string prefix = "Account" + number.ToString();
             AccountView view = new AccountView();
@@ -805,6 +824,8 @@ namespace CodexUsageMeter
             view.CompactBadgeText = Find<TextBlock>("Compact" + prefix + "BadgeText");
             view.Identity = Find<TextBlock>(prefix + "Identity");
             view.LoginButton = Find<Button>(prefix + "LoginButton");
+            view.CompactLoginButton = Find<Button>("Compact" + prefix + "LoginButton");
+            view.CompactLoginButton.Click += async delegate { await BeginLoginAsync(view); };
             view.CodexLoginButton = Find<Button>(prefix + "CodexLoginButton");
             view.CompactCodexLoginButton = Find<Button>("Compact" + prefix + "CodexLoginButton");
             view.LogoutButton = Find<Button>(prefix + "LogoutButton");
@@ -849,6 +870,11 @@ namespace CodexUsageMeter
             view.CompactSecondaryTimeValue = Find<TextBlock>(compactPrefix + "SecondaryTimeValue");
             view.CompactSecondaryRecommendationRing = Find<System.Windows.Shapes.Path>(compactPrefix + "SecondaryRecommendationRing");
             view.CompactPaceValue = Find<TextBlock>(compactPrefix + "PaceValue");
+            view.CodexExtras = new FrameworkElement[] {
+                AccountExtraBorder(view.ResetCreditsValue), AccountExtraBorder(view.LifetimeValue),
+                AccountExtraBorder(view.PeakValue), AccountExtraBorder(view.StreakValue),
+                (FrameworkElement)LogicalTreeHelper.GetParent(LogicalTreeHelper.GetParent(view.CalendarTitle))
+            };
             foreach (TextBlock link in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
             {
                 link.Cursor = Cursors.Hand; link.Focusable = true; link.TextDecorations = TextDecorations.Underline;
@@ -859,6 +885,13 @@ namespace CodexUsageMeter
                 System.Windows.Automation.AutomationProperties.SetHelpText(link, "웹 ChatGPT에 연결하여 구독 날짜를 자동 확인합니다.");
             }
             return view;
+        }
+
+        private static FrameworkElement AccountExtraBorder(DependencyObject child)
+        {
+            DependencyObject parent = LogicalTreeHelper.GetParent(child);
+            while (parent != null && !(parent is Border)) parent = LogicalTreeHelper.GetParent(parent);
+            return (FrameworkElement)parent;
         }
 
         private T Find<T>(string name) where T : FrameworkElement
@@ -1747,8 +1780,7 @@ namespace CodexUsageMeter
                 AccountState state = new AccountState();
                 state.Number = number;
                 state.Label = "계정 " + number.ToString();
-                state.Client = new CodexRpcClient(new Func<string>(CodexLocator.Find),
-                    Path.Combine(_accountsRoot, "account-" + number.ToString()));
+                state.Client = AccountProviders.Create(UserSettings.LoadAccountProvider(number), _accountsRoot, number);
                 state.Client.AccountChanged += AccountClientChanged;
                 _accounts.Add(state);
             }
@@ -1824,15 +1856,16 @@ namespace CodexUsageMeter
                 return;
             }
             view.Label = state.Label;
-            view.TitleText.Text = state.Label;
-            view.CompactTitleText.Text = state.Label;
+            view.TitleText.Text = state.Client.Provider.CardTitle(state.Label);
+            view.CompactTitleText.Text = state.Client.Provider.CardTitle(state.Label);
             view.BadgeText.Text = state.Number.ToString();
             view.CompactBadgeText.Text = state.Number.ToString();
             view.CalendarMonthOffset = state.CalendarMonthOffset;
             AccountSnapshot snapshot = state.LastSnapshot;
             if (snapshot == null)
             {
-                snapshot = new AccountSnapshot { ResetCredits = new List<ResetCreditInfo>(), DailyUsage = new List<DailyUsageBucket>() };
+                snapshot = new AccountSnapshot { ProviderId = state.Client.Provider.Id,
+                    ResetCredits = new List<ResetCreditInfo>(), DailyUsage = new List<DailyUsageBucket>() };
             }
             UpdateAccount(view, snapshot);
         }
@@ -1916,7 +1949,7 @@ namespace CodexUsageMeter
                 AccountState[] states = _accounts.ToArray();
                 Task<AccountSnapshot>[] refreshes = states.Select(delegate(AccountState state)
                 {
-                    return state.Client.RefreshAsync();
+                    return AccountProviders.RefreshSafelyAsync(state.Client);
                 }).ToArray();
                 AccountSnapshot[] snapshots = await Task.WhenAll(refreshes);
                 await Task.Run(delegate {
@@ -1952,6 +1985,12 @@ namespace CodexUsageMeter
             }
         }
 
+        private void ShowSystemHistory(bool compact)
+        {
+            _layoutView.ShowHistory(2, compact, new SystemHistoryView(_systemHistory,
+                delegate { _layoutView.HideHistory(2, compact); }));
+        }
+
         private async Task RefreshSystemAsync()
         {
             if (_sampling)
@@ -1962,6 +2001,9 @@ namespace CodexUsageMeter
             try
             {
                 SystemSnapshot snapshot = await _systemMonitor.SampleAsync();
+                _systemHistory.Add(DateTime.UtcNow, snapshot);
+                foreach (var tile in _layoutView.Tiles(false).Concat(_layoutView.Tiles(true)))
+                    if (tile.History is SystemHistoryView) tile.History.Reload();
                 _lastSystemSnapshot = snapshot;
                 List<PerformanceDisplayItem> items = BuildPerformanceItems(snapshot);
                 UpdatePerformanceCards(items);
@@ -1980,6 +2022,9 @@ namespace CodexUsageMeter
             catch (Exception ex)
             {
                 _systemStatus.Text = "PC 자원 갱신 실패: " + ex.Message;
+                _systemHistory.Add(DateTime.UtcNow, null);
+                foreach (var tile in _layoutView.Tiles(false).Concat(_layoutView.Tiles(true)))
+                    if (tile.History is SystemHistoryView) tile.History.Reload();
             }
             finally
             {
@@ -2173,15 +2218,81 @@ namespace CodexUsageMeter
         private async Task BeginLoginAsync(AccountView view)
         {
             if (view == null || view.Client == null || _switchingAccount) return;
-            CodexRpcClient targetClient = view.Client;
-            string targetLabel = view.Label;
+            AccountState state = view.State;
+            if (state == null) return;
+            ContextMenu menu = new ContextMenu();
+            if (view.Client.Provider.Create != null)
+            {
+                MenuItem reconnect = new MenuItem { Header = view.Client.Provider.DisplayName + " 다시 로그인" };
+                reconnect.Click += async delegate { await StartAccountLoginAsync(view, state.Client, state.Label); };
+                menu.Items.Add(reconnect);
+            }
+            foreach (AccountProvider provider in AccountProviders.Registered)
+            {
+                AccountProvider selected = provider;
+                MenuItem item = new MenuItem { Header = provider.Symbol + " " + provider.DisplayName + " 연결" };
+                item.Click += async delegate {
+                    if (state.Client.Provider.Id == selected.Id) await StartAccountLoginAsync(view, state.Client, state.Label);
+                    else ShowModal(state.Label + " 공급자 변경",
+                        selected.DisplayName + "에 연결하시겠습니까? 다른 공급자의 기존 인증과 이력은 삭제하거나 덮어쓰지 않습니다.",
+                        null, "변경", "취소", async delegate { await ChangeAccountProviderAsync(state, selected, view); }, null);
+                };
+                menu.Items.Add(item);
+            }
+            menu.PlacementTarget = _compactMode ? (UIElement)view.CompactLoginButton : view.LoginButton;
+            menu.IsOpen = true;
+            await Task.FromResult(0);
+        }
+
+        private async Task ChangeAccountProviderAsync(AccountState state, AccountProvider provider, AccountView origin)
+        {
+            if (_switchingAccount || !_accounts.Contains(state)) return;
+            bool startLogin = false;
+            await _accountOperationGate.WaitAsync();
+            try
+            {
+                IUsageAccount next = AccountProviders.Create(provider.Id, _accountsRoot, state.Number);
+                try { UserSettings.SaveAccountProvider(state.Number, provider.Id); }
+                catch { next.Dispose(); throw; }
+                state.Client.AccountChanged -= AccountClientChanged;
+                state.Client.Dispose();
+                state.Client = next;
+                next.AccountChanged += AccountClientChanged;
+                state.LastSnapshot = await AccountProviders.RefreshSafelyAsync(next);
+                // Reuse retained credentials rather than launching another login over them.
+                startLogin = !AccountProviders.HasRetainedCredentials(next);
+                state.CalendarMonthOffset = 0;
+                BindAccountPage();
+                RefreshTrayAccounts();
+            }
+            catch (Exception)
+            { ShowModal("공급자 변경 실패", "계정 설정을 저장하지 못했습니다. 기존 인증 파일은 보존했습니다.", null, "확인", null, null, null); }
+            finally { _accountOperationGate.Release(); }
+            if (startLogin) await StartAccountLoginAsync(origin, state.Client, state.Label);
+            else await RefreshAccountsAsync();
+        }
+
+        private async Task StartAccountLoginAsync(AccountView view, IUsageAccount capturedClient = null, string capturedLabel = null)
+        {
+            if (view == null || view.Client == null || _switchingAccount) return;
+            IUsageAccount targetClient = capturedClient ?? view.Client;
+            string targetLabel = capturedLabel ?? view.Label;
             view.LoginButton.IsEnabled = false;
-            view.Status.Text = "로그인 코드를 만드는 중…";
+            view.Status.Text = "계정 로그인을 준비하는 중…";
             view.Status.Visibility = Visibility.Visible;
             await _accountOperationGate.WaitAsync();
             try
             {
-                DeviceLoginInfo login = await targetClient.StartDeviceLoginAsync();
+                AccountLoginPrompt login = await targetClient.StartLoginAsync();
+                if (login.Completion != null)
+                {
+                    if (Object.ReferenceEquals(view.Client, targetClient))
+                        view.Status.Text = "CLI 로그인 창에서 인증을 마치면 자동으로 갱신됩니다.";
+                    ShowModal(targetLabel + " · " + targetClient.Provider.DisplayName + " 연결", login.Message,
+                        null, "확인", "로그인 취소", null, login.Cancel);
+                    ObserveExternalLoginAsync(view, targetClient, login.Completion);
+                    return;
+                }
                 bool copied = TrySetClipboardText(login.UserCode);
                 bool browserOpened = false;
                 try
@@ -2225,9 +2336,27 @@ namespace CodexUsageMeter
             }
         }
 
+        private async void ObserveExternalLoginAsync(AccountView view, IUsageAccount client, Task completion)
+        {
+            try { await completion; }
+            catch (Exception error)
+            {
+                if (_disposed) return;
+                AccountProviderException safe = error as AccountProviderException;
+                if (Object.ReferenceEquals(view.Client, client))
+                {
+                    view.Status.Text = safe == null ? "로그인을 마치지 못했습니다. 다시 연결해 주세요." : safe.Message;
+                    view.Status.Visibility = Visibility.Visible;
+                    ShowModal("계정 연결", view.Status.Text, null, "확인", null, null, null);
+                }
+            }
+            if (!_disposed) await RefreshAccountsAsync();
+        }
+
         private void ConfirmCodexLoginChange(AccountView view)
         {
             if (view == null || view.State == null || _switchingAccount || _updateChecking) return;
+            if (!(view.Client is CodexUsageAccount)) return;
             if (view.LastSnapshot == null || !view.LastSnapshot.IsAuthenticated)
             {
                 ShowModal("계정 전환 불가", "먼저 이 계정을 미터기에 연결해 주세요.", null,
@@ -2240,6 +2369,8 @@ namespace CodexUsageMeter
         private async void BeginCodexLoginChange(AccountView view)
         {
             if (view == null || view.State == null || _switchingAccount || _updateChecking) return;
+            CodexUsageAccount codex = view.Client as CodexUsageAccount;
+            if (codex == null) return;
             _switchingAccount = true;
             _accountTimer.Stop();
             SetCodexLoginButtonsEnabled(false);
@@ -2248,7 +2379,7 @@ namespace CodexUsageMeter
             _accountCountDecreaseButton.IsEnabled = false;
             _accountCountIncreaseButton.IsEnabled = false;
             int targetNumber = view.State.Number;
-            CodexRpcClient targetClient = view.Client;
+            CodexRpcClient targetClient = codex.Rpc;
             SetFooterText(view.Label + "의 인증을 확인하는 중…");
             AccountSwitchResult result;
             IAccountSwitchJournal journal = new FileAccountSwitchJournal();
@@ -2262,7 +2393,7 @@ namespace CodexUsageMeter
                 AccountState[] states = _accounts.ToArray();
                 await Task.Run(delegate
                 {
-                    foreach (AccountState state in states) state.Client.Suspend();
+                    foreach (CodexUsageAccount client in states.Select(state => state.Client).OfType<CodexUsageAccount>()) client.Rpc.Suspend();
                     _accountSwitcher.SynchronizeCurrentCredentials(_accountCount);
                 });
                 await Task.Run(delegate
@@ -2323,6 +2454,7 @@ namespace CodexUsageMeter
             {
                 UpdateCodexLoginButton(account, enabled);
                 account.LoginButton.IsEnabled = enabled;
+                account.CompactLoginButton.IsEnabled = enabled;
                 account.LogoutButton.IsEnabled = enabled;
             }
         }
@@ -2330,6 +2462,12 @@ namespace CodexUsageMeter
         private void UpdateCodexLoginButton(AccountView view, bool enabled = true)
         {
             if (view == null || view.State == null) return;
+            if (!view.Client.Provider.Supports(AccountCapabilities.CodexSwitch))
+            {
+                view.CodexLoginButton.Visibility = Visibility.Collapsed;
+                view.CompactCodexLoginButton.Visibility = Visibility.Collapsed;
+                return;
+            }
             bool active = _activeCodexAccountNumber.HasValue &&
                 _activeCodexAccountNumber.Value == view.State.Number;
             view.CodexLoginButton.Content = active ? "Codex 다시 연결" : "Codex로 전환";
@@ -2378,14 +2516,14 @@ namespace CodexUsageMeter
         private void ConfirmLogout(AccountView view)
         {
             ShowModal(view.Label + " 연결 해제",
-                "이 미터기 전용 프로필에서만 로그아웃합니다. 현재 Codex 데스크톱 앱의 로그인에는 영향을 주지 않습니다.",
+                "이 미터기 전용 프로필에서만 로그아웃합니다. 다른 앱과 다른 공급자의 로그인에는 영향을 주지 않습니다.",
                 null, "연결 해제", "취소", delegate { LogoutConfirmed(view); }, null);
         }
 
         private async void LogoutConfirmed(AccountView view)
         {
             if (view == null || view.Client == null || _switchingAccount) return;
-            CodexRpcClient targetClient = view.Client;
+            IUsageAccount targetClient = view.Client;
             view.LogoutButton.IsEnabled = false;
             await _accountOperationGate.WaitAsync();
             try
@@ -2451,9 +2589,17 @@ namespace CodexUsageMeter
 
         private void UpdateAccount(AccountView view, AccountSnapshot snapshot)
         {
-            if (view.HistoryAccountKey != null && snapshot.HistoryKey != null && view.HistoryAccountKey != snapshot.HistoryKey)
+            if (view.HistoryAccountKey != null && view.HistoryAccountKey != snapshot.HistoryKey)
                 HideUsageHistory(view);
             view.LastSnapshot = snapshot;
+            AccountProvider provider = AccountProviders.For(snapshot);
+            view.TitleText.Text = provider.CardTitle(view.Label);
+            view.CompactTitleText.Text = provider.CardTitle(view.Label);
+            bool extras = provider.Supports(AccountCapabilities.CodexExtras);
+            foreach (FrameworkElement element in view.CodexExtras) element.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
+            view.LoginButton.Content = snapshot.IsAuthenticated ? "연결 ▾" : "연결";
+            view.LoginButton.Visibility = Visibility.Visible;
+            view.CompactLoginButton.Visibility = Visibility.Visible;
             if (!snapshot.IsAuthenticated)
             {
                 view.Identity.Text = "연결되지 않음";
@@ -2472,15 +2618,14 @@ namespace CodexUsageMeter
                 return;
             }
 
-            string identity = String.IsNullOrWhiteSpace(snapshot.Email) ? "ChatGPT 계정" : snapshot.Email;
+            string identity = String.IsNullOrWhiteSpace(snapshot.Email) ? provider.DisplayName + " 계정" : snapshot.Email;
             if (!String.IsNullOrWhiteSpace(snapshot.PlanType))
             {
                 identity += "  ·  " + PlanName(snapshot.PlanType);
             }
             view.Identity.Text = identity;
-            view.LoginButton.Visibility = Visibility.Collapsed;
-            view.CodexLoginButton.Visibility = Visibility.Visible;
-            view.CompactCodexLoginButton.Visibility = Visibility.Visible;
+            view.CodexLoginButton.Visibility = provider.Supports(AccountCapabilities.CodexSwitch) ? Visibility.Visible : Visibility.Collapsed;
+            view.CompactCodexLoginButton.Visibility = view.CodexLoginButton.Visibility;
             view.LogoutButton.Visibility = Visibility.Visible;
             UpdateCodexLoginButton(view);
             UpdateWindow(view.PrimaryName, view.PrimaryValue, view.PrimaryBar, view.PrimaryTimeBar, view.PrimaryReset, view.PrimaryRemaining, snapshot.Primary, "단기 한도", false);
@@ -2491,8 +2636,11 @@ namespace CodexUsageMeter
                 view.PrimaryValue.Text = "미제공";
                 view.PrimaryReset.Text = "현재 계정 응답에 없는 한도";
             }
-            UpdateResetCredits(view, snapshot);
-            UpdateUsage(view, snapshot);
+            if (extras)
+            {
+                UpdateResetCredits(view, snapshot);
+                UpdateUsage(view, snapshot);
+            }
             if (!String.IsNullOrWhiteSpace(snapshot.Error))
             {
                 view.Status.Text = snapshot.Error;
@@ -2559,6 +2707,11 @@ namespace CodexUsageMeter
             TextBlock primaryValue = (TextBlock)window.FindName(prefix + "PrimaryValue");
             TextBlock secondaryValue = (TextBlock)window.FindName(prefix + "SecondaryValue");
             TextBlock resetValue = (TextBlock)window.FindName(prefix + "ResetValue");
+            AccountProvider provider = AccountProviders.For(snapshot);
+            ((TextBlock)window.FindName(prefix + "TitleText")).Text = provider.CardTitle(view.Label ?? "계정 " + slot);
+            resetValue.Visibility = provider.Supports(AccountCapabilities.CodexExtras) ? Visibility.Visible : Visibility.Collapsed;
+            ((Button)window.FindName(prefix + "CodexLoginButton")).Visibility =
+                snapshot != null && snapshot.IsAuthenticated && provider.Supports(AccountCapabilities.CodexSwitch) ? Visibility.Visible : Visibility.Collapsed;
             string primaryLabel = snapshot == null || snapshot.Primary == null ? "5시간" : snapshot.Primary.Name.Replace(" 한도", "");
             string secondaryLabel = snapshot == null || snapshot.Secondary == null ? "주간" : snapshot.Secondary.Name.Replace(" 한도", "");
             ((TextBlock)window.FindName(prefix + "PrimaryName")).Text = primaryLabel;
@@ -2568,7 +2721,7 @@ namespace CodexUsageMeter
 
             if (snapshot == null || !snapshot.IsAuthenticated)
             {
-                identity.Text = "연결 필요 · 전체 보기에서 연결";
+                identity.Text = snapshot != null && !String.IsNullOrEmpty(snapshot.Error) ? snapshot.Error : "연결 버튼에서 계정을 선택해 주세요.";
                 primaryValue.Text = "--";
                 secondaryValue.Text = "--";
                 view.CompactPrimaryRing.Data = Geometry.Empty;
@@ -2583,12 +2736,13 @@ namespace CodexUsageMeter
                 return;
             }
 
-            string accountName = String.IsNullOrWhiteSpace(snapshot.Email) ? "ChatGPT 계정" : snapshot.Email;
+            string accountName = String.IsNullOrWhiteSpace(snapshot.Email) ? provider.DisplayName + " 계정" : snapshot.Email;
             if (!String.IsNullOrWhiteSpace(snapshot.PlanType))
             {
                 accountName += " · " + PlanName(snapshot.PlanType);
             }
             identity.Text = accountName;
+            identity.ToolTip = String.IsNullOrEmpty(snapshot.Error) ? accountName : snapshot.Error;
             UpdateCompactWindow(primaryValue, view.CompactPrimaryRing, view.CompactPrimaryTimeBar,
                 view.CompactPrimaryTimeValue, view.CompactPrimaryRecommendationRing,
                 snapshot.Primary, 35.0, new Point(48.0, 48.0), false);
@@ -2637,10 +2791,13 @@ namespace CodexUsageMeter
         private void ConnectWebSubscription(AccountView view)
         {
             if (_switchingAccount || view.Client == null || view.LastSnapshot == null || !view.LastSnapshot.IsAuthenticated) return;
+            if (!view.Client.Provider.Supports(AccountCapabilities.ChatGptSubscription)) return;
+            IUsageAccount client = view.Client;
+            AccountSnapshot snapshot = view.LastSnapshot;
             ShowModal("크롬 구독 연결",
                 "평소 쓰시는 크롬의 로그인과 저장된 비밀번호를 그대로 이용합니다.\n\n처음 한 번 ‘스크립트 설치’를 눌러 탬퍼몽키에 추가하세요. 설치 후 미터기의 구독 날짜를 다시 눌러 ‘크롬 열기’을 선택하면 연결됩니다. 이후에는 크롬의 ChatGPT 구독 페이지를 열면 자동으로 반영됩니다.\n\n확인할 계정: " + view.LastSnapshot.Email,
                 null, "크롬 열기", "스크립트 설치",
-                delegate { try { ChromeSubscriptionBridge.Register(view.Client.ProfileRoot, view.LastSnapshot.Email, view.LastSnapshot.PlanType); ChromeSubscriptionBridge.OpenConnection(); }
+                delegate { try { ChromeSubscriptionBridge.Register(client.ProfileRoot, snapshot.Email, snapshot.PlanType); ChromeSubscriptionBridge.OpenConnection(); }
                     catch (Exception error) { ShowModal("크롬 연결", error.Message, null, "확인", null, null, null); } },
                 delegate { try { ChromeSubscriptionBridge.OpenChrome(ChromeSubscriptionBridge.ScriptUrl); }
                     catch (Exception error) { ShowModal("스크립트 설치", error.Message, null, "확인", null, null, null); } });
@@ -2648,6 +2805,14 @@ namespace CodexUsageMeter
 
         private static void UpdateSubscription(AccountView view, AccountSnapshot snapshot)
         {
+            bool supported = AccountProviders.For(snapshot).Supports(AccountCapabilities.ChatGptSubscription);
+            foreach (TextBlock label in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
+            {
+                label.Visibility = supported ? Visibility.Visible : Visibility.Collapsed;
+                label.IsHitTestVisible = supported;
+                label.Focusable = supported;
+            }
+            if (!supported) return;
             AccountSubscriptionInfo subscription = snapshot == null ? null : snapshot.Subscription;
             string text = snapshot == null || !snapshot.IsAuthenticated ? "구독 날짜 --" : AccountSubscription.Format(subscription, DateTime.Today);
             string detail = subscription == null ? "계정의 구독 정보를 확인한 뒤 표시합니다." : subscription.Error;
@@ -2906,17 +3071,16 @@ namespace CodexUsageMeter
 
         private void UpdateFooter()
         {
-            string duplicatedEmail = _accounts
+            string duplicatedIdentity = _accounts
                 .Where(delegate(AccountState state)
                 {
-                    return state.LastSnapshot != null && state.LastSnapshot.IsAuthenticated &&
-                        !String.IsNullOrWhiteSpace(state.LastSnapshot.Email);
+                    return AccountProviders.DuplicateKey(state.LastSnapshot) != null;
                 })
-                .GroupBy(delegate(AccountState state) { return state.LastSnapshot.Email; }, StringComparer.OrdinalIgnoreCase)
+                .GroupBy(delegate(AccountState state) { return AccountProviders.DuplicateKey(state.LastSnapshot); }, StringComparer.Ordinal)
                 .Where(delegate(IGrouping<string, AccountState> group) { return group.Count() > 1; })
                 .Select(delegate(IGrouping<string, AccountState> group) { return group.Key; })
                 .FirstOrDefault();
-            if (!String.IsNullOrWhiteSpace(duplicatedEmail))
+            if (!String.IsNullOrWhiteSpace(duplicatedIdentity))
             {
                 SetFooterText("주의: 여러 칸에 같은 계정이 연결되어 있습니다.");
             }
@@ -3350,6 +3514,18 @@ namespace CodexUsageMeter
         private const string TopmostValue = "Topmost";
         private const string FontScaleValue = "FontScalePercent";
         private const string AccountCountValue = "AccountCount";
+
+        internal static string LoadAccountProvider(int number)
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey, false))
+                return AccountProviders.LoadSlot(key, number);
+        }
+
+        internal static void SaveAccountProvider(int number, string providerId)
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                AccountProviders.SaveSlot(key, number, providerId);
+        }
 
         internal static TrayUsageSettings LoadTrayUsage()
         {
