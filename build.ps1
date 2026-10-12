@@ -128,6 +128,7 @@ $arguments += @(
     (Join-Path $sourceRoot 'UsageHistoryView.cs'),
     (Join-Path $sourceRoot 'UsageHistoryChart.cs'),
     (Join-Path $sourceRoot 'LayoutRegressionTests.cs'),
+    (Join-Path $sourceRoot 'LayoutPreviewParityTests.cs'),
     (Join-Path $sourceRoot 'LayoutSettings.cs'),
     (Join-Path $sourceRoot 'LayoutEditor.cs'),
     (Join-Path $sourceRoot 'WindowPlacement.cs'),

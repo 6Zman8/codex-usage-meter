@@ -34,6 +34,12 @@ namespace CodexUsageMeter
             LayoutSettings itemLayout = LayoutSettings.Parse("{\"Version\":1,\"Widget\":{\"Columns\":1,\"Cards\":[{\"Id\":\"account1\",\"Visible\":true,\"Span\":1,\"Size\":1,\"ItemLayouts\":[{\"Id\":\"weekly\",\"X\":0.2,\"Y\":0.3,\"Width\":0.4,\"Height\":0.5}]}]}}");
             Require(itemLayout.Copy().ToJson().Contains("\"X\":0.2"), "individual item positions and sizes did not survive save/reload");
             VerifyEditorZoom(report, previewDirectory);
+            using (Fixture fixture = new Fixture())
+                LayoutPreviewParityTests.Run(report, fixture.Window, fixture.Root,
+                    (DashboardLayoutView)typeof(DashboardController).GetField("_layoutView", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(fixture.Controller),
+                    fixture.Layout, fixture.Render, fixture.FontScale,
+                    (editor, check) => RenderEditor(editor, check, null),
+                    settings => fixture.Editor(settings, true, state => { }, state => { }));
             VerifyDefaultSpacing(report, previewDirectory);
             VerifyCardCorrections(report);
             VerifyContentLayout(report, previewDirectory);
@@ -246,6 +252,22 @@ namespace CodexUsageMeter
             using (Fixture fixture = new Fixture())
             {
                 LayoutSettings settings = LayoutSettings.Defaults();
+                foreach (double scale in new[] { 1.0, 1.5, 2.0 })
+                {
+                    fixture.FontScale(scale);
+                    foreach (bool compact in new[] { true, false })
+                    {
+                        fixture.Layout(settings, compact); fixture.Render(900, 820);
+                        if (!compact) continue; // These buttons belong to the compact surface only.
+                        Button pcButton = (Button)fixture.Window.FindName("CompactPcHistoryButton");
+                        Button accountButton = (Button)fixture.Window.FindName("CompactAccount1HistoryButton");
+                        Size pcSize = pcButton.TransformToAncestor(fixture.Root).TransformBounds(new Rect(pcButton.RenderSize)).Size;
+                        Size accountSize = accountButton.TransformToAncestor(fixture.Root).TransformBounds(new Rect(accountButton.RenderSize)).Size;
+                        Require(Math.Abs(pcSize.Width - accountSize.Width) < .01 && Math.Abs(pcSize.Height - accountSize.Height) < .01,
+                            "PC/account history actual size differs at font scale " + scale);
+                    }
+                }
+                fixture.FontScale(1);
                 LayoutEditor editor = fixture.Editor(settings, false, state => { }, state => { });
                 new WindowInteropHelper(editor).EnsureHandle();
                 Rect originalBounds = WindowPlacement.Bounds(editor);
@@ -1360,6 +1382,10 @@ namespace CodexUsageMeter
             internal LayoutEditor Editor(LayoutSettings settings, bool compact, Action<LayoutSettings> preview, Action<LayoutSettings> save)
             {
                 _surface.RootVisual = null;
+                // Render supplies window typography for the detached HwndSource.
+                // Reattach with genuine inheritance, not fixture-local overrides.
+                Root.ClearValue(Control.FontSizeProperty);
+                Root.ClearValue(TextOptions.TextFormattingModeProperty);
                 if (Window.Content == null) Window.Content = Root;
                 return new LayoutEditor(settings, compact, 4, Window, (DashboardLayoutView)typeof(DashboardController).GetField("_layoutView", Flags).GetValue(Controller),
                     (draft, mode, selected) => {
@@ -1376,6 +1402,10 @@ namespace CodexUsageMeter
             internal void Render(int width, int height)
             {
                 if (Window.Content == Root) { Window.Content = null; _surface.RootVisual = Root; }
+                // Detaching removes Window's inherited Display formatting. Keep
+                // the actual dashboard measurement contract in hidden fixtures.
+                Root.SetValue(Control.FontSizeProperty, Window.FontSize);
+                Root.SetValue(TextOptions.TextFormattingModeProperty, TextOptions.GetTextFormattingMode(Window));
                 _width = width; _height = height;
                 Root.Measure(new Size(width, height)); Root.Arrange(new Rect(0, 0, width, height)); Root.UpdateLayout();
             }

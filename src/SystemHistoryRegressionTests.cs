@@ -47,6 +47,7 @@ namespace CodexUsageMeter
             chart.BuildGeometry(new Size(600, 180)); Require(chart.Maximum == 150, "Metric selection and B/s scale");
             var renamed = s.Disks[149]; renamed.Name = "저장장치 새 이름"; chartStore.Add(now, s); view.Reload();
             Require(((SystemHistoryMetric)selector.SelectedItem).Label == "저장장치 새 이름 쓰기", "Stable identity when renamed");
+            VerifyDropdown(log, s, now);
             ((DockPanel)root.Children[0]).Children.OfType<Button>().Single().RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Require(back, "Return action");
             view.UpdateLayout();
@@ -76,6 +77,69 @@ namespace CodexUsageMeter
             for (int i = 0; i < 2000; i++) bounded.Add(now.AddMilliseconds(i), null);
             Require(bounded.Read(now.AddSeconds(2)).Count == 1801, "Sample bound");
             log("PASS system history: graph coordinates, fixed axis, gaps, structured availability, all device metrics, Korean labels, return action, restart and bounds");
+        }
+        private static T FindVisual<T>(DependencyObject root) where T : DependencyObject
+        {
+            if (root is T) return (T)root;
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            {
+                T found = FindVisual<T>(VisualTreeHelper.GetChild(root, i));
+                if (found != null) return found;
+            }
+            return null;
+        }
+        private static void Drain()
+        {
+            var frame = new System.Windows.Threading.DispatcherFrame();
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle, new Action(delegate { frame.Continue = false; }));
+            System.Windows.Threading.Dispatcher.PushFrame(frame);
+        }
+        private static void VerifyDropdown(Action<string> log, SystemSnapshot snapshot, DateTime now)
+        {
+            var store = new SystemHistory(); store.Add(now, snapshot);
+            var view = new SystemHistoryView(store, delegate { }, delegate { return now; });
+            var window = new Window { Content = view, Width = 600, Height = 300,
+                Left = -10000, Top = -10000, ShowActivated = false, ShowInTaskbar = false, Opacity = 0 };
+            DarkTheme.Apply(window);
+            try
+            {
+                window.Show(); Drain();
+                var selector = ((DockPanel)view.Content).Children.OfType<ComboBox>().Single();
+                selector.MaxDropDownHeight = 180;
+                object source = selector.ItemsSource, selected = selector.SelectedItem;
+                view.Reload(); Require(Object.ReferenceEquals(source, selector.ItemsSource), "Unchanged closed metadata replaced");
+                selector.ApplyTemplate();
+                var popup = (System.Windows.Controls.Primitives.Popup)selector.Template.FindName("PART_Popup", selector);
+                ((UIElement)popup.Child).Opacity = 0;
+                selector.IsDropDownOpen = true; Drain();
+                var scroll = FindVisual<ScrollViewer>(popup.Child);
+                Require(scroll != null && scroll.ScrollableHeight > 0, "Real popup must scroll");
+                scroll.UpdateLayout(); Drain();
+                scroll.ScrollToVerticalOffset(scroll.ScrollableHeight / 2); scroll.UpdateLayout(); Drain();
+                double offset = scroll.VerticalOffset;
+                Require(offset > 0, "Scrolled away from selection");
+                snapshot.Disks[0].Name = "최신 이름";
+                snapshot.Gpus.Add(new GpuSnapshot { Key = "added", Name = "추가 장치", Available = true });
+                for (int i = 0; i < 3; i++)
+                {
+                    now = now.AddSeconds(1); store.Add(now, snapshot); view.Reload(); Drain();
+                    Require(Object.ReferenceEquals(source, selector.ItemsSource) && Object.ReferenceEquals(selected, selector.SelectedItem) &&
+                        Math.Abs(scroll.VerticalOffset - offset) < .01, "Open popup scroll/selection changed");
+                    view.Chart.BuildGeometry(new Size(600, 180));
+                    Require(view.Chart.End == now && view.Chart.Segments.Last().Last().X == view.Chart.Plot.Right, "Open graph not fresh");
+                }
+                selector.IsDropDownOpen = false; Drain();
+                Require(((SystemHistoryMetric)selector.SelectedItem).Key == ((SystemHistoryMetric)selected).Key &&
+                    selector.Items.Cast<SystemHistoryMetric>().Any(m => m.Label == "최신 이름 쓰기") &&
+                    selector.Items.Cast<SystemHistoryMetric>().Any(m => m.Key == "gpu:added"), "Close did not reconcile metadata/identity");
+                selector.SelectedItem = selector.Items.Cast<SystemHistoryMetric>().Single(m => m.Key == "disk:secret-d149:write");
+                view.Chart.BuildGeometry(new Size(600, 180)); Require(view.Chart.Maximum == 150, "User selection not rendered");
+                now = now.AddMinutes(31); store.Add(now, new SystemSnapshot()); view.Reload();
+                Require(((SystemHistoryMetric)selector.SelectedItem).Key == "cpu" && selector.Items.Count == 4, "Expired device removal fallback");
+                log("PASS real hidden PC popup: scroll/selection stable across reloads, deferred metadata, identity, user selection, graph freshness, removal");
+            }
+            finally { window.Close(); Drain(); }
         }
     }
 }

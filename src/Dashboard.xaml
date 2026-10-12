@@ -310,7 +310,7 @@
 
           <Border Grid.Row="4" Style="{StaticResource SubCard}" Padding="13,10">
             <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="PC 상태" FontWeight="SemiBold" FontSize="12" HorizontalAlignment="Left"/><StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right"><Button x:Name="CompactPcHistoryButton" Content="이력" Margin="0,0,8,0"/><Ellipse Width="6" Height="6" Fill="#34D399" Margin="0,0,5,0" VerticalAlignment="Center"/><TextBlock Text="LIVE" Foreground="#6EE7B7" FontSize="8" FontWeight="Bold"/></StackPanel></Grid>
+              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="PC 상태" FontWeight="SemiBold" FontSize="12" HorizontalAlignment="Left"/><StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right"><Button x:Name="CompactPcHistoryButton" Content="이력" Height="24" Padding="8,2" FontSize="9" Margin="0,0,8,0"/><Ellipse Width="6" Height="6" Fill="#34D399" Margin="0,0,5,0" VerticalAlignment="Center"/><TextBlock Text="LIVE" Foreground="#6EE7B7" FontSize="8" FontWeight="Bold"/></StackPanel></Grid>
               <Canvas x:Name="CompactPcChartGuides" Grid.Row="1" IsHitTestVisible="False" ClipToBounds="True">
                 <Line Style="{StaticResource PcChartGridLine}"/><Line Style="{StaticResource PcChartGridLine}"/>
                 <Line Style="{StaticResource PcChartGridLine}"/><Line Style="{StaticResource PcChartGridLine}"/>

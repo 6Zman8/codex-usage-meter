@@ -31,16 +31,26 @@ namespace CodexUsageMeter
             DockPanel.SetDock(_metric, Dock.Top); root.Children.Add(_metric);
             root.Children.Add(Chart); Content = root;
             _metric.SelectionChanged += delegate { if (!_loading) Render(); };
+            _metric.DropDownClosed += delegate { Reload(); };
             Reload();
         }
         internal override void Reload()
         {
-            var selected = _metric.SelectedItem as SystemHistoryMetric;
-            _loading = true;
-            _metric.ItemsSource = _store.Read(_clock()).SelectMany(s => s.Metrics.Values).GroupBy(m => m.Key).Select(g => g.Last()).ToArray();
-            _metric.SelectedItem = _metric.Items.Cast<SystemHistoryMetric>().FirstOrDefault(m => selected != null && m.Key == selected.Key);
-            if (_metric.SelectedIndex < 0) _metric.SelectedIndex = 0;
-            _loading = false;
+            if (!_metric.IsDropDownOpen)
+            {
+                var metrics = _store.Read(_clock()).SelectMany(s => s.Metrics.Values).GroupBy(m => m.Key).Select(g => g.Last()).ToArray();
+                var current = _metric.Items.Cast<SystemHistoryMetric>().ToArray();
+                if (current.Length != metrics.Length || current.Where((m, i) =>
+                    m.Key != metrics[i].Key || m.Label != metrics[i].Label || m.Unit != metrics[i].Unit).Any())
+                {
+                    var selected = _metric.SelectedItem as SystemHistoryMetric;
+                    _loading = true;
+                    _metric.ItemsSource = metrics;
+                    _metric.SelectedItem = metrics.FirstOrDefault(m => selected != null && m.Key == selected.Key);
+                    if (_metric.SelectedIndex < 0) _metric.SelectedIndex = 0;
+                    _loading = false;
+                }
+            }
             Render();
         }
         private void Render()

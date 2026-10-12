@@ -38,7 +38,9 @@ namespace CodexUsageMeter
         private readonly double _originalWidth, _originalHeight;
         private readonly Size _actualPreviewSize;
         private readonly bool _originalCompact;
-        private readonly object _originalForeground, _originalFont;
+        private readonly object _originalForeground, _originalFont, _originalFontSize, _originalTextFormatting;
+        private readonly double _previewFontSize;
+        private readonly TextFormattingMode _previewTextFormatting;
         private bool _compact, _restored, _refreshing, _addedResources;
         private string _selected;
         private Button _expandedTab, _widgetTab;
@@ -64,6 +66,10 @@ namespace CodexUsageMeter
             _actualPreviewSize = _dashboardRoot.RenderSize;
             _originalForeground = _dashboardRoot.ReadLocalValue(Control.ForegroundProperty);
             _originalFont = _dashboardRoot.ReadLocalValue(Control.FontFamilyProperty);
+            _originalFontSize = _dashboardRoot.ReadLocalValue(Control.FontSizeProperty);
+            _originalTextFormatting = _dashboardRoot.ReadLocalValue(TextOptions.TextFormattingModeProperty);
+            _previewFontSize = (double)_dashboardRoot.GetValue(Control.FontSizeProperty);
+            _previewTextFormatting = TextOptions.GetTextFormattingMode(_dashboardRoot);
             Title = "대시보드 배치 편집"; Width = Math.Min(1220, SystemParameters.WorkArea.Width - 40);
             Height = Math.Min(880, SystemParameters.WorkArea.Height - 40); MinWidth = 780; MinHeight = 540;
             WindowStartupLocation = WindowStartupLocation.CenterOwner; WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.CanResizeWithGrip;
@@ -128,6 +134,10 @@ namespace CodexUsageMeter
                 dashboard.Content = null;
                 if (!_dashboardRoot.Resources.MergedDictionaries.Contains(dashboard.Resources)) { _dashboardRoot.Resources.MergedDictionaries.Add(dashboard.Resources); _addedResources = true; }
                 _dashboardRoot.SetValue(Control.ForegroundProperty, dashboard.Foreground); _dashboardRoot.SetValue(Control.FontFamilyProperty, dashboard.FontFamily);
+                // Reparenting must not replace the dashboard's inherited typography
+                // with the editor's 13px font and Ideal text measurement.
+                _dashboardRoot.SetValue(Control.FontSizeProperty, _previewFontSize);
+                _dashboardRoot.SetValue(TextOptions.TextFormattingModeProperty, _previewTextFormatting);
                 _previewDecorator.Child = _dashboardRoot;
                 _layoutView.SetEditing(true);
                 Closed += delegate { RestoreDashboard(); if (!Saved) _preview(_original.Copy(), _originalCompact, null); };
@@ -152,6 +162,8 @@ namespace CodexUsageMeter
             _previewDecorator.Child = null; _dashboardRoot.Width = _originalWidth; _dashboardRoot.Height = _originalHeight;
             if (_addedResources) _dashboardRoot.Resources.MergedDictionaries.Remove(_dashboard.Resources);
             RestoreValue(_dashboardRoot, Control.ForegroundProperty, _originalForeground); RestoreValue(_dashboardRoot, Control.FontFamilyProperty, _originalFont);
+            RestoreValue(_dashboardRoot, Control.FontSizeProperty, _originalFontSize);
+            RestoreValue(_dashboardRoot, TextOptions.TextFormattingModeProperty, _originalTextFormatting);
             _dashboard.Content = _dashboardRoot;
             _layoutView.SetEditing(false);
         }
