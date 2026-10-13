@@ -32,6 +32,8 @@ namespace CodexUsageMeter
         public static void Run(Action<string> report, string previewDirectory, string evidenceDirectory)
         {
             LayoutSettings itemLayout = LayoutSettings.Parse("{\"Version\":1,\"Widget\":{\"Columns\":1,\"Cards\":[{\"Id\":\"account1\",\"Visible\":true,\"Span\":1,\"Size\":1,\"ItemLayouts\":[{\"Id\":\"weekly\",\"X\":0.2,\"Y\":0.3,\"Width\":0.4,\"Height\":0.5}]}]}}");
+            VerifyVerticalShrink(report);
+            VerifySavedLowHeader(report);
             Require(itemLayout.Copy().ToJson().Contains("\"X\":0.2"), "individual item positions and sizes did not survive save/reload");
             VerifyEditorZoom(report, previewDirectory);
             using (Fixture fixture = new Fixture())
@@ -201,7 +203,7 @@ namespace CodexUsageMeter
                     root.UpdateLayout();
                     Require(previewed.Widget.Card("pc").Size == 2 && previewed.Expanded.Card("pc").Size == 1 && pcTile.Bounds.Height > beforeHeight, "Dragging a size handle did not resize only the edited mode.");
                     CheckAdornerAlignment(root);
-                    Require(!Descendants<ScrollViewer>(root).Any(item => item.IsVisible && item.Content is CardLayoutPanel), "Layout preview still requires scrolling after a card resize.");
+                    Require(!Descendants<ScrollViewer>(root).Any(item => item.IsVisible && item.Content is CardLayoutPanel && item.ScrollableHeight > .1), "Layout preview still requires scrolling after a card resize.");
                     foreach (CardLayoutPanel panel in Descendants<CardLayoutPanel>(root).Where(item => item.IsVisible))
                         Require(panel.Tiles.Where(item => item.Card.IsVisible).All(item => item.Bounds.Bottom <= panel.ActualHeight + 1), "Resizing a preview card pushed another card below the viewport.");
                     CheckAdornerAlignment(root);
@@ -669,7 +671,7 @@ namespace CodexUsageMeter
                                     if (Math.Abs(first.TransformToAncestor(fixture.Root).Transform(new Point()).Y - second.TransformToAncestor(fixture.Root).Transform(new Point()).Y) > 1)
                                         failures.Add("Account rows lost alignment at font scale " + scale + ": " + suffix);
                                 }
-                            if (Descendants<ScrollViewer>(fixture.Root).Any(item => item.IsVisible && item.Content is CardLayoutPanel)) failures.Add("Dashboard still scrolls.");
+                            if (Descendants<ScrollViewer>(fixture.Root).Any(item => item.IsVisible && item.Content is CardLayoutPanel && item.ScrollableHeight > .1)) failures.Add("Dashboard still scrolls.");
                             if (previewDirectory != null && scale == 1.5) fixture.Capture(Path.Combine(previewDirectory, (compact ? "widget" : "expanded") + "-fit-" + size[0] + ".png"));
                         }
                     }
@@ -769,6 +771,169 @@ namespace CodexUsageMeter
             using (FileStream output = File.Create(path)) encoder.Save(output);
         }
         private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
+
+        private static void VerifyVerticalShrink(Action<string> report)
+        {
+            using (Fixture fixture = new Fixture())
+            foreach (bool compact in new[] { false, true })
+            foreach (int width in new[] { 320, 460, 900 })
+            foreach (double font in new[] { 1.0, 2.0 })
+            foreach (int placement in new[] { 0, 1, 2 })
+            {
+                LayoutSettings settings = LayoutSettings.Defaults();
+                settings.Mode(compact).UseSingleAccount(1, true);
+                fixture.FontScale(font); fixture.Layout(settings, compact); fixture.Render(width, 820);
+                DashboardLayoutView view = (DashboardLayoutView)typeof(DashboardController).GetField("_layoutView", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(fixture.Controller);
+                LayoutTile[] tiles = view.Tiles(compact).Where(t => t.Card.IsVisible).ToArray();
+                if (placement != 0)
+                {
+                    foreach (LayoutTile tile in tiles) tile.Settings.ItemLayouts = CardContentLayout.Capture(tile);
+                    if (placement == 2)
+                        foreach (LayoutTile tile in tiles) tile.Settings.ItemLayouts.RemoveAll(i => i.Id == "header");
+                    fixture.Layout(settings, compact); fixture.Render(width, 820);
+                }
+                string original = CanonicalJson(settings.ToJson());
+                var before = tiles.ToDictionary(t => t, t => t.ContentItems().Where(i => i.Id == "header" && i.Element.IsVisible)
+                    .ToDictionary(i => i.Id, i => i.Element.TransformToAncestor(t.Card).TransformBounds(new Rect(i.Element.RenderSize))));
+                var headerControls = tiles.ToDictionary(t => t, t => Descendants<FrameworkElement>(t.Header)
+                    .Where(e => e.IsVisible && (e is TextBlock || e is Button)).ToDictionary(e => e,
+                        e => e.TransformToAncestor(t.Card).TransformBounds(new Rect(e.RenderSize))));
+                var requiredBody = tiles.ToDictionary(t => t, t => Descendants<FrameworkElement>(t.Content)
+                    .Where(e => e.IsVisible && !String.IsNullOrEmpty(e.Name) && (e is Button || e is TextBlock)).ToArray());
+                foreach (int height in new[] { 620, 480, 320, 820 })
+                {
+                    fixture.Render(width, height);
+                    CardPanelScrollViewer outer = Descendants<CardPanelScrollViewer>(fixture.Root).Single(s => s.IsVisible);
+                    if (!compact && width == 900 && font == 2 && height == 320)
+                        Require(outer.ScrollableHeight > 0 && outer.ComputedVerticalScrollBarVisibility == Visibility.Visible,
+                            "extreme height did not expose a visible outer scrollbar");
+                    if (height == 820)
+                        Require(outer.ScrollableHeight < .1, "restored height retained emergency overflow");
+                    foreach (LayoutTile tile in tiles)
+                    foreach (LayoutContentItem item in tile.ContentItems().Where(i => i.Id == "header" && i.Element.IsVisible))
+                    {
+                        Rect expected = before[tile][item.Id];
+                        Rect actual = item.Element.TransformToAncestor(tile.Card).TransformBounds(new Rect(item.Element.RenderSize));
+                        Require(Math.Abs(expected.X - actual.X) < .1 && Math.Abs(expected.Width - actual.Width) < .1,
+                            "vertical shrink changed header horizontal bounds: " + tile.Settings.Id + "/" + item.Id + " width=" + width + " height=" + height + " font=" + font + " placement=" + placement + " expected=" + expected + " actual=" + actual);
+                    }
+                    foreach (LayoutTile tile in tiles)
+                    {
+                        foreach (var entry in headerControls[tile])
+                        {
+                            entry.Key.BringIntoView(); fixture.Root.UpdateLayout();
+                            Rect actual = entry.Key.TransformToAncestor(tile.Card).TransformBounds(new Rect(entry.Key.RenderSize));
+                            Require(Math.Abs(actual.X - entry.Value.X) < .1 && Math.Abs(actual.Width - entry.Value.Width) < .1,
+                                "header descendant changed horizontal position/size: " + entry.Key.Name +
+                                " mode=" + compact + " width=" + width + " height=" + height + " font=" + font + " placement=" + placement + " expected=" + entry.Value + " actual=" + actual);
+                            if (entry.Key is Button) CheckVisibleHit(fixture, tile, entry.Key);
+                        }
+                        foreach (FrameworkElement control in requiredBody[tile])
+                        {
+                            Require(control.IsVisible, "essential control unexpectedly hidden: " + control.Name);
+                            control.BringIntoView(); fixture.Root.UpdateLayout();
+                            Rect actual = control.TransformToAncestor(tile.Card).TransformBounds(new Rect(control.RenderSize));
+                            Require(new[] { actual.X, actual.Y, actual.Width, actual.Height }.All(v => !Double.IsNaN(v) && !Double.IsInfinity(v)) &&
+                                actual.Width > 0 && actual.Height > 0, "essential control has invalid bounds: " + control.Name);
+                            Require(actual.Top >= -1 && actual.Bottom <= tile.Card.ActualHeight + 1,
+                                "body essential text/control escapes card: " + control.Name);
+                            Rect visibleBounds = control.TransformToAncestor(outer).TransformBounds(new Rect(control.RenderSize));
+                            Require(visibleBounds.Left >= -1 && visibleBounds.Right <= outer.ActualWidth + 1 &&
+                                visibleBounds.Top >= -1 && visibleBounds.Bottom <= outer.ActualHeight + 1,
+                                "essential control remains outside the scroll viewport: " + control.Name);
+                            if (control is Button) CheckVisibleHit(fixture, tile, control);
+                        }
+                    }
+                    Require(CanonicalJson(settings.ToJson()) == original, "vertical shrink mutated saved placements mode=" + compact +
+                        " width=" + width + " font=" + font + " placement=" + placement + " height=" + height +
+                        " before=" + original + " after=" + settings.ToJson());
+                }
+            }
+            report("PASS vertical shrink and emergency outer-scroll accessibility, account/PC, both modes, 320/460/900 widths, 820/620/480/320/820 heights, 100/200% fonts, automatic/full/partial placements, no mutation");
+        }
+
+        private static void VerifySavedLowHeader(Action<string> report)
+        {
+            using (Fixture fixture = new Fixture())
+            {
+                LayoutSettings settings = LayoutSettings.Defaults();
+                settings.Widget.UseSingleAccount(1, true);
+                fixture.FontScale(2); fixture.Layout(settings, true); fixture.Render(460, 820);
+                DashboardLayoutView view = (DashboardLayoutView)typeof(DashboardController).GetField("_layoutView", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(fixture.Controller);
+                LayoutTile tile = view.Tiles(true).Single(t => t.Settings.Id == "account1");
+                tile.Settings.ItemLayouts = CardContentLayout.Capture(tile);
+                LayoutItemSettings header = tile.Settings.ItemLayouts.Single(i => i.Id == "header");
+                header.Y = .8; header.Height = .02;
+                string original = CanonicalJson(settings.ToJson());
+                fixture.Layout(settings, true);
+                Button[] buttons = Descendants<Button>(tile.Header).Where(b => b.Visibility == Visibility.Visible).ToArray();
+                foreach (int height in new[] { 820, 480, 420, 400, 390, 380, 370, 360, 320, 820 })
+                {
+                    fixture.Render(460, height);
+                    foreach (Button button in buttons)
+                    {
+                        button.BringIntoView(); fixture.Root.UpdateLayout();
+                        Rect bounds = button.TransformToAncestor(tile.Card).TransformBounds(new Rect(button.RenderSize));
+                        Require(new[] { bounds.X, bounds.Y, bounds.Width, bounds.Height }.All(v => !Double.IsNaN(v) && !Double.IsInfinity(v)) &&
+                            bounds.Width > 0 && bounds.Height > 0, "saved low header has invalid button bounds");
+                        CheckVisibleHit(fixture, tile, button);
+                    }
+                    Require(CanonicalJson(settings.ToJson()) == original, "saved low header coordinates mutated");
+                }
+                header.Y = .98;
+                tile.Settings.SetItemVisible("header", false);
+                fixture.Layout(settings, true); fixture.Render(460, 820);
+                CardPanelScrollViewer outer = Descendants<CardPanelScrollViewer>(fixture.Root).Single(s => s.IsVisible);
+                Require(tile.Header.Visibility == Visibility.Collapsed && outer.ScrollableHeight < .1,
+                    "hidden saved header retained its cached minimum height");
+                tile.Settings.SetItemVisible("header", true);
+                fixture.Layout(settings, true); fixture.Render(460, 820);
+                Require(tile.Header.Visibility == Visibility.Visible && outer.ScrollableHeight > 0,
+                    "restored saved header lost its intrinsic minimum height");
+                foreach (Button button in buttons)
+                {
+                    button.BringIntoView(); fixture.Root.UpdateLayout();
+                    CheckVisibleHit(fixture, tile, button);
+                }
+            }
+            report("PASS compact 460px/200% saved header Y=.8 Height=.02, 820-to-380 and boundary sweep, intrinsic button bounds and scrolled center hits, unchanged JSON");
+        }
+
+        private static string CanonicalJson(string json)
+        {
+            var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
+            return serializer.Serialize(SortJson(serializer.DeserializeObject(json)));
+        }
+
+        private static object SortJson(object value)
+        {
+            var dictionary = value as Dictionary<string, object>;
+            if (dictionary != null)
+            {
+                var sorted = new SortedDictionary<string, object>(StringComparer.Ordinal);
+                foreach (var entry in dictionary) sorted.Add(entry.Key, SortJson(entry.Value));
+                return sorted;
+            }
+            var array = value as object[];
+            return array == null ? value : array.Select(SortJson).ToArray();
+        }
+
+        private static void CheckVisibleHit(Fixture fixture, LayoutTile tile, FrameworkElement element)
+        {
+            Rect bounds = element.TransformToAncestor(tile.Card).TransformBounds(new Rect(element.RenderSize));
+            Require(bounds.Left >= -1 && bounds.Right <= tile.Card.ActualWidth + 1 &&
+                bounds.Top >= -1 && bounds.Bottom <= tile.Card.ActualHeight + 1, "control is clipped: " + element.Name);
+            Point point = element.TransformToAncestor(fixture.Root).Transform(new Point(element.ActualWidth / 2, element.ActualHeight / 2));
+            Require(point.X >= 0 && point.Y >= 0 && point.X <= fixture.Root.ActualWidth && point.Y <= fixture.Root.ActualHeight,
+                "control is outside the visible root: " + element.Name);
+            DependencyObject hit = fixture.Root.InputHitTest(point) as DependencyObject;
+            string path = "";
+            for (DependencyObject node = hit; node != null; node = VisualTreeHelper.GetParent(node))
+                path += node.GetType().Name + ":" + (node is FrameworkElement ? ((FrameworkElement)node).Name : "") + "/";
+            while (hit != null && hit != element) hit = VisualTreeHelper.GetParent(hit);
+            Require(hit == element, "visible control is not hit-test reachable: " + element.Name + " card=" + tile.Card.RenderSize +
+                " header=" + tile.Header.RenderSize + " bounds=" + bounds + " hit=" + path);
+        }
 
         private static void VerifyContentLayout(Action<string> report, string previewDirectory)
         {

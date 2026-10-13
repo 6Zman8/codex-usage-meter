@@ -203,6 +203,8 @@ namespace CodexUsageMeter
                 settings.Widget.Card("account2").Visible = settings.Widget.Card("account3").Visible = settings.Widget.Card("account4").Visible = false;
                 pages = renderer.Render(accounts, settings, system, 1.5, now);
                 LayoutTile first = renderer.Layout.Tiles(true).Single(tile => tile.Settings.Id == "account1");
+                if (Math.Abs(first.Bounds.Width - 300) > .1)
+                    throw new InvalidOperationException("Noninteractive widget lost its independent 300-DIP card footprint to a scrollbar gutter");
                 if (pages["Large"].Count != 1 || !pages["Large"][0]["alt"].Contains("PC 상태") ||
                     first.ContentItems().Single(item => item.Id == "subscription").Element.IsVisible)
                     throw new InvalidOperationException("Windows widget did not follow the compact layout order/visibility");

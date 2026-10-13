@@ -66,9 +66,16 @@ namespace CodexUsageMeter
         {
             if (tile.ContentItems == null || tile.ShowingHistory || tile.Content.ActualWidth <= 0 || tile.Content.ActualHeight <= 0) return;
             bool custom = tile.Settings != null && tile.Settings.ItemLayouts.Count > 0;
+            LayoutItemSettings header = custom ? tile.Settings.ItemLayouts.FirstOrDefault(value => value.Id == "header") : null;
+            double headerX = header == null ? 0 : header.X * tile.Surface.ActualWidth;
+            double headerY = header == null ? 0 : header.Y * tile.Surface.ActualHeight;
+            tile.Header.Width = header == null ? tile.Surface.ActualWidth : header.Width * tile.Surface.ActualWidth;
+            tile.Header.Height = header == null ? Double.NaN : header.Height * tile.Surface.ActualHeight;
+            Canvas.SetLeft(tile.Header, headerX); Canvas.SetTop(tile.Header, headerY);
             foreach (LayoutContentItem item in tile.ContentItems())
             {
                 FrameworkElement element = item.Element;
+                if (item.Id == "header") { element.RenderTransform = Transform.Identity; continue; }
                 if (!custom)
                 {
                     if (!element.RenderTransform.Value.IsIdentity) element.RenderTransform = Transform.Identity;
@@ -96,9 +103,10 @@ namespace CodexUsageMeter
                 else
                 {
                     // New or restored items keep the original automatic layout inside the card.
-                    double fit = Math.Min(1, Math.Min(tile.Surface.ActualWidth / tile.Content.ActualWidth, tile.Surface.ActualHeight / tile.Content.ActualHeight));
+                    double bodyTop = tile.Header.Visibility == Visibility.Collapsed ? 0 : headerY + Math.Max(tile.Header.ActualHeight, tile.Header.DesiredSize.Height);
+                    double fit = Math.Min(1, Math.Min(tile.Surface.ActualWidth / tile.Content.ActualWidth, Math.Max(1, tile.Surface.ActualHeight - bodyTop) / tile.Content.ActualHeight));
                     target = new Rect((tile.Surface.ActualWidth - tile.Content.ActualWidth * fit) / 2 + natural.X * fit,
-                        (tile.Surface.ActualHeight - tile.Content.ActualHeight * fit) / 2 + natural.Y * fit, natural.Width * fit, natural.Height * fit);
+                        bodyTop + natural.Y * fit, natural.Width * fit, natural.Height * fit);
                 }
                 double scale = Math.Min(target.Width / natural.Width, target.Height / natural.Height);
                 double left = target.X + (target.Width - natural.Width * scale) / 2, top = target.Y + (target.Height - natural.Height * scale) / 2;

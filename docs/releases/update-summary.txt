@@ -1,1 +1,1 @@
-Match history buttons, preserve metric dropdown scrolling, and keep layout preview header spacing consistent.
+Preserve header anchoring during vertical resizing while fitting card body content separately.

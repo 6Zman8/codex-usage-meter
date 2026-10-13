@@ -20,9 +20,10 @@ namespace CodexUsageMeter
             object originalFormatting = root.ReadLocalValue(TextOptions.TextFormattingModeProperty);
             try
             {
-            foreach (int width in new[] { 460, 320 })
+            foreach (int width in new[] { 900, 460, 320 })
+            foreach (int height in new[] { 780, 480, 320 })
             foreach (double font in new[] { 1.0, 2.0 })
-            foreach (bool custom in new[] { false, true })
+            foreach (int placement in new[] { 0, 1, 2 })
             {
                 LayoutSettings settings = LayoutSettings.Defaults();
                 settings.Widget.UseSingleAccount(1, true);
@@ -30,14 +31,22 @@ namespace CodexUsageMeter
                 // the actual window inheritance only while rendering that fixture.
                 root.SetValue(Control.FontSizeProperty, window.FontSize);
                 root.SetValue(TextOptions.TextFormattingModeProperty, TextOptions.GetTextFormattingMode(window));
-                fontScale(font); apply(settings, true); render(width, 780);
+                fontScale(font); apply(settings, true); render(width, height);
                 LayoutTile tile = layout.Tiles(true).First(t => t.Settings.Id == "account1");
-                if (custom)
+                LayoutTile pc = layout.Tiles(true).First(t => t.Settings.Id == "pc");
+                if (placement != 0)
                 {
                     settings.Widget.Card("account1").ItemLayouts = CardContentLayout.Capture(tile);
-                    apply(settings, true); render(width, 780);
+                    settings.Widget.Card("pc").ItemLayouts = CardContentLayout.Capture(pc);
+                    if (placement == 2)
+                    {
+                        settings.Widget.Card("account1").ItemLayouts.RemoveAll(i => i.Id == "header");
+                        settings.Widget.Card("pc").ItemLayouts.RemoveAll(i => i.Id == "header");
+                    }
+                    apply(settings, true); render(width, height);
                 }
                 Dictionary<string, Rect> before = Bounds(tile, root);
+                Dictionary<string, Rect> beforePc = Bounds(pc, root);
                 string originalSettings = settings.ToJson();
                 root.ClearValue(Control.FontSizeProperty);
                 root.ClearValue(TextOptions.TextFormattingModeProperty);
@@ -51,9 +60,10 @@ namespace CodexUsageMeter
                             TextOptions.GetTextFormattingMode(root) != TextOptions.GetTextFormattingMode(window))
                             throw new InvalidOperationException("Preview replaced inherited dashboard typography.");
                         Rect viewport = root.TransformToAncestor(editorRoot).TransformBounds(new Rect(root.RenderSize));
-                        if (Math.Abs(viewport.Width - width) > .05 || Math.Abs(viewport.Height - 780) > .05)
+                        if (Math.Abs(viewport.Width - width) > .05 || Math.Abs(viewport.Height - height) > .05)
                             throw new InvalidOperationException("Original-mode 100% preview changed the effective viewport.");
-                        Same(before, Bounds(tile, root), "preview " + width + "/" + font + "/" + custom);
+                        Same(before, Bounds(tile, root), "preview " + width + "/" + height + "/" + font + "/" + placement);
+                        Same(beforePc, Bounds(pc, root), "PC preview " + width + "/" + height + "/" + font + "/" + placement);
                         if (!editor.TrySave()) throw new InvalidOperationException("Parity fixture save failed.");
                         saved = LayoutSettings.Parse(editor.Draft.ToJson());
                         if (saved.ToJson() != originalSettings)
@@ -66,10 +76,11 @@ namespace CodexUsageMeter
                     throw new InvalidOperationException("Restoring dashboard left preview typography overrides.");
                 root.SetValue(Control.FontSizeProperty, window.FontSize);
                 root.SetValue(TextOptions.TextFormattingModeProperty, TextOptions.GetTextFormattingMode(window));
-                apply(saved, true); render(width, 780);
-                Same(before, Bounds(tile, root), "restored " + width + "/" + font + "/" + custom);
+                apply(saved, true); render(width, height);
+                Same(before, Bounds(tile, root), "restored " + width + "/" + height + "/" + font + "/" + placement);
+                Same(beforePc, Bounds(pc, root), "PC restored " + width + "/" + height + "/" + font + "/" + placement);
             }
-            report("PASS: compact actual-size card/header parity before, during 100% preview, and after save/restore (320/460px, 100/200% font, automatic/saved placement)");
+            report("PASS: compact actual-size card/header parity including emergency outer scroll before, during 100% preview, and after save/restore (320/460/900px, 320/480/780 height, 100/200% font, automatic/full/partial placement)");
             }
             finally
             {
@@ -97,10 +108,10 @@ namespace CodexUsageMeter
                 result.Add(item.Id, bounds);
             }
             foreach (string name in new[] { "CompactAccount1BadgeText", "CompactAccount1TitleText",
-                "CompactAccount1Identity", "CompactAccount1HistoryButton", "CompactAccount1CodexLoginButton" })
+                "CompactAccount1Identity", "CompactAccount1HistoryButton", "CompactAccount1CodexLoginButton", "CompactPcHistoryButton" })
             {
                 FrameworkElement element = (FrameworkElement)root.FindName(name);
-                if (element == null || !element.IsVisible) continue;
+                if (element == null || !element.IsVisible || !tile.Card.IsAncestorOf(element)) continue;
                 Rect bounds = element.TransformToAncestor(root).TransformBounds(new Rect(element.RenderSize));
                 bounds.Offset(-card.X, -card.Y); result.Add(name, bounds);
             }

@@ -10,12 +10,36 @@ using System.Windows.Shapes;
 
 namespace CodexUsageMeter
 {
+    // A saved header rectangle is an allocation, not a uniform scaling box.
+    // Keep intrinsic descendants hittable when its height is below their minimum.
+    internal sealed class FlexibleHeaderGrid : Grid
+    {
+        private double _naturalHeight;
+        internal double NaturalHeight { get { return _naturalHeight; } }
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            Size natural = base.MeasureOverride(new Size(availableSize.Width, Double.PositiveInfinity));
+            _naturalHeight = natural.Height;
+            return natural;
+        }
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            base.ArrangeOverride(new Size(finalSize.Width, Math.Max(finalSize.Height, _naturalHeight)));
+            return finalSize;
+        }
+        protected override Geometry GetLayoutClip(Size layoutSlotSize) { return null; }
+    }
+
     internal sealed class LayoutTile
     {
         public Border Card;
         public Viewbox Host;
         public Grid Content;
         public Grid Surface;
+        public Grid Header;
+        public Canvas HeaderHost;
+        public Viewbox BodyHost;
+        public Viewbox SurfaceHost;
         public HistoryView History;
         public bool ShowingHistory { get { return History != null && History.Visibility == Visibility.Visible; } }
         public Func<List<LayoutContentItem>> ContentItems;
@@ -27,12 +51,31 @@ namespace CodexUsageMeter
         public Rect Bounds;
     }
 
+    // Keep finite fitting constraints even though ScrollViewer measures its content
+    // with infinite height. Reserve the scrollbar gutter in both states.
+    internal sealed class CardPanelScrollViewer : ScrollViewer
+    {
+        protected override Size MeasureOverride(Size constraint)
+        {
+            CardLayoutPanel panel = (CardLayoutPanel)Content;
+            bool image = panel.Tiles.Count > 0 && panel.Tiles.All(tile => tile.FitNaturalContent);
+            double gutter = image ? 0 : SystemParameters.VerticalScrollBarWidth;
+            panel.ViewportHeight = constraint.Height;
+            panel.Measure(new Size(Math.Max(1, constraint.Width - gutter), constraint.Height));
+            VerticalScrollBarVisibility = panel.EmergencyScroll ? ScrollBarVisibility.Visible : ScrollBarVisibility.Disabled;
+            Padding = new Thickness(0, 0, panel.EmergencyScroll ? 0 : gutter, 0);
+            return base.MeasureOverride(constraint);
+        }
+    }
+
     // Fit complete rows to the viewport; preserve card edges while scaling their contents.
     internal sealed class CardLayoutPanel : Panel
     {
         internal readonly List<LayoutTile> Tiles = new List<LayoutTile>();
         internal int Columns = 1;
         internal double MinimumCardWidth = 360;
+        internal double ViewportHeight = Double.PositiveInfinity;
+        internal bool EmergencyScroll;
         private const double Gap = 10;
 
         internal LayoutTile Add(Border card)
@@ -40,11 +83,29 @@ namespace CodexUsageMeter
             card.Margin = new Thickness(0);
             Grid content = (Grid)card.Child;
             card.Child = null;
-            Grid surface = new Grid(); surface.Children.Add(content);
-            Viewbox contentHost = new Viewbox { Child = surface, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
-            card.Child = contentHost;
+            Grid originalHeader = content.Children.OfType<Grid>().First(child => Grid.GetRow(child) == 0);
+            content.Children.Remove(originalHeader);
+            Grid header = new FlexibleHeaderGrid();
+            while (originalHeader.ColumnDefinitions.Count > 0)
+            {
+                ColumnDefinition column = originalHeader.ColumnDefinitions[0];
+                originalHeader.ColumnDefinitions.RemoveAt(0); header.ColumnDefinitions.Add(column);
+            }
+            while (originalHeader.Children.Count > 0)
+            {
+                UIElement child = originalHeader.Children[0];
+                originalHeader.Children.RemoveAt(0); header.Children.Add(child);
+            }
+            content.RowDefinitions[0].Height = new GridLength(0);
+            Grid surface = new Grid();
+            Viewbox contentHost = new Viewbox { Child = content, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
+            Canvas headerHost = new Canvas(); headerHost.Children.Add(header);
+            surface.Children.Add(contentHost); surface.Children.Add(headerHost);
+            Viewbox surfaceHost = new Viewbox { Child = surface, Stretch = Stretch.None, StretchDirection = StretchDirection.DownOnly };
+            card.Child = surfaceHost;
             Viewbox host = new Viewbox { Child = card, Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly };
-            LayoutTile tile = new LayoutTile { Card = card, Host = host, Content = content, Surface = surface };
+            LayoutTile tile = new LayoutTile { Card = card, Host = host, Content = content, Surface = surface,
+                Header = header, HeaderHost = headerHost, BodyHost = contentHost, SurfaceHost = surfaceHost };
             surface.LayoutUpdated += delegate { CardContentLayout.Apply(tile); };
             Tiles.Add(tile); Children.Add(host); return tile;
         }
@@ -80,8 +141,35 @@ namespace CodexUsageMeter
                 }
             }
             double naturalHeight = rows.Sum(items => items.Max(tile => tile.Bounds.Height));
-            double availableHeight = Double.IsInfinity(available.Height) ? naturalHeight + Gap * Math.Max(0, rows.Count - 1) : Math.Max(1, available.Height);
+            double finiteHeight = Math.Min(available.Height, ViewportHeight);
+            double availableHeight = Double.IsInfinity(finiteHeight) ? naturalHeight + Gap * Math.Max(0, rows.Count - 1) : Math.Max(1, finiteHeight);
             double gap = rows.Count < 2 ? 0 : Math.Min(Gap, availableHeight / (rows.Count * 4));
+            var minimums = visible.ToDictionary(tile => tile, tile => {
+                Thickness padding = tile.Card.Padding, border = tile.Card.BorderThickness;
+                double verticalInsets = padding.Top + padding.Bottom + border.Top + border.Bottom;
+                double innerWidth = tile.Card.Width - padding.Left - padding.Right - border.Left - border.Right;
+                LayoutItemSettings saved = tile.Settings.ItemLayouts.FirstOrDefault(item => item.Id == "header");
+                tile.Header.Width = innerWidth * (saved == null ? 1 : saved.Width);
+                tile.Header.Height = Double.NaN;
+                tile.Header.Measure(new Size(tile.Header.Width, Double.PositiveInfinity));
+                double intrinsicHeader = tile.Header.Visibility == Visibility.Collapsed ? 0 : ((FlexibleHeaderGrid)tile.Header).NaturalHeight;
+                // Saved Y is relative to the inner card. The intrinsic header
+                // must fit below that anchor, even when its saved allocation is tiny.
+                double requiredHeader = intrinsicHeader / (saved == null ? 1 : 1 - saved.Y);
+                double bodyMinimum = RequiredControlHeight(tile.Content);
+                double innerMinimum = saved == null ? intrinsicHeader + bodyMinimum : Math.Max(requiredHeader, bodyMinimum);
+                return (innerMinimum + verticalInsets) * tile.Bounds.Width / tile.Card.Width;
+            });
+            double ordinaryFit = naturalHeight == 0 ? 1 : Math.Min(1,
+                Math.Max(1, availableHeight - gap * Math.Max(0, rows.Count - 1)) / naturalHeight);
+            EmergencyScroll = visible.Any(tile => !tile.FitNaturalContent && tile.Bounds.Height * ordinaryFit < minimums[tile]);
+            if (EmergencyScroll)
+            {
+                foreach (LayoutTile tile in visible)
+                    tile.Bounds = new Rect(tile.Bounds.X, 0, tile.Bounds.Width, Math.Max(tile.Bounds.Height, minimums[tile]));
+                naturalHeight = rows.Sum(items => items.Max(tile => tile.Bounds.Height));
+                availableHeight = naturalHeight + gap * Math.Max(0, rows.Count - 1);
+            }
             double fit = naturalHeight == 0 ? 1 : Math.Min(1, Math.Max(1, availableHeight - gap * Math.Max(0, rows.Count - 1)) / naturalHeight);
             double top = 0;
             foreach (List<LayoutTile> items in rows)
@@ -96,15 +184,22 @@ namespace CodexUsageMeter
                     double innerHeight = Math.Max(1, tile.Card.Height - padding.Top - padding.Bottom - border.Top - border.Bottom);
                     tile.Content.Width = innerWidth;
                     bool custom = tile.Settings.ItemLayouts.Count > 0;
+                    tile.Header.Width = innerWidth; tile.Header.Height = Double.NaN;
+                    tile.Header.Measure(new Size(innerWidth, Double.PositiveInfinity));
+                    double headerHeight = tile.Header.Visibility == Visibility.Collapsed ? 0 : tile.Header.DesiredSize.Height;
+                    tile.BodyHost.Margin = custom ? new Thickness(0) : new Thickness(0, headerHeight, 0, 0);
+                    tile.BodyHost.Stretch = custom ? Stretch.None : Stretch.Uniform;
+                    tile.SurfaceHost.Stretch = tile.FitNaturalContent || tile.ShowingHistory ? Stretch.Uniform : Stretch.None;
                     tile.Content.VerticalAlignment = custom ? VerticalAlignment.Top : VerticalAlignment.Stretch;
                     tile.Content.Height = Double.NaN;
                     tile.Content.Measure(new Size(innerWidth, Double.PositiveInfinity));
                     // Automatic grids must use the card viewport: their star rows fit
                     // the body, while the header continues to span both card edges.
                     // Saved free placements retain their original natural coordinate space.
-                    tile.Content.Height = custom || tile.FitNaturalContent ? Math.Max(innerHeight, tile.Content.DesiredSize.Height) : innerHeight;
+                    double bodyHeight = Math.Max(1, innerHeight - headerHeight);
+                    tile.Content.Height = Math.Max(bodyHeight, tile.Content.DesiredSize.Height);
                     tile.Surface.Width = innerWidth;
-                    tile.Surface.Height = tile.ShowingHistory ? Math.Max(170, innerHeight) : custom ? innerHeight : tile.Content.Height;
+                    tile.Surface.Height = tile.ShowingHistory ? Math.Max(170, innerHeight) : tile.FitNaturalContent && !custom ? Math.Max(innerHeight, tile.Content.Height + headerHeight) : innerHeight;
                     tile.Surface.ClipToBounds = custom;
                     tile.Host.Visibility = Visibility.Visible;
                     tile.Host.Measure(tile.Bounds.Size);
@@ -121,6 +216,24 @@ namespace CodexUsageMeter
                 tile.Host.Arrange(tile.Bounds); CardContentLayout.Apply(tile);
             }
             return finalSize;
+        }
+        private static double RequiredControlHeight(DependencyObject parent)
+        {
+            double height = 1; // A positive body viewport is required even without buttons.
+            for (int index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+            {
+                DependencyObject child = VisualTreeHelper.GetChild(parent, index);
+                FrameworkElement element = child as FrameworkElement;
+                if (element != null && element.Visibility == Visibility.Collapsed) continue;
+                Button button = child as Button;
+                if (button != null)
+                {
+                    button.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
+                    height = Math.Max(height, button.DesiredSize.Height);
+                }
+                height = Math.Max(height, RequiredControlHeight(child));
+            }
+            return height;
         }
     }
 
@@ -185,7 +298,7 @@ namespace CodexUsageMeter
                 CardLayoutPanel panel = new CardLayoutPanel { MinimumCardWidth = mode == 1 ? 390 : 400 };
                 _panels[mode] = panel;
                 _tiles[mode, 0] = panel.Add(first); _tiles[mode, 1] = panel.Add(second); _tiles[mode, 2] = panel.Add(pc);
-                body.Children.Add(panel);
+                body.Children.Add(new CardPanelScrollViewer { Content = panel, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
                 _empty[mode] = new TextBlock { Text = "표시할 카드가 없습니다.\n⚙ 설정 → 배치 편집에서 카드를 켜 주세요.", TextAlignment = TextAlignment.Center, TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Color.FromRgb(170, 170, 175)), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(20), Visibility = Visibility.Collapsed };
                 body.Children.Add(_empty[mode]);
             }
@@ -224,7 +337,7 @@ namespace CodexUsageMeter
             bool compact = tile == _tiles[1, 0] || tile == _tiles[1, 1] || tile == _tiles[1, 2];
             bool pc = tile == _tiles[0, 2] || tile == _tiles[1, 2];
             Grid body = tile.Content;
-            add("header", pc ? "제목·상태" : "제목·계정 버튼", body.Children.OfType<Grid>().FirstOrDefault(child => Grid.GetRow(child) == 0));
+            add("header", pc ? "제목·상태" : "제목·계정 버튼", tile.Header);
             if (!pc && !compact)
             {
                 string[] keys = { "header", "short", "weekly", "credits", "stats", "calendar", "status" };
