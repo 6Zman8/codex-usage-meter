@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.4.0")]
-[assembly: AssemblyFileVersion("1.9.4.0")]
+[assembly: AssemblyVersion("1.9.5.0")]
+[assembly: AssemblyFileVersion("1.9.5.0")]
 
 namespace CodexUsageMeter
 {
@@ -2047,7 +2047,7 @@ namespace CodexUsageMeter
             gpuLabel.Text = gpu == null ? "GPU" : "GPU " + gpu.Index;
             gpuLabel.ToolTip = gpu == null ? null : gpu.Name;
             ((TextBlock)window.FindName("CompactGpuValue")).ToolTip = gpuLabel.ToolTip;
-            diskLabel.Text = disk == null ? "디스크" : "디스크 " + disk.Index;
+            diskLabel.Text = disk == null ? "디스크" : disk.Name;
             diskLabel.ToolTip = disk == null ? null : disk.Name + " · " + disk.Detail;
             ((TextBlock)window.FindName("CompactDiskValue")).ToolTip = disk == null ? null :
                 "읽기 " + FormatRate(disk.ReadBytesPerSecond) + " · 쓰기 " + FormatRate(disk.WriteBytesPerSecond);
@@ -3388,8 +3388,8 @@ namespace CodexUsageMeter
             previewSystem.Gpus.Add(new GpuSnapshot { Index = 1, Key = "gpu:preview1", Name = "NVIDIA GeForce", Percent = 17.0 });
             previewSystem.DiskAvailable = true;
             previewSystem.DiskPercent = 34.0;
-            previewSystem.Disks.Add(new DiskSnapshot { Index = 0, Key = "disk:0", Name = "디스크 0 (C:)", Detail = "SSD · 512 GB · System NVMe", Percent = 12.0, ReadBytesPerSecond = 48000000.0, WriteBytesPerSecond = 6200000.0 });
-            previewSystem.Disks.Add(new DiskSnapshot { Index = 1, Key = "disk:1", Name = "디스크 1 (D:)", Detail = "SSD · 2.0 TB · Data NVMe", Percent = 34.0, ReadBytesPerSecond = 8400000.0, WriteBytesPerSecond = 1200000.0 });
+            previewSystem.Disks.Add(new DiskSnapshot { Index = 0, Key = "disk:0", Name = "C:", Detail = "SSD · 512 GB · System NVMe", Percent = 12.0, ReadBytesPerSecond = 48000000.0, WriteBytesPerSecond = 6200000.0 });
+            previewSystem.Disks.Add(new DiskSnapshot { Index = 1, Key = "disk:1", Name = "D:", Detail = "SSD · 2.0 TB · Data NVMe", Percent = 34.0, ReadBytesPerSecond = 8400000.0, WriteBytesPerSecond = 1200000.0 });
             previewSystem.Networks.Add(new NetworkSnapshot { Key = "network:wifi", Name = "Wi-Fi", Detail = "Intel Wi-Fi 7", Connected = true, LinkSpeedBitsPerSecond = 2400000000L, Percent = 4.0, ReceiveBytesPerSecond = 11300000.0, SendBytesPerSecond = 684000.0 });
             previewSystem.Networks.Add(new NetworkSnapshot { Key = "network:ethernet", Name = "Ethernet", Detail = "2.5GbE Controller", Connected = false, LinkSpeedBitsPerSecond = 2500000000L, Percent = 0.0 });
             for (int sample = 0; sample < 24; sample++)
@@ -3420,7 +3420,7 @@ namespace CodexUsageMeter
             _compactGpuValue.Text = "41%";
             _compactGpuValue.ToolTip = _compactGpuLabel.ToolTip;
             _compactMemoryValue.Text = "63%";
-            _compactDiskLabel.Text = "디스크 1";
+            _compactDiskLabel.Text = previewSystem.Disks[1].Name;
             _compactDiskLabel.ToolTip = previewSystem.Disks[1].Name + " · " + previewSystem.Disks[1].Detail;
             _compactDiskValue.Text = "34%";
             _compactDiskValue.ToolTip = "읽기 " + FormatRate(previewSystem.Disks[1].ReadBytesPerSecond) +

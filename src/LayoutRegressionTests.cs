@@ -48,6 +48,7 @@ namespace CodexUsageMeter
             VerifyItemVisibility(report);
             VerifySnapping(report, previewDirectory);
             VerifyUpgradeLayout(report);
+            VerifyDiskDriveLabels(report);
             VerifyPcBarLayout(report, evidenceDirectory);
             CheckAccountAlignmentAndFit(report, previewDirectory);
             SubscriptionRegressionTests.Run(report);
@@ -1262,6 +1263,56 @@ namespace CodexUsageMeter
                 "PC chart moved or resized when only a reading changed: " + label + " before=" + expected + " after=" + actual);
         }
 
+        private static void VerifyDiskDriveLabels(Action<string> report)
+        {
+            string[] instances = { "0 C:", "1 D:", "2 C: D:", "10", "11   " };
+            string[] expected = { "C:", "D:", "C: D:", "디스크 10", "디스크 11" };
+            int[] indices = { 0, 1, 2, 10, 11 };
+            Window window = DashboardController.LoadWindow();
+            try
+            {
+                for (int i = 0; i < instances.Length; i++)
+                {
+                    string name = SystemMonitor.FormatDiskName(instances[i]);
+                    Require(name == expected[i], "Physical disk drive-letter label: " + instances[i]);
+                    var snapshot = new SystemSnapshot();
+                    var disk = new DiskSnapshot {
+                        Index = indices[i], Key = "disk:" + indices[i], Name = name, Detail = "SSD",
+                        Percent = 34, ReadBytesPerSecond = 1000, WriteBytesPerSecond = 2000, Available = true
+                    };
+                    snapshot.Disks.Add(disk);
+                    DashboardController.RenderCompactSystem(window, snapshot);
+                    Require(((TextBlock)window.FindName("CompactDiskLabel")).Text == expected[i] &&
+                        ((TextBlock)window.FindName("CompactDiskValue")).Text == "34%",
+                        "Compact disk label or usage changed");
+                    var items = (System.Collections.IEnumerable)typeof(DashboardController)
+                        .GetMethod("BuildPerformanceItems", BindingFlags.Static | BindingFlags.NonPublic)
+                        .Invoke(null, new object[] { snapshot });
+                    object display = items.Cast<object>().Single(item =>
+                        (string)item.GetType().GetField("Key").GetValue(item) == disk.Key);
+                    Require((string)display.GetType().GetField("Name").GetValue(display) == expected[i],
+                        "Expanded disk label differs from its drive letters");
+                    var history = new SystemHistory();
+                    DateTime now = DateTime.UtcNow;
+                    history.Add(now, snapshot);
+                    SystemHistorySample sample = history.Read(now).Single();
+                    string key = "disk:" + disk.Key;
+                    Require(sample.Metrics[key].Label == expected[i] + " 사용률" &&
+                        sample.Metrics[key + ":read"].Label == expected[i] + " 읽기" &&
+                        sample.Metrics[key + ":write"].Label == expected[i] + " 쓰기" &&
+                        sample.Values[key] == 34 && sample.Values[key + ":read"] == 1000 &&
+                        sample.Values[key + ":write"] == 2000,
+                        "Disk history labels, identity or readings changed");
+                }
+                DashboardController.RenderCompactSystem(window, new SystemSnapshot());
+                Require(((TextBlock)window.FindName("CompactDiskLabel")).Text == "디스크" &&
+                    ((TextBlock)window.FindName("CompactDiskValue")).Text == "N/A",
+                    "Missing disk no longer displays N/A");
+            }
+            finally { window.Close(); }
+            report("PASS disk drive letters: C:, D:, multiple volumes, unlettered disks, expanded/compact labels, history identity/readings and missing disks");
+        }
+
         private static void VerifyPcChartStability(Action<string> report, string directory)
         {
             string[] names = { "Cpu", "Gpu", "Memory", "Disk" };
@@ -1286,7 +1337,7 @@ namespace CodexUsageMeter
                         {
                             var system = new SystemSnapshot { CpuPercent = percent, MemoryPercent = percent };
                             system.Gpus.Add(new GpuSnapshot { Index = percent == 100 ? 10 : 0, Percent = percent, Name = "가상 GPU" });
-                            system.Disks.Add(new DiskSnapshot { Index = percent == 100 ? 10 : 0, Percent = percent, Name = "가상 디스크" });
+                            system.Disks.Add(new DiskSnapshot { Index = percent == 100 ? 10 : 0, Percent = percent, Name = percent == 100 ? "C: D:" : "C:" });
                             DashboardController.RenderCompactSystem(fixture.Window, system);
                             fixture.Render(width, 480);
                             Rect[] current = names.Select(name => bounds((FrameworkElement)fixture.Window.FindName("Compact" + name + "Track")))

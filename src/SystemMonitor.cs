@@ -181,7 +181,7 @@ namespace CodexUsageMeter
                         DiskSnapshot disk = new DiskSnapshot();
                         disk.Index = index;
                         disk.Key = "disk:" + index.ToString();
-                        disk.Name = "디스크 " + index.ToString() + FormatDiskVolumes(instanceName);
+                        disk.Name = FormatDiskName(instanceName);
                         disk.Detail = FormatDiskDetail(descriptor);
                         disk.Percent = Clamp(SafeDouble(item["PercentDiskTime"]));
                         disk.ReadBytesPerSecond = Math.Max(0.0, SafeDouble(item["DiskReadBytesPersec"]));
@@ -480,12 +480,11 @@ namespace CodexUsageMeter
             return end > 0 && Int32.TryParse(value.Substring(0, end), out parsed) ? parsed : 0;
         }
 
-        private static string FormatDiskVolumes(string instanceName)
+        internal static string FormatDiskName(string instanceName)
         {
             int separator = instanceName.IndexOf(' ');
-            if (separator < 0 || separator >= instanceName.Length - 1) return String.Empty;
-            string volumes = instanceName.Substring(separator + 1).Trim();
-            return String.IsNullOrWhiteSpace(volumes) ? String.Empty : " (" + volumes + ")";
+            string volumes = separator < 0 ? String.Empty : instanceName.Substring(separator + 1).Trim();
+            return String.IsNullOrWhiteSpace(volumes) ? "디스크 " + ParseLeadingInteger(instanceName).ToString() : volumes;
         }
 
         private static string FormatDiskDetail(DiskDescriptor descriptor)

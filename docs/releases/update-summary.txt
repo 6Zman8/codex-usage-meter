@@ -1,1 +1,1 @@
-Preserve header anchoring during vertical resizing while fitting card body content separately.
+Show disk drive letters such as C: and D: in PC status, widgets and history instead of disk numbers.
