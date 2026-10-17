@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.6.0")]
-[assembly: AssemblyFileVersion("1.9.6.0")]
+[assembly: AssemblyVersion("1.9.7.0")]
+[assembly: AssemblyFileVersion("1.9.7.0")]
 
 namespace CodexUsageMeter
 {
@@ -48,6 +48,12 @@ namespace CodexUsageMeter
                     File.WriteAllText(args[1], report.ToString());
                     return 0;
                 }
+                catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
+            }
+            if (args.Length == 2 && args[0] == "--resume-refresh-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try { ResumeRefreshRegressionTests.Run(line => report.AppendLine(line)); File.WriteAllText(args[1], report.ToString()); return 0; }
                 catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
             }
             if (args.Length == 2 && args[0] == "--tray-usage-self-test")
@@ -467,6 +473,7 @@ namespace CodexUsageMeter
         private readonly SystemHistory _systemHistory = new SystemHistory();
         private readonly DispatcherTimer _systemTimer;
         private readonly DispatcherTimer _accountTimer;
+        private readonly ResumeRefreshScheduler _resumeRefresh;
         private readonly Button _refreshButton;
         private readonly Button _hideButton;
         private readonly Button _topmostButton;
@@ -770,6 +777,9 @@ namespace CodexUsageMeter
             _trayUsageIcon = new TrayUsageIcon(_trayIcon, delegate { _window.Dispatcher.BeginInvoke(new Action(ShowWindow)); });
             UpdateTrayUsage();
             _trayIcon.Visible = true;
+            _resumeRefresh = new ResumeRefreshScheduler(_window.Dispatcher,
+                delegate { return _refreshing || _switchingAccount; },
+                delegate { return RefreshAccountsAsync(); }, TimeSpan.FromSeconds(5));
         }
 
         public static Window LoadWindow()
@@ -1031,6 +1041,15 @@ namespace CodexUsageMeter
         {
             const int WmNcHitTest = 0x0084;
             const int WmSizing = 0x0214;
+            const int WmPowerBroadcast = 0x0218;
+            const int PbtApmResumeAutomatic = 0x0012;
+            // Automatic resume also covers unattended wake; later user-resume messages are duplicates.
+            if (message == WmPowerBroadcast && wParam == new IntPtr(PbtApmResumeAutomatic))
+            {
+                _resumeRefresh.Request();
+                handled = true;
+                return new IntPtr(1);
+            }
             if (_window.WindowState != WindowState.Normal || _customMaximized)
             {
                 return IntPtr.Zero;
@@ -1935,14 +1954,14 @@ namespace CodexUsageMeter
             }
             _refreshing = true;
             await _accountOperationGate.WaitAsync();
-            _refreshButton.IsEnabled = false;
-            _compactRefreshButton.IsEnabled = false;
-            _accountCountDecreaseButton.IsEnabled = false;
-            _accountCountIncreaseButton.IsEnabled = false;
-            SetFooterText("계정 사용량을 확인하는 중…");
-
             try
             {
+                if (_disposed) return;
+                _refreshButton.IsEnabled = false;
+                _compactRefreshButton.IsEnabled = false;
+                _accountCountDecreaseButton.IsEnabled = false;
+                _accountCountIncreaseButton.IsEnabled = false;
+                SetFooterText("계정 사용량을 확인하는 중…");
                 AccountState[] states = _accounts.ToArray();
                 Task<AccountSnapshot>[] refreshes = states.Select(delegate(AccountState state)
                 {
@@ -1975,10 +1994,14 @@ namespace CodexUsageMeter
             {
                 _refreshing = false;
                 _accountOperationGate.Release();
-                _refreshButton.IsEnabled = !_switchingAccount;
-                _compactRefreshButton.IsEnabled = !_switchingAccount;
-                _accountCountDecreaseButton.IsEnabled = !_switchingAccount && _accountCount > 1;
-                _accountCountIncreaseButton.IsEnabled = !_switchingAccount && _accountCount < 4;
+                if (!_disposed)
+                {
+                    _refreshButton.IsEnabled = !_switchingAccount;
+                    _compactRefreshButton.IsEnabled = !_switchingAccount;
+                    _accountCountDecreaseButton.IsEnabled = !_switchingAccount && _accountCount > 1;
+                    _accountCountIncreaseButton.IsEnabled = !_switchingAccount && _accountCount < 4;
+                    _resumeRefresh.TryRunPending();
+                }
             }
         }
 
@@ -2427,6 +2450,7 @@ namespace CodexUsageMeter
                     _compactRefreshButton.IsEnabled = true;
                     _accountCountDecreaseButton.IsEnabled = _accountCount > 1;
                     _accountCountIncreaseButton.IsEnabled = _accountCount < 4;
+                    _resumeRefresh.TryRunPending();
                 }
             }
             if (_disposed) return;
@@ -3479,6 +3503,7 @@ namespace CodexUsageMeter
                 return;
             }
             _disposed = true;
+            _resumeRefresh.Dispose();
             PublishWindowsWidget(false);
             if (_windowsWidgetRenderer != null) _windowsWidgetRenderer.Dispose();
             _systemTimer.Stop();
@@ -3501,6 +3526,254 @@ namespace CodexUsageMeter
             {
                 drawingIcon.Dispose();
             }
+        }
+    }
+
+    // All request state and account work stay on the dashboard dispatcher.
+    internal sealed class ResumeRefreshScheduler : IDisposable
+    {
+        private readonly Dispatcher _dispatcher;
+        private readonly DispatcherTimer _delay;
+        private readonly Func<bool> _isBusy;
+        private readonly Func<Task> _refresh;
+        private bool _pending;
+        private bool _running;
+        private volatile bool _disposed;
+
+        internal ResumeRefreshScheduler(Dispatcher dispatcher, Func<bool> isBusy, Func<Task> refresh, TimeSpan delay)
+        {
+            _dispatcher = dispatcher;
+            _isBusy = isBusy;
+            _refresh = refresh;
+            _delay = new DispatcherTimer(DispatcherPriority.Background, dispatcher);
+            _delay.Interval = delay;
+            _delay.Tick += DelayElapsed;
+        }
+
+        internal void Request()
+        {
+            if (_disposed || _dispatcher.HasShutdownStarted) return;
+            _dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(delegate
+            {
+                // A queued notification may outlive the controller's native window hook.
+                if (_disposed || _pending || _running) return;
+                _pending = true;
+                _delay.Start();
+            }));
+        }
+
+        private void DelayElapsed(object sender, EventArgs e)
+        {
+            _delay.Stop();
+            TryRunPending();
+        }
+
+        internal async void TryRunPending()
+        {
+            if (_disposed || !_pending || _delay.IsEnabled || _running || _isBusy()) return;
+            _pending = false;
+            _running = true;
+            try { await _refresh(); }
+            finally { _running = false; }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _pending = false;
+            _delay.Stop();
+            _delay.Tick -= DelayElapsed;
+        }
+    }
+
+    // No dashboard, account profiles, network calls or actual power transitions are used.
+    internal static class ResumeRefreshRegressionTests
+    {
+        internal static void Run(Action<string> report)
+        {
+            Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
+            SynchronizationContext previous = SynchronizationContext.Current;
+            DispatcherTimer timeout = new DispatcherTimer();
+            DispatcherFrame frame = new DispatcherFrame();
+            Stopwatch elapsed = Stopwatch.StartNew();
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(dispatcher));
+                Task tests = RunAsync(dispatcher, report);
+                timeout.Interval = TimeSpan.FromMilliseconds(10);
+                timeout.Tick += delegate
+                {
+                    if (tests.IsCompleted || elapsed.Elapsed > TimeSpan.FromSeconds(10)) frame.Continue = false;
+                };
+                timeout.Start();
+                Dispatcher.PushFrame(frame);
+                Require(tests.IsCompleted, "Resume refresh tests timed out.");
+                tests.GetAwaiter().GetResult();
+            }
+            finally
+            {
+                timeout.Stop();
+                SynchronizationContext.SetSynchronizationContext(previous);
+            }
+        }
+
+        private static async Task RunAsync(Dispatcher dispatcher, Action<string> report)
+        {
+            TimeSpan delay = TimeSpan.FromMilliseconds(100);
+            BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            int calls = 0;
+            Stopwatch sinceResume = new Stopwatch();
+            TaskCompletionSource<int> started = new TaskCompletionSource<int>();
+            TaskCompletionSource<int> finished = new TaskCompletionSource<int>();
+            using (ResumeRefreshScheduler scheduler = new ResumeRefreshScheduler(dispatcher,
+                delegate { Require(dispatcher.CheckAccess(), "Busy checks must stay on the dispatcher."); return false; },
+                delegate
+                {
+                    Require(dispatcher.CheckAccess(), "Resume refresh must stay on the dispatcher.");
+                    calls++;
+                    started.TrySetResult(0);
+                    return finished.Task;
+                }, delay))
+            {
+                sinceResume.Start();
+                // Block only the test dispatcher until the background notifications are queued.
+                Task.Run(delegate
+                {
+                    for (int index = 0; index < 3; index++)
+                        scheduler.Request();
+                }).GetAwaiter().GetResult();
+                Require(calls == 0, "A background power event must not refresh inline.");
+                await started.Task;
+                Require(sinceResume.ElapsedMilliseconds >= 80, "Resume refresh must wait for its delay.");
+                Require(calls == 1, "Duplicate queued resume events must coalesce.");
+                scheduler.Request();
+                await Task.Delay(200);
+                Require(calls == 1, "Duplicate events during the resume refresh must not overlap or repeat it.");
+                finished.SetResult(0);
+                await Task.Yield();
+            }
+            report("PASS resume: background dispatch, delayed refresh and duplicate coalescing");
+
+            WindowState[] windowStates = { WindowState.Normal, WindowState.Minimized, WindowState.Maximized,
+                WindowState.Normal, WindowState.Normal };
+            for (int scenario = 0; scenario < windowStates.Length; scenario++)
+            {
+                calls = 0;
+                Window window = new Window { WindowState = windowStates[scenario], ShowInTaskbar = false };
+                using (ResumeRefreshScheduler scheduler = new ResumeRefreshScheduler(dispatcher,
+                    delegate { return false; }, delegate { calls++; return Task.FromResult(0); }, delay))
+                {
+                    try
+                    {
+                        DashboardController hiddenController = (DashboardController)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(
+                            typeof(DashboardController));
+                        typeof(DashboardController).GetField("_window", flags).SetValue(hiddenController, window);
+                        typeof(DashboardController).GetField("_resumeRefresh", flags).SetValue(hiddenController, scheduler);
+                        typeof(DashboardController).GetField("_customMaximized", flags).SetValue(hiddenController, scenario == 3);
+                        // Tray startup creates this handle without showing or activating the window.
+                        if (scenario == 4) new WindowInteropHelper(window).EnsureHandle();
+                        MethodInfo hook = typeof(DashboardController).GetMethod("WindowMessageHook", flags);
+                        foreach (int powerEvent in new[] { 0x0004, 0x000A, 0x0007 })
+                            hook.Invoke(hiddenController, new object[] { IntPtr.Zero, 0x0218, new IntPtr(powerEvent), IntPtr.Zero, false });
+                        hook.Invoke(hiddenController, new object[] { IntPtr.Zero, 0, new IntPtr(0x0012), IntPtr.Zero, false });
+                        await Task.Delay(200);
+                        Require(calls == 0, "Suspend, status, user-resume and unrelated messages must not refresh.");
+                        object[] message = { IntPtr.Zero, 0x0218, new IntPtr(0x0012), IntPtr.Zero, false };
+                        IntPtr result = (IntPtr)hook.Invoke(hiddenController, message);
+                        Require((bool)message[4] && result == new IntPtr(1), "Automatic resume must be processed in every window state.");
+                        await Task.Delay(200);
+                        Require(calls == 1, "Normal, minimized, maximized, custom-maximized and tray states must refresh.");
+                        hook.Invoke(hiddenController, new object[] { IntPtr.Zero, 0x0218, new IntPtr(0x0007), IntPtr.Zero, false });
+                        await Task.Delay(200);
+                        Require(calls == 1, "A later user-resume message must not repeat the automatic resume refresh.");
+                        Require(!window.IsVisible && !window.IsActive && window.WindowState == windowStates[scenario],
+                            "Resume must not show, activate, restore or maximize the window.");
+                    }
+                    finally { window.Close(); }
+                }
+            }
+            report("PASS resume: native hook in all window states including hidden tray; unrelated and later user-resume messages ignored");
+
+            for (int scenario = 0; scenario < 3; scenario++)
+            {
+                bool refreshing = scenario != 1;
+                bool switching = scenario != 0;
+                calls = 0;
+                using (ResumeRefreshScheduler scheduler = new ResumeRefreshScheduler(dispatcher,
+                    delegate { return refreshing || switching; },
+                    delegate
+                    {
+                        Require(!refreshing && !switching, "Resume refresh must not overlap a refresh or account switch.");
+                        calls++;
+                        return Task.FromResult(0);
+                    }, delay))
+                {
+                    scheduler.Request();
+                    await Task.Delay(200);
+                    Require(calls == 0, "A busy operation must retain, not run, the resume request.");
+                    scheduler.Request();
+                    await dispatcher.InvokeAsync(new Action(delegate { }), DispatcherPriority.ApplicationIdle).Task;
+                    scheduler.TryRunPending();
+                    Require(calls == 0, "An idle notification cannot bypass the remaining busy operation.");
+                    refreshing = false;
+                    scheduler.TryRunPending();
+                    if (switching) Require(calls == 0, "Refresh completion must still wait for switch completion.");
+                    switching = false;
+                    scheduler.TryRunPending();
+                    Require(calls == 1, "Completion must run the retained request exactly once.");
+                    scheduler.TryRunPending();
+                    await Task.Delay(200);
+                    Require(calls == 1, "A completed resume request must not repeat.");
+                    scheduler.Request();
+                    await Task.Delay(200);
+                    Require(calls == 2, "A later resume must be able to schedule a new refresh.");
+                }
+            }
+            report("PASS resume: pending request survives refresh/switch/both and drains once after busy completion");
+
+            for (int scenario = 0; scenario < 3; scenario++)
+            {
+                bool busy = scenario == 2;
+                calls = 0;
+                using (ResumeRefreshScheduler scheduler = new ResumeRefreshScheduler(dispatcher,
+                    delegate { return busy; }, delegate { calls++; return Task.FromResult(0); }, delay))
+                {
+                    scheduler.Request();
+                    if (scenario == 1)
+                        await dispatcher.InvokeAsync(new Action(delegate { }), DispatcherPriority.ApplicationIdle).Task;
+                    if (scenario == 2) await Task.Delay(200);
+                    scheduler.Dispose();
+                    busy = false;
+                    scheduler.TryRunPending();
+                    scheduler.Request();
+                    await Task.Delay(200);
+                    Require(calls == 0, "Disposal must cancel queued, delayed and busy-pending resume requests.");
+                }
+            }
+            report("PASS resume: disposal cancels queued dispatch, active delay and busy-pending work");
+
+            // Exercise the real refresh gate without constructing a dashboard or opening profiles.
+            DashboardController controller = (DashboardController)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(
+                typeof(DashboardController));
+            using (SemaphoreSlim gate = new SemaphoreSlim(0, 1))
+            {
+                typeof(DashboardController).GetField("_accountOperationGate", flags).SetValue(controller, gate);
+                Task refresh = (Task)typeof(DashboardController).GetMethod("RefreshAccountsAsync", flags).Invoke(
+                    controller, new object[] { false });
+                Require(!refresh.IsCompleted, "Refresh must wait for the existing account operation.");
+                typeof(DashboardController).GetField("_disposed", flags).SetValue(controller, true);
+                gate.Release();
+                await refresh;
+                Require(gate.CurrentCount == 1 && !(bool)typeof(DashboardController).GetField("_refreshing", flags).GetValue(controller),
+                    "Disposal while waiting must release the gate without starting account or UI work.");
+            }
+            report("PASS resume: refresh queued behind another account operation stops safely after disposal");
+        }
+
+        private static void Require(bool condition, string message)
+        {
+            if (!condition) throw new InvalidOperationException(message);
         }
     }
 

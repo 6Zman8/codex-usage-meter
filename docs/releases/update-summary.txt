@@ -1,1 +1,1 @@
-Retry failed account refreshes once automatically and remove the redundant LIVE badge from PC status.
+Refresh automatically after sleep and retry empty Codex quota responses once after a short delay.

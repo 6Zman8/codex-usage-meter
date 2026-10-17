@@ -549,6 +549,7 @@ namespace CodexUsageMeter
 
             if (bucket == null)
             {
+                snapshot.ErrorKind = AccountErrorKind.QuotaUnavailable;
                 snapshot.Error = "사용량 한도 정보가 비어 있습니다.";
                 return;
             }
@@ -572,7 +573,10 @@ namespace CodexUsageMeter
                 snapshot.Secondary = weekly;
             }
             if (snapshot.Primary == null && snapshot.Secondary == null)
+            {
+                snapshot.ErrorKind = AccountErrorKind.QuotaUnavailable;
                 snapshot.Error = "사용량 한도 정보가 비어 있습니다.";
+            }
         }
 
         private static void ParseResetCredits(Dictionary<string, object> source, AccountSnapshot snapshot)

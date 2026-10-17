@@ -46,7 +46,8 @@ namespace CodexUsageMeter
     internal enum AccountErrorKind
     {
         None, InstallNeeded, LoginRequired, UnsupportedAuthentication, ScopeDenied, RateLimited,
-        Timeout, Canceled, IdentityUnavailable, IdentityMismatch, RenewalBlocked, Storage, Network, InvalidResponse, UnknownProvider
+        Timeout, Canceled, IdentityUnavailable, IdentityMismatch, RenewalBlocked, Storage, Network, InvalidResponse, UnknownProvider,
+        QuotaUnavailable
     }
 
     internal sealed class AccountProviderException : Exception
@@ -141,7 +142,7 @@ namespace CodexUsageMeter
                     (!snapshot.IsAuthenticated && !HasRetainedCredentials(account)))
                     return snapshot;
                 // Only this account's read is repeated; never reconnect, rotate credentials or invoke login/logout here.
-                await retryDelay(350);
+                await retryDelay(5000);
             }
         }
 
@@ -151,7 +152,8 @@ namespace CodexUsageMeter
         private static bool IsTransientRefresh(AccountSnapshot snapshot)
         {
             if (snapshot == null || snapshot.RetryAfterUtc.HasValue) return false;
-            if (IsTransientRefreshKind(snapshot.ErrorKind)) return true;
+            // QuotaUnavailable is emitted only after a successful quota response parses without a usable window.
+            if (IsTransientRefreshKind(snapshot.ErrorKind) || snapshot.ErrorKind == AccountErrorKind.QuotaUnavailable) return true;
             if (snapshot.ErrorKind != AccountErrorKind.None) return false;
             return !snapshot.IsAuthenticated && String.IsNullOrWhiteSpace(snapshot.Error);
         }

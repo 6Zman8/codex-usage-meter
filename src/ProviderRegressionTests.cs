@@ -41,7 +41,7 @@ namespace CodexUsageMeter
             IdentityAndHistory(root); report("PASS providers: verified identity, replacement, token rotation, isolation and truthful observations");
             Renewal(root); report("PASS providers: encoded OAuth refresh contract, isolated atomic persistence and renewal blockers");
             Errors(root); report("PASS providers: per-account failure isolation, 401, scope denial, 429 backoff, timeout, cancellation and safe errors");
-            RefreshRetry(root); report("PASS providers: delayed Codex-only recovery, two-attempt cap, retained credentials and permanent retry exclusions");
+            RefreshRetry(root); report("PASS providers: parsed quota recovery, five-second Codex-only delay, per-invocation cap, concurrent accounts and preserved credentials/exclusions");
             LoginAndEnvironment(root); report("PASS providers: CLI discovery, install-needed UX, isolated auth commands, environment cleanup, logout and nonblocking login");
             SwitchFiltering(root); report("PASS providers: Codex detection, synchronization and switching exclude retained non-Codex slots");
         }
@@ -405,29 +405,92 @@ namespace CodexUsageMeter
         private static void RefreshRetry(string root)
         {
             string profile = Path.Combine(root, "refresh-retry-" + Guid.NewGuid().ToString("N"));
+            string otherProfile = Path.Combine(root, "refresh-retry-other-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(profile);
+            Directory.CreateDirectory(otherProfile);
             foreach (AccountProvider provider in AccountProviders.Registered)
                 File.WriteAllText(Path.Combine(profile, provider.CredentialFile), "retained-fixture-" + provider.Id);
+            File.WriteAllText(Path.Combine(otherProfile, AccountProviders.Codex.CredentialFile), "retained-other-codex-fixture");
 
-            AccountSnapshot success = new AccountSnapshot { ProviderId = "codex", IsAuthenticated = true, Email = "fixture@example.test" };
+            AccountSnapshot success = ParseCodexQuota(@"{""rateLimits"":{""primary"":{""usedPercent"":25,""windowDurationMins"":300}}}");
+            AccountSnapshot quotaUnavailable = ParseCodexQuota(@"{""rateLimits"":{}}");
             AccountSnapshot network = new AccountSnapshot { ProviderId = "codex", ErrorKind = AccountErrorKind.Network, Error = "offline" };
             TaskCompletionSource<int> delay = new TaskCompletionSource<int>();
-            int delays = 0;
+            TaskCompletionSource<int> otherDelay = new TaskCompletionSource<int>();
+            int delays = 0, otherDelays = 0;
             RefreshAccount recovering = new RefreshAccount(AccountProviders.Codex, profile,
-                call => Task.FromResult(call == 1 ? network : success));
+                call => Task.FromResult(call == 1 ? quotaUnavailable : success));
             Task<AccountSnapshot> pending = AccountProviders.RefreshSafelyAsync(recovering, milliseconds => {
-                Require(milliseconds > 0 && milliseconds <= 1000, "Refresh retry delay was not short and positive.");
+                Require(milliseconds == 5000, "Refresh recovery did not wait five seconds.");
                 delays++; return delay.Task;
             });
             Require(!pending.IsCompleted && recovering.RefreshCalls == 1 && delays == 1, "Retry did not wait before the second read.");
+            AccountSnapshot otherQuotaUnavailable = ParseCodexQuota(@"{}");
+            otherQuotaUnavailable.Email = "other@example.test";
+            RefreshAccount other = new RefreshAccount(AccountProviders.Codex, otherProfile, call => Task.FromResult(otherQuotaUnavailable));
+            Task<AccountSnapshot> otherPending = AccountProviders.RefreshSafelyAsync(other, milliseconds => {
+                Require(milliseconds == 5000, "Second account recovery did not wait five seconds.");
+                otherDelays++; return otherDelay.Task;
+            });
+            Require(!otherPending.IsCompleted && other.RefreshCalls == 1 && otherDelays == 1, "Second account did not have its own retry delay.");
             RefreshAccount healthy = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(success));
             Require(System.Object.ReferenceEquals(RefreshForTest(healthy, 1), success), "Healthy account changed while another account waited.");
             delay.SetResult(0);
             Require(System.Object.ReferenceEquals(pending.GetAwaiter().GetResult(), success) && recovering.RefreshCalls == 2 &&
                 delays == 1 && recovering.LoginCalls == 0 && recovering.LogoutCalls == 0, "Delayed recovery did not return the second snapshot.");
+            Require(!otherPending.IsCompleted && other.RefreshCalls == 1, "One account's completion released another account's retry.");
+            otherDelay.SetResult(0);
+            Require(System.Object.ReferenceEquals(otherPending.GetAwaiter().GetResult(), otherQuotaUnavailable) && other.RefreshCalls == 2 &&
+                otherDelays == 1 && other.LoginCalls == 0 && other.LogoutCalls == 0, "Second account did not stop after its own single retry.");
+
+            foreach (string json in new[] {
+                @"{""rateLimits"":{""primary"":{""usedPercent"":0,""windowDurationMins"":300}}}",
+                @"{""rateLimits"":{""primary"":{""usedPercent"":100,""windowDurationMins"":300}}}",
+                @"{""rateLimits"":{""secondary"":{""usedPercent"":0,""windowDurationMins"":10080}}}",
+                @"{""rateLimits"":{""secondary"":{""usedPercent"":100,""windowDurationMins"":10080}}}",
+                @"{""rateLimits"":{""primary"":{""usedPercent"":0,""windowDurationMins"":10080}}}",
+                @"{""rateLimits"":{""primary"":{""usedPercent"":100,""windowDurationMins"":10080}}}",
+                @"{""rateLimits"":{""primary"":{""usedPercent"":25,""windowDurationMins"":300},""secondary"":{""usedPercent"":75,""windowDurationMins"":10080}}}",
+                @"{""rateLimits"":{""primary"":{""usedPercent"":75,""windowDurationMins"":10080},""secondary"":{""usedPercent"":25,""windowDurationMins"":300}}}",
+                @"{""rateLimits"":{""primary"":{},""secondary"":{""usedPercent"":0}}}",
+                @"{""rateLimits"":{""primary"":{""usedPercent"":100},""secondary"":{""usedPercent"":""invalid""}}}",
+                @"{""rateLimitsByLimitId"":{""codex"":{""primary"":{""usedPercent"":0}}}}",
+                @"{""rateLimitsByLimitId"":{""codex"":{""secondary"":{""usedPercent"":100,""windowDurationMins"":10080}}},""rateLimits"":{""limitId"":""other""}}"
+            })
+            {
+                AccountSnapshot parsed = ParseCodexQuota(json);
+                Require((parsed.Primary != null || parsed.Secondary != null) && parsed.ErrorKind == AccountErrorKind.None &&
+                    String.IsNullOrEmpty(parsed.Error), "Valid quota was classified as unavailable: " + json);
+                RefreshAccount account = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(parsed));
+                Require(System.Object.ReferenceEquals(RefreshForTest(account, 1), parsed), "Valid quota was replaced or retried.");
+                parsed.UsageError = "optional usage unavailable";
+                Require(System.Object.ReferenceEquals(RefreshForTest(account, 1), parsed), "Optional usage error retried valid quota.");
+            }
+
+            foreach (string json in new[] {
+                @"{}", @"{""rateLimits"":null}", @"{""rateLimits"":{}}",
+                @"{""rateLimits"":{""primary"":null,""secondary"":null}}",
+                @"{""rateLimitsByLimitId"":{""codex"":{}}}",
+                @"{""rateLimits"":{""limitId"":""other"",""primary"":{""usedPercent"":25}}}",
+                @"{""rateLimits"":{""primary"":{},""secondary"":{""usedPercent"":""invalid""}}}"
+            })
+            {
+                AccountSnapshot parsed = ParseCodexQuota(json);
+                Require(parsed.Primary == null && parsed.Secondary == null && parsed.ErrorKind == AccountErrorKind.QuotaUnavailable &&
+                    !String.IsNullOrWhiteSpace(parsed.Error), "Parsed empty quota lacked its explicit outcome: " + json);
+                RefreshAccount account = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(call == 1 ? parsed : success));
+                Require(System.Object.ReferenceEquals(RefreshForTest(account, 2), success), "Parsed empty quota did not recover.");
+                RefreshAccount repeated = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(parsed));
+                foreach (string invocation in new[] { "startup", "poll", "manual refresh" })
+                    Require(System.Object.ReferenceEquals(RefreshForTest(repeated, 2), parsed),
+                        "Quota retry allowance was not bounded/reset for " + invocation + ".");
+                parsed.RetryAfterUtc = Initial.AddMinutes(2);
+                Require(System.Object.ReferenceEquals(RefreshForTest(repeated, 1), parsed), "Quota recovery ignored server backoff.");
+            }
 
             foreach (AccountSnapshot failed in new[] {
                 network,
+                quotaUnavailable,
                 new AccountSnapshot { ProviderId = "codex", IsAuthenticated = true, ErrorKind = AccountErrorKind.Timeout, Error = "timeout" },
                 new AccountSnapshot { ProviderId = "codex" }
             })
@@ -448,8 +511,9 @@ namespace CodexUsageMeter
             Require(System.Object.ReferenceEquals(RefreshForTest(persistent, 2), last), "Retry allowance did not reset for the next refresh.");
             RefreshAccount empty = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(new AccountSnapshot { ProviderId = "codex" }));
             RefreshForTest(empty, 2);
-            RefreshAccount usageOnly = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(
-                new AccountSnapshot { ProviderId = "codex", IsAuthenticated = true, UsageError = "optional usage unavailable" }));
+            AccountSnapshot optionalUsage = ParseCodexQuota(@"{""rateLimits"":{""secondary"":{""usedPercent"":100,""windowDurationMins"":10080}}}");
+            optionalUsage.UsageError = "optional usage unavailable";
+            RefreshAccount usageOnly = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(optionalUsage));
             RefreshForTest(usageOnly, 1);
             RefreshAccount backoff = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(
                 new AccountSnapshot { ProviderId = "codex", ErrorKind = AccountErrorKind.Network, Error = "offline", RetryAfterUtc = Initial.AddMinutes(2) }));
@@ -516,18 +580,37 @@ namespace CodexUsageMeter
             foreach (Exception error in new Exception[] { new RpcException("connection reset by peer"), new RpcException("authentication required"),
                 new FileNotFoundException(), new DirectoryNotFoundException(), new PathTooLongException(), new InvalidDataException(),
                 new UnauthorizedAccessException(), new OperationCanceledException(), new ObjectDisposedException("fixture"), new Exception("unknown") })
+            {
                 Require(CodexRpcClient.RefreshErrorKind(error) == AccountErrorKind.None, "Codex classified a permanent/unknown error as transient.");
+                AccountSnapshot blocked = new AccountSnapshot { ProviderId = "codex", IsAuthenticated = true,
+                    ErrorKind = CodexRpcClient.RefreshErrorKind(error), Error = error.Message };
+                RefreshAccount account = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(blocked));
+                Require(System.Object.ReferenceEquals(RefreshForTest(account, 1), blocked), "Codex error without quota outcome was retried.");
+            }
             foreach (AccountProvider provider in AccountProviders.Registered)
                 Require(File.ReadAllText(Path.Combine(profile, provider.CredentialFile)) == "retained-fixture-" + provider.Id, "Retry changed retained credentials.");
             Require(Directory.GetFiles(profile).Length == AccountProviders.Registered.Length && Directory.GetDirectories(profile).Length == 0,
                 "Retry created credential/profile artifacts.");
+            Require(File.ReadAllText(Path.Combine(otherProfile, AccountProviders.Codex.CredentialFile)) == "retained-other-codex-fixture" &&
+                Directory.GetFiles(otherProfile).Length == 1 && Directory.GetDirectories(otherProfile).Length == 0,
+                "Concurrent retry changed the other account's credentials/profile.");
+        }
+
+        private static AccountSnapshot ParseCodexQuota(string json)
+        {
+            AccountSnapshot snapshot = new AccountSnapshot { ProviderId = "codex", IsAuthenticated = true,
+                Email = "fixture@example.test", ResetCredits = new List<ResetCreditInfo>() };
+            // The parser uses no process/client state; exercise it without launching Codex or accessing real credentials.
+            typeof(CodexRpcClient).GetMethod("ParseRateLimits", Private).Invoke(
+                FormatterServices.GetUninitializedObject(typeof(CodexRpcClient)), new object[] { Object(json), snapshot });
+            return snapshot;
         }
 
         private static AccountSnapshot RefreshForTest(RefreshAccount account, int expectedCalls)
         {
             int before = account.RefreshCalls, delays = 0;
             AccountSnapshot result = AccountProviders.RefreshSafelyAsync(account, milliseconds => {
-                Require(milliseconds > 0 && milliseconds <= 1000, "Refresh retry delay was not short and positive.");
+                Require(milliseconds == 5000, "Refresh recovery did not wait five seconds.");
                 delays++; return Task.FromResult(0);
             }).GetAwaiter().GetResult();
             Require(account.RefreshCalls - before == expectedCalls && delays == expectedCalls - 1,
