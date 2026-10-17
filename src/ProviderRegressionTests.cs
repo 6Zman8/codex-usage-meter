@@ -41,6 +41,7 @@ namespace CodexUsageMeter
             IdentityAndHistory(root); report("PASS providers: verified identity, replacement, token rotation, isolation and truthful observations");
             Renewal(root); report("PASS providers: encoded OAuth refresh contract, isolated atomic persistence and renewal blockers");
             Errors(root); report("PASS providers: per-account failure isolation, 401, scope denial, 429 backoff, timeout, cancellation and safe errors");
+            RefreshRetry(root); report("PASS providers: delayed Codex-only recovery, two-attempt cap, retained credentials and permanent retry exclusions");
             LoginAndEnvironment(root); report("PASS providers: CLI discovery, install-needed UX, isolated auth commands, environment cleanup, logout and nonblocking login");
             SwitchFiltering(root); report("PASS providers: Codex detection, synchronization and switching exclude retained non-Codex slots");
         }
@@ -399,6 +400,155 @@ namespace CodexUsageMeter
                     "Claude capability filtering also hid supported Codex content.");
             }
             window.Close();
+        }
+
+        private static void RefreshRetry(string root)
+        {
+            string profile = Path.Combine(root, "refresh-retry-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(profile);
+            foreach (AccountProvider provider in AccountProviders.Registered)
+                File.WriteAllText(Path.Combine(profile, provider.CredentialFile), "retained-fixture-" + provider.Id);
+
+            AccountSnapshot success = new AccountSnapshot { ProviderId = "codex", IsAuthenticated = true, Email = "fixture@example.test" };
+            AccountSnapshot network = new AccountSnapshot { ProviderId = "codex", ErrorKind = AccountErrorKind.Network, Error = "offline" };
+            TaskCompletionSource<int> delay = new TaskCompletionSource<int>();
+            int delays = 0;
+            RefreshAccount recovering = new RefreshAccount(AccountProviders.Codex, profile,
+                call => Task.FromResult(call == 1 ? network : success));
+            Task<AccountSnapshot> pending = AccountProviders.RefreshSafelyAsync(recovering, milliseconds => {
+                Require(milliseconds > 0 && milliseconds <= 1000, "Refresh retry delay was not short and positive.");
+                delays++; return delay.Task;
+            });
+            Require(!pending.IsCompleted && recovering.RefreshCalls == 1 && delays == 1, "Retry did not wait before the second read.");
+            RefreshAccount healthy = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(success));
+            Require(System.Object.ReferenceEquals(RefreshForTest(healthy, 1), success), "Healthy account changed while another account waited.");
+            delay.SetResult(0);
+            Require(System.Object.ReferenceEquals(pending.GetAwaiter().GetResult(), success) && recovering.RefreshCalls == 2 &&
+                delays == 1 && recovering.LoginCalls == 0 && recovering.LogoutCalls == 0, "Delayed recovery did not return the second snapshot.");
+
+            foreach (AccountSnapshot failed in new[] {
+                network,
+                new AccountSnapshot { ProviderId = "codex", IsAuthenticated = true, ErrorKind = AccountErrorKind.Timeout, Error = "timeout" },
+                new AccountSnapshot { ProviderId = "codex" }
+            })
+            {
+                RefreshAccount account = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(call == 1 ? failed : success));
+                Require(System.Object.ReferenceEquals(RefreshForTest(account, 2), success), "Transient or empty retained Codex account did not recover.");
+                RefreshAccount unconnected = new RefreshAccount(AccountProviders.Codex, Path.Combine(profile, "unconnected"),
+                    call => Task.FromResult(new AccountSnapshot { ProviderId = "codex", ErrorKind = failed.ErrorKind, Error = failed.Error }));
+                RefreshForTest(unconnected, 1);
+                AccountSnapshot claudeFailure = new AccountSnapshot { ProviderId = "claude", IsAuthenticated = failed.IsAuthenticated,
+                    ErrorKind = failed.ErrorKind, Error = failed.Error };
+                RefreshAccount claude = new RefreshAccount(AccountProviders.Claude, profile, call => Task.FromResult(claudeFailure));
+                Require(System.Object.ReferenceEquals(RefreshForTest(claude, 1), claudeFailure), "Claude refresh was repeated or replaced.");
+            }
+            AccountSnapshot last = new AccountSnapshot { ProviderId = "codex", ErrorKind = AccountErrorKind.Timeout, Error = "last failure" };
+            RefreshAccount persistent = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(call % 2 == 1 ? network : last));
+            Require(System.Object.ReferenceEquals(RefreshForTest(persistent, 2), last), "Retry did not return the final failure.");
+            Require(System.Object.ReferenceEquals(RefreshForTest(persistent, 2), last), "Retry allowance did not reset for the next refresh.");
+            RefreshAccount empty = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(new AccountSnapshot { ProviderId = "codex" }));
+            RefreshForTest(empty, 2);
+            RefreshAccount usageOnly = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(
+                new AccountSnapshot { ProviderId = "codex", IsAuthenticated = true, UsageError = "optional usage unavailable" }));
+            RefreshForTest(usageOnly, 1);
+            RefreshAccount backoff = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(
+                new AccountSnapshot { ProviderId = "codex", ErrorKind = AccountErrorKind.Network, Error = "offline", RetryAfterUtc = Initial.AddMinutes(2) }));
+            RefreshForTest(backoff, 1);
+
+            foreach (AccountErrorKind kind in new[] { AccountErrorKind.InstallNeeded, AccountErrorKind.LoginRequired,
+                AccountErrorKind.UnsupportedAuthentication, AccountErrorKind.ScopeDenied, AccountErrorKind.RateLimited,
+                AccountErrorKind.Canceled, AccountErrorKind.IdentityUnavailable, AccountErrorKind.IdentityMismatch,
+                AccountErrorKind.RenewalBlocked, AccountErrorKind.Storage, AccountErrorKind.InvalidResponse, AccountErrorKind.UnknownProvider })
+            {
+                AccountSnapshot blocked = new AccountSnapshot { ProviderId = "codex", IsAuthenticated = true, ErrorKind = kind, Error = "connection timed out" };
+                RefreshAccount account = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(blocked));
+                Require(System.Object.ReferenceEquals(RefreshForTest(account, 1), blocked), "Permanent snapshot was replaced or retried: " + kind);
+                RefreshAccount throwing = new RefreshAccount(AccountProviders.Codex, profile, call => { throw new AccountProviderException(kind, "blocked"); });
+                Require(RefreshForTest(throwing, 1).ErrorKind == kind, "Permanent exception classification changed: " + kind);
+            }
+            foreach (string message in new[] { "account/read 응답 시간이 초과되었습니다.", "Codex app-server 연결이 종료되었습니다.",
+                "error sending request for url (https://example.test/usage)", "HTTP 503 Service Unavailable",
+                "계정 연결이 필요합니다.", "authentication required: request timed out",
+                "401 Unauthorized: connection reset", "403 Forbidden: temporarily unavailable", "scope denied: timeout",
+                "429 Too Many Requests: service unavailable", "rate limit exceeded: timeout", "token expired: timeout",
+                "request canceled: timed out", "credential file unavailable: timeout", "identity mismatch: network error",
+                "저장 실패: 응답 시간이 초과되었습니다.", "알 수 없는 오류", "Codex 요청이 실패했습니다." })
+            {
+                AccountSnapshot blocked = new AccountSnapshot { ProviderId = "codex", IsAuthenticated = true, Error = message };
+                RefreshAccount account = new RefreshAccount(AccountProviders.Codex, profile, call => Task.FromResult(blocked));
+                Require(System.Object.ReferenceEquals(RefreshForTest(account, 1), blocked), "Untyped RPC failure was retried: " + message);
+            }
+
+            foreach (Exception error in new Exception[] { new TimeoutException("secret"),
+                new AccountProviderException(AccountErrorKind.Network, "offline"), new AccountProviderException(AccountErrorKind.Timeout, "timeout") })
+            {
+                RefreshAccount account = new RefreshAccount(AccountProviders.Codex, profile, call => {
+                    if (call == 1) throw error;
+                    return Task.FromResult(success);
+                });
+                Require(System.Object.ReferenceEquals(RefreshForTest(account, 2), success), "Thrown transient failure did not recover: " + error.GetType().Name);
+                TaskCompletionSource<AccountSnapshot> fault = new TaskCompletionSource<AccountSnapshot>(); fault.SetException(error);
+                RefreshAccount faulted = new RefreshAccount(AccountProviders.Codex, profile, call => call == 1 ? fault.Task : Task.FromResult(success));
+                Require(System.Object.ReferenceEquals(RefreshForTest(faulted, 2), success), "Faulted transient task did not recover.");
+                RefreshAccount repeated = new RefreshAccount(AccountProviders.Codex, profile, call => { throw error; });
+                Require(RefreshForTest(repeated, 2).Error != null, "Persistent thrown failure was lost.");
+                RefreshAccount unconnected = new RefreshAccount(AccountProviders.Codex, Path.Combine(profile, "unconnected"), call => { throw error; });
+                RefreshForTest(unconnected, 1);
+                RefreshAccount claude = new RefreshAccount(AccountProviders.Claude, profile, call => { throw error; });
+                RefreshForTest(claude, 1);
+            }
+            foreach (Exception error in new Exception[] { new OperationCanceledException("secret"), new TaskCanceledException("secret"),
+                new IOException("secret connection reset"), new UnauthorizedAccessException("secret"), new FileNotFoundException("secret"),
+                new DirectoryNotFoundException("secret"), new InvalidOperationException("secret"), new ObjectDisposedException("secret"),
+                new RpcException("connection reset by peer"), new RpcException("authentication required: timeout"), new Exception("secret") })
+            {
+                RefreshAccount account = new RefreshAccount(AccountProviders.Codex, profile, call => { throw error; });
+                AccountSnapshot failed = RefreshForTest(account, 1);
+                Require(!String.IsNullOrWhiteSpace(failed.Error) && !failed.Error.Contains("secret"), "Thrown error was not safely reported.");
+                if (error is OperationCanceledException || error is ObjectDisposedException)
+                    Require(failed.ErrorKind == AccountErrorKind.Canceled, "Cancellation was reported as a network failure.");
+                if (error is IOException || error is UnauthorizedAccessException)
+                    Require(failed.ErrorKind == AccountErrorKind.Storage, "Storage error was reported as a network failure.");
+            }
+            Require(CodexRpcClient.RefreshErrorKind(new IOException("pipe closed")) == AccountErrorKind.Network &&
+                CodexRpcClient.RefreshErrorKind(new TimeoutException("request expired")) == AccountErrorKind.Timeout,
+                "Codex transport failures lost their type before friendly formatting.");
+            foreach (Exception error in new Exception[] { new RpcException("connection reset by peer"), new RpcException("authentication required"),
+                new FileNotFoundException(), new DirectoryNotFoundException(), new PathTooLongException(), new InvalidDataException(),
+                new UnauthorizedAccessException(), new OperationCanceledException(), new ObjectDisposedException("fixture"), new Exception("unknown") })
+                Require(CodexRpcClient.RefreshErrorKind(error) == AccountErrorKind.None, "Codex classified a permanent/unknown error as transient.");
+            foreach (AccountProvider provider in AccountProviders.Registered)
+                Require(File.ReadAllText(Path.Combine(profile, provider.CredentialFile)) == "retained-fixture-" + provider.Id, "Retry changed retained credentials.");
+            Require(Directory.GetFiles(profile).Length == AccountProviders.Registered.Length && Directory.GetDirectories(profile).Length == 0,
+                "Retry created credential/profile artifacts.");
+        }
+
+        private static AccountSnapshot RefreshForTest(RefreshAccount account, int expectedCalls)
+        {
+            int before = account.RefreshCalls, delays = 0;
+            AccountSnapshot result = AccountProviders.RefreshSafelyAsync(account, milliseconds => {
+                Require(milliseconds > 0 && milliseconds <= 1000, "Refresh retry delay was not short and positive.");
+                delays++; return Task.FromResult(0);
+            }).GetAwaiter().GetResult();
+            Require(account.RefreshCalls - before == expectedCalls && delays == expectedCalls - 1,
+                "Unexpected refresh/delay count for " + account.Provider.Id + ".");
+            Require(account.LoginCalls == 0 && account.LogoutCalls == 0, "Refresh invoked login/logout.");
+            return result;
+        }
+
+        private sealed class RefreshAccount : IUsageAccount
+        {
+            private readonly Func<int, Task<AccountSnapshot>> _refresh;
+            internal int RefreshCalls, LoginCalls, LogoutCalls;
+            internal RefreshAccount(AccountProvider provider, string profile, Func<int, Task<AccountSnapshot>> refresh)
+            { Provider = provider; ProfileRoot = profile; _refresh = refresh; }
+            public AccountProvider Provider { get; private set; }
+            public string ProfileRoot { get; private set; }
+            public event EventHandler AccountChanged { add { } remove { } }
+            public Task<AccountSnapshot> RefreshAsync() { return _refresh(++RefreshCalls); }
+            public Task<AccountLoginPrompt> StartLoginAsync() { LoginCalls++; throw new InvalidOperationException("Unexpected login."); }
+            public Task LogoutAsync() { LogoutCalls++; throw new InvalidOperationException("Unexpected logout."); }
+            public void Dispose() { }
         }
 
         private sealed class Fixture

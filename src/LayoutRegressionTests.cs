@@ -458,21 +458,24 @@ namespace CodexUsageMeter
                         Rect inner = CardContentLayout.InnerBounds(tile);
                         Require(Math.Abs(bounds.Left - inner.Left) < 1 && Math.Abs(bounds.Right - inner.Right) < 1,
                             "default header is not edge anchored: compact=" + compact + " card=" + tile.Settings.Id + " header=" + bounds + " inner=" + inner);
+                        if (tile.Settings.Id == "pc")
+                        {
+                            Require(!Descendants<TextBlock>(header).Any(text => text.Text == "LIVE") &&
+                                !Descendants<System.Windows.Shapes.Ellipse>(header).Any(),
+                                "PC header still contains a LIVE badge: compact=" + compact);
+                            TextBlock title = Descendants<TextBlock>(header).Single(text => text.Text == (compact ? "PC 상태" : "PC 성능"));
+                            Button history = (Button)fixture.Window.FindName(compact ? "CompactPcHistoryButton" : "PcHistoryButton");
+                            Rect titleBounds = title.TransformToAncestor(header).TransformBounds(new Rect(title.RenderSize));
+                            Rect historyBounds = history.TransformToAncestor(header).TransformBounds(new Rect(history.RenderSize));
+                            Require(history.IsVisible && titleBounds.Left < 1 && titleBounds.Right <= historyBounds.Left &&
+                                historyBounds.Right <= header.ActualWidth + 1 &&
+                                (!compact || historyBounds.Right > header.ActualWidth - 1),
+                                "PC title/history header alignment changed: compact=" + compact);
+                        }
                     }
                     }
                 }
                 fixture.Layout(settings, true); fixture.Render(613, 947);
-                LayoutTile pc = Descendants<CardLayoutPanel>(fixture.Root).Single(panel => panel.IsVisible).Tiles.Single(tile => tile.Settings.Id == "pc");
-                Grid pcHeader = (Grid)pc.ContentItems().Single(item => item.Id == "header").Element;
-                Button history = (Button)fixture.Window.FindName("CompactPcHistoryButton");
-                StackPanel actions = (StackPanel)history.Parent;
-                TextBlock live = actions.Children.OfType<TextBlock>().Single(text => text.Text == "LIVE");
-                Rect actionBounds = actions.TransformToAncestor(pcHeader).TransformBounds(new Rect(actions.RenderSize));
-                Rect titleBounds = pcHeader.Children.OfType<TextBlock>().Single().TransformToAncestor(pcHeader).TransformBounds(
-                    new Rect(pcHeader.Children.OfType<TextBlock>().Single().RenderSize));
-                Require(titleBounds.Left < 1 && actionBounds.Right > pcHeader.ActualWidth - 1 &&
-                    titleBounds.Right <= actionBounds.Left && live.IsVisible && history.IsVisible,
-                    "PC title/history/LIVE do not occupy left and right header groups");
                 Canvas actualGuides = (Canvas)fixture.Window.FindName("CompactPcChartGuides");
                 double[] actualTicks = actualGuides.Children.OfType<System.Windows.Shapes.Line>()
                     .Select(line => actualGuides.TranslatePoint(new Point(line.X1, line.Y1), fixture.Root).Y).ToArray();

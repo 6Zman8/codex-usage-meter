@@ -108,16 +108,52 @@ namespace CodexUsageMeter
                 snapshot.RemoteAccountId, snapshot.RemoteOrganizationId) : null;
         }
 
-        internal static async Task<AccountSnapshot> RefreshSafelyAsync(IUsageAccount account)
+        internal static Task<AccountSnapshot> RefreshSafelyAsync(IUsageAccount account)
+        { return RefreshSafelyAsync(account, milliseconds => Task.Delay(milliseconds)); }
+
+        internal static async Task<AccountSnapshot> RefreshSafelyAsync(IUsageAccount account, Func<int, Task> retryDelay)
         {
-            try { return await account.RefreshAsync(); }
-            catch (Exception error)
+            for (int attempt = 0; ; attempt++)
             {
-                AccountProviderException known = error as AccountProviderException;
-                return new AccountSnapshot { ProviderId = account.Provider.Id, UpdatedAt = DateTime.Now,
-                    ErrorKind = known == null ? AccountErrorKind.Network : known.Kind,
-                    Error = known == null ? "이 계정의 사용량을 갱신하지 못했습니다. 연결 상태를 확인해 주세요." : known.Message };
+                AccountSnapshot snapshot;
+                bool retry;
+                try
+                {
+                    snapshot = await account.RefreshAsync();
+                    retry = IsTransientRefresh(snapshot);
+                }
+                catch (Exception error)
+                {
+                    AccountProviderException known = error as AccountProviderException;
+                    AccountErrorKind kind = known != null ? known.Kind :
+                        error is OperationCanceledException || error is ObjectDisposedException ? AccountErrorKind.Canceled :
+                        error is TimeoutException ? AccountErrorKind.Timeout :
+                        error is IOException || error is UnauthorizedAccessException ? AccountErrorKind.Storage : AccountErrorKind.Network;
+                    snapshot = new AccountSnapshot { ProviderId = account.Provider.Id, UpdatedAt = DateTime.Now,
+                        ErrorKind = kind,
+                        Error = known == null ? "이 계정의 사용량을 갱신하지 못했습니다. 연결 상태를 확인해 주세요." : known.Message };
+                    // Do not turn arbitrary exceptions (including storage/cancellation) into retryable network failures.
+                    retry = known != null ? IsTransientRefreshKind(known.Kind) :
+                        error is TimeoutException;
+                }
+                // Claude refresh may renew/write OAuth credentials. Only Codex's read-only refresh is repeated.
+                if (account.Provider.Id != Codex.Id || attempt != 0 || !retry ||
+                    (!snapshot.IsAuthenticated && !HasRetainedCredentials(account)))
+                    return snapshot;
+                // Only this account's read is repeated; never reconnect, rotate credentials or invoke login/logout here.
+                await retryDelay(350);
             }
+        }
+
+        private static bool IsTransientRefreshKind(AccountErrorKind kind)
+        { return kind == AccountErrorKind.Network || kind == AccountErrorKind.Timeout; }
+
+        private static bool IsTransientRefresh(AccountSnapshot snapshot)
+        {
+            if (snapshot == null || snapshot.RetryAfterUtc.HasValue) return false;
+            if (IsTransientRefreshKind(snapshot.ErrorKind)) return true;
+            if (snapshot.ErrorKind != AccountErrorKind.None) return false;
+            return !snapshot.IsAuthenticated && String.IsNullOrWhiteSpace(snapshot.Error);
         }
     }
 

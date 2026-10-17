@@ -190,6 +190,7 @@ namespace CodexUsageMeter
                 }
                 catch (Exception ex)
                 {
+                    snapshot.ErrorKind = RefreshErrorKind(ex);
                     snapshot.Error = FriendlyError(ex);
                 }
 
@@ -209,6 +210,7 @@ namespace CodexUsageMeter
             }
             catch (Exception ex)
             {
+                snapshot.ErrorKind = RefreshErrorKind(ex);
                 snapshot.Error = FriendlyError(ex);
             }
 
@@ -726,6 +728,16 @@ namespace CodexUsageMeter
             {
                 process.Dispose();
             }
+        }
+
+        internal static AccountErrorKind RefreshErrorKind(Exception error)
+        {
+            if (error is TimeoutException) return AccountErrorKind.Timeout;
+            if (error is IOException && !(error is FileNotFoundException) && !(error is DirectoryNotFoundException) &&
+                !(error is PathTooLongException) && !(error is InvalidDataException))
+                return AccountErrorKind.Network;
+            // RPC rejection strings, missing installations and storage/cancellation errors are not transient.
+            return AccountErrorKind.None;
         }
 
         private static string FriendlyError(Exception error)
