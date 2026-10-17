@@ -1475,6 +1475,7 @@ namespace CodexUsageMeter
 
         internal static void VerifyHistoryCards(UsageHistoryStore store, string key, string evidenceRoot, Action<string> report)
         {
+            VerifyHistoryLayers(store, key, evidenceRoot);
             using (Fixture fixture = new Fixture())
             {
                 fixture.Set("_usageHistory", store);
@@ -1502,20 +1503,19 @@ namespace CodexUsageMeter
                     LayoutEditor editor = fixture.Editor(LayoutSettings.Defaults(), compact, state => { }, state => { });
                     RenderEditor(editor, root => {
                         editor.SetItemEditing(true); root.UpdateLayout();
-                        Require(tiles[0].History == history && history.Visibility == Visibility.Collapsed && tiles[0].Content.IsVisible,
+                        Require(tiles[0].History == history && history.Visibility == Visibility.Collapsed && tiles[0].Content.IsVisible && tiles[0].HeaderHost.IsVisible,
                             "item editing discarded the open history instead of temporarily hiding it");
                         Descendants<Button>(root).Single(button => Convert.ToString(button.Content) == "계정 2").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); root.UpdateLayout();
                         Require(Descendants<Button>(root).Any(button => Convert.ToString(button.Tag) == "item:weekly"), "another card's history prevented item selection");
                     }, null);
                     editor.Close(); fixture.Render(width, height);
-                    Require(tiles[0].History == history && history.IsVisible && tiles[0].Content.Visibility == Visibility.Collapsed,
+                    Require(tiles[0].History == history && history.IsVisible && tiles[0].Content.Visibility == Visibility.Collapsed && !tiles[0].HeaderHost.IsVisible,
                         "closing the editor did not restore the previous history view");
                     fixture.FontScale(2); fixture.Render(width, height);
                     Button back = (Button)typeof(UsageHistoryView).GetField("_backButton", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(history);
-                    Point center = back.TranslatePoint(new Point(back.ActualWidth / 2, back.ActualHeight / 2), fixture.Root);
-                    Require(fixture.Root.InputHitTest(center) != null && back.IsVisible, "card back button disappeared at large font size");
+                    CheckVisibleHit(fixture, tiles[0], back);
                     back.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); fixture.Render(width, height);
-                    Require(tiles[0].History == null && tiles[0].Content.Visibility == Visibility.Visible, "back did not restore the original card");
+                    Require(tiles[0].History == null && tiles[0].Content.Visibility == Visibility.Visible && tiles[0].HeaderHost.IsVisible, "back did not restore the original card");
                     entry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     fixture.Accounts[0].LastSnapshot.HistoryKey = new String('9', 64); fixture.Call("BindAccountPage");
                     Require(tiles[0].History == null, "another authenticated account inherited the previous account's history");
@@ -1524,6 +1524,70 @@ namespace CodexUsageMeter
                 }
             }
             report("PASS history: expanded and widget cards switch inline, preserve neighbors, return and discard stale account bindings");
+        }
+
+        private static void VerifyHistoryLayers(UsageHistoryStore store, string key, string evidenceRoot)
+        {
+            using (Fixture fixture = new Fixture())
+            foreach (bool compact in new[] { false, true })
+            foreach (double scale in new[] { 1.0, 1.5, 2.0 })
+            foreach (bool small in new[] { false, true })
+            {
+                LayoutSettings settings = LayoutSettings.Defaults();
+                LayoutModeSettings mode = compact ? settings.Widget : settings.Expanded;
+                // Preserve user-hidden and moved headers as well as the default layout.
+                if (small)
+                {
+                    mode.Card("account1").HiddenItems.Add("header");
+                    mode.Card("account2").ItemLayouts.Add(new LayoutItemSettings {
+                        Id = "header", X = 0.05, Y = 0.08, Width = 0.9, Height = 0.2 });
+                }
+                fixture.FontScale(scale); fixture.Layout(settings, compact);
+                int width = compact ? (small ? 420 : 680) : (small ? 1040 : 1280);
+                int height = small ? 560 : 820;
+                fixture.Render(width, height);
+                DashboardLayoutView layout = (DashboardLayoutView)typeof(DashboardController)
+                    .GetField("_layoutView", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(fixture.Controller);
+                var tiles = layout.Tiles(compact).ToList();
+                Rect[] bounds = tiles.Select(tile => tile.Bounds).ToArray();
+                Visibility[] headers = tiles.Select(tile => tile.Header.Visibility).ToArray();
+                string saved = settings.ToJson();
+                for (int slot = 0; slot < tiles.Count; slot++)
+                {
+                    int selected = slot;
+                    HistoryView history = slot == 2
+                        ? (HistoryView)new SystemHistoryView(new SystemHistory(), delegate { layout.HideHistory(selected, compact); })
+                        : new UsageHistoryView(store, small ? null : key, delegate { layout.HideHistory(selected, compact); });
+                    layout.SetEditing(true);
+                    layout.ShowHistory(slot, compact, history);
+                    fixture.Render(width, height);
+                    Require(!history.IsVisible && tiles[slot].HeaderHost.IsVisible && tiles[slot].Content.IsVisible,
+                        "opening history while editing hid the normal card");
+                    layout.SetEditing(false); fixture.Render(width, height);
+                    Require(!tiles[slot].HeaderHost.IsVisible && !tiles[slot].Content.IsVisible &&
+                        history.IsVisible && history.Background == tiles[slot].Card.Background &&
+                        history.Background is SolidColorBrush && ((SolidColorBrush)history.Background).Color.A == 255,
+                        "history left normal controls visible or lost its opaque card background");
+                    Require(tiles.Select(tile => tile.Bounds).SequenceEqual(bounds), "history changed card or neighbor bounds");
+                    foreach (FrameworkElement control in Descendants<Button>(history).Cast<FrameworkElement>()
+                        .Concat(Descendants<ComboBox>(history).Cast<FrameworkElement>()))
+                        CheckVisibleHit(fixture, tiles[slot], control);
+                    layout.SetEditing(true); fixture.Render(width, height);
+                    Require(!history.IsVisible && tiles[slot].HeaderHost.IsVisible && tiles[slot].Content.IsVisible,
+                        "editing did not restore the normal card layers");
+                    layout.SetEditing(false); fixture.Render(width, height);
+                    Require(tiles[slot].History == history && history.IsVisible && !tiles[slot].HeaderHost.IsVisible,
+                        "editing did not restore the same history without the normal header");
+                    if (!small && scale == 1.0 && slot == 2)
+                        fixture.Capture(Path.Combine(evidenceRoot, compact ? "all-history-widget.png" : "all-history-expanded.png"));
+                    Descendants<Button>(history).Single(button => Convert.ToString(button.Content) == "← 현재")
+                        .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    fixture.Render(width, height);
+                    Require(tiles[slot].History == null && tiles[slot].HeaderHost.IsVisible && tiles[slot].Content.IsVisible &&
+                        tiles[slot].Header.Visibility == headers[slot] && settings.ToJson() == saved,
+                        "return changed saved header settings or failed to restore normal card layers");
+                }
+            }
         }
 
         private sealed class Fixture : IDisposable

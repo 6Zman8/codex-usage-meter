@@ -256,6 +256,8 @@ namespace CodexUsageMeter
             HideHistory(slot, compact);
             LayoutTile tile = _tiles[compact ? 1 : 0, slot];
             tile.History = history; tile.Content.Visibility = _editing ? Visibility.Visible : Visibility.Collapsed;
+            tile.HeaderHost.Visibility = tile.Content.Visibility;
+            history.Background = tile.Card.Background;
             history.Visibility = _editing ? Visibility.Collapsed : Visibility.Visible;
             tile.Surface.Children.Add(history); _panels[compact ? 1 : 0].InvalidateMeasure();
         }
@@ -265,7 +267,7 @@ namespace CodexUsageMeter
             LayoutTile tile = _tiles[compact ? 1 : 0, slot];
             if (tile.History == null) return;
             tile.Surface.Children.Remove(tile.History); tile.History = null;
-            tile.Content.Visibility = Visibility.Visible; _panels[compact ? 1 : 0].InvalidateMeasure();
+            tile.Content.Visibility = tile.HeaderHost.Visibility = Visibility.Visible; _panels[compact ? 1 : 0].InvalidateMeasure();
         }
 
         internal void ReloadHistory()
@@ -281,6 +283,7 @@ namespace CodexUsageMeter
                 {
                     tile.History.Visibility = editing ? Visibility.Collapsed : Visibility.Visible;
                     tile.Content.Visibility = editing ? Visibility.Visible : Visibility.Collapsed;
+                    tile.HeaderHost.Visibility = tile.Content.Visibility;
                 }
             foreach (CardLayoutPanel panel in _panels) panel.InvalidateMeasure();
         }

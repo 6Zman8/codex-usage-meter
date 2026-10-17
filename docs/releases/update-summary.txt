@@ -1,1 +1,1 @@
-Refresh automatically after sleep and retry empty Codex quota responses once after a short delay.
+Fix overlapping header buttons and missing history backgrounds in full and compact cards.
