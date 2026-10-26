@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.8.0")]
-[assembly: AssemblyFileVersion("1.9.8.0")]
+[assembly: AssemblyVersion("1.9.9.0")]
+[assembly: AssemblyFileVersion("1.9.9.0")]
 
 namespace CodexUsageMeter
 {
@@ -2307,9 +2307,13 @@ namespace CodexUsageMeter
                 AccountLoginPrompt login = await targetClient.StartLoginAsync();
                 if (login.Completion != null)
                 {
+                    bool opened = false;
+                    try { Process.Start(new ProcessStartInfo(login.VerificationUrl) { UseShellExecute = true }); opened = true; }
+                    catch { }
                     if (Object.ReferenceEquals(view.Client, targetClient))
-                        view.Status.Text = "CLI 로그인 창에서 인증을 마치면 자동으로 갱신됩니다.";
-                    ShowModal(targetLabel + " · " + targetClient.Provider.DisplayName + " 연결", login.Message,
+                        view.Status.Text = "브라우저에서 로그인을 마치면 자동으로 갱신됩니다.";
+                    ShowModal(targetLabel + " · " + targetClient.Provider.DisplayName + " 연결", opened ? login.Message :
+                        "브라우저를 자동으로 열지 못했습니다. 아래 주소를 브라우저에서 열어 로그인해 주세요.\n\n" + login.VerificationUrl,
                         null, "확인", "로그인 취소", null, login.Cancel);
                     ObserveExternalLoginAsync(view, targetClient, login.Completion);
                     return;

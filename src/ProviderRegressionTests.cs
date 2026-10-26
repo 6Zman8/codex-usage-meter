@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Reflection;
 using System.Runtime.Serialization;
 using System.Security.Cryptography;
@@ -42,7 +43,7 @@ namespace CodexUsageMeter
             Renewal(root); report("PASS providers: encoded OAuth refresh contract, isolated atomic persistence and renewal blockers");
             Errors(root); report("PASS providers: per-account failure isolation, 401, scope denial, 429 backoff, timeout, cancellation and safe errors");
             RefreshRetry(root); report("PASS providers: parsed quota recovery, five-second Codex-only delay, per-invocation cap, concurrent accounts and preserved credentials/exclusions");
-            LoginAndEnvironment(root); report("PASS providers: CLI discovery, install-needed UX, isolated auth commands, environment cleanup, logout and nonblocking login");
+            LoginAndEnvironment(root); report("PASS providers: browser PKCE login, forged callback rejection, code exchange, plan detection, logout and nonblocking login");
             SwitchFiltering(root); report("PASS providers: Codex detection, synchronization and switching exclude retained non-Codex slots");
         }
 
@@ -248,58 +249,59 @@ namespace CodexUsageMeter
             var renewal = ClaudeUsageAccount.CreateRequest(new ClaudeRequest { Url = ClaudeUsageAccount.TokenEndpoint, Method = "POST", Body = "fixture" });
             Require(renewal.Headers["Authorization"] == null && renewal.ContentType == "application/x-www-form-urlencoded",
                 "Renewal leaked a bearer or changed the evidenced content type.");
-            string home = Path.Combine(root, "cli-home"), native = Path.Combine(home, ".local", "bin");
-            Directory.CreateDirectory(native);
-            File.WriteAllText(Path.Combine(native, "claude.exe"), "not-executed-fixture");
-            Require(ClaudeCli.FindFrom("", home) == Path.Combine(native, "claude.exe") &&
-                ClaudeCli.FindFrom(native, Path.Combine(root, "no-home")) == Path.Combine(native, "claude.exe"), "Native/PATH CLI discovery failed.");
-            string[] overrides = { "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
-                "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
-                "CLAUDE_CODE_USE_FOUNDRY", "AWS_PROFILE", "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_TENANT_ID", "CLAUDE_CONFIG_DIR" };
-            var previous = overrides.ToDictionary(key => key, Environment.GetEnvironmentVariable);
-            try
-            {
-                foreach (string key in overrides) Environment.SetEnvironmentVariable(key, "do-not-use");
-                ProcessStartInfo info = ClaudeCli.StartInfo(Path.Combine(native, "claude.exe"), Path.Combine(root, "cli-profile"), true);
-                Require(!info.UseShellExecute && !info.CreateNoWindow && info.Arguments == "auth login" &&
-                    info.EnvironmentVariables["CLAUDE_CONFIG_DIR"] == info.WorkingDirectory &&
-                    info.EnvironmentVariables["DISABLE_AUTOUPDATER"] == "1" &&
-                    overrides.Where(key => key != "CLAUDE_CONFIG_DIR").All(key => info.EnvironmentVariables[key] == null), "Auth environment was not isolated.");
-                Require(ClaudeCli.StartInfo(info.FileName, info.WorkingDirectory, false).Arguments == "auth logout", "Invented logout command.");
-            }
-            finally { foreach (string key in overrides) Environment.SetEnvironmentVariable(key, previous[key]); }
-            Fixture login = new Fixture(Path.Combine(root, "cli-login"));
-            var completion = new TaskCompletionSource<int>();
-            var invocations = new List<ProcessStartInfo>();
-            Func<ProcessStartInfo, CancellationToken, Task<int>> run = (info, cancellation) => {
-                invocations.Add(info);
-                if (info.Arguments == "auth logout") { File.Delete(login.CredentialPath); return Task.FromResult(0); }
-                cancellation.Register(() => completion.TrySetCanceled());
-                return completion.Task;
-            };
-            using (ClaudeUsageAccount account = login.Create(null, run))
+            Require(ClaudeUsageAccount.CreateRequest(new ClaudeRequest { Url = ClaudeUsageAccount.TokenEndpoint, Method = "POST",
+                ContentType = "application/json", Body = "{}" }).ContentType == "application/json", "Code exchange content type changed.");
+            Require(ClaudeUsageAccount.PlanOf(null, Object("{\"organization_type\":\"claude_team\"}")) == "team" &&
+                ClaudeUsageAccount.PlanOf(Object("{\"has_claude_pro\":true}"), null) == "pro" &&
+                ClaudeUsageAccount.PlanOf(Object("{}"), Object("{\"organization_type\":\"api\"}")) == null, "Plan detection changed.");
+            Fixture login = new Fixture(Path.Combine(root, "browser-login"));
+            login.Profile = "{\"account\":{\"uuid\":\"" + AccountA + "\",\"email_address\":\"private@example.test\"},\"organization\":{\"uuid\":\"" +
+                Organization + "\",\"organization_type\":\"claude_max\"}}";
+            using (ClaudeUsageAccount account = login.Create())
             {
                 Task<AccountLoginPrompt> promptTask = account.StartLoginAsync();
                 Require(promptTask.IsCompleted, "Login waited for the person instead of returning a prompt.");
                 AccountLoginPrompt prompt = promptTask.GetAwaiter().GetResult();
+                Dictionary<string, string> query = new Uri(prompt.VerificationUrl).Query.TrimStart('?').Split('&')
+                    .Select(pair => pair.Split(new[] { '=' }, 2)).ToDictionary(pair => pair[0], pair => Uri.UnescapeDataString(pair[1]));
+                string redirect = query["redirect_uri"];
+                Require(prompt.VerificationUrl.StartsWith(ClaudeLoopbackLogin.AuthorizeEndpoint + "?") && query["code"] == "true" &&
+                    query["client_id"] == ClaudeUsageAccount.OAuthClientId && query["response_type"] == "code" &&
+                    query["code_challenge_method"] == "S256" && query["scope"].Split(' ').Contains("user:profile") &&
+                    redirect.StartsWith("http://localhost:") && redirect.EndsWith("/callback"), "Browser login request changed.");
                 Require(!prompt.Completion.IsCompleted && account.RefreshAsync().GetAwaiter().GetResult().HistoryKey == null,
                     "Pending login blocked refresh or fabricated usage.");
-                login.Save("login-token", Initial.AddHours(2)); completion.SetResult(0); prompt.Completion.GetAwaiter().GetResult();
-                Require(account.RefreshAsync().GetAwaiter().GetResult().IdentityVerified, "Completed CLI login did not become usable.");
+                Require(Callback(redirect + "?code=fixture-code&state=forged") == 400 && Callback(redirect.Replace("/callback", "/favicon.ico")) == 404 &&
+                    !prompt.Completion.IsCompleted && login.Requests.Count == 0, "Forged callback was accepted.");
+                Require(Callback(redirect + "?code=fixture-code&state=" + Uri.EscapeDataString(query["state"])) == 200, "Valid callback failed.");
+                prompt.Completion.GetAwaiter().GetResult();
+                ClaudeRequest exchange = login.Requests.Single(sentRequest => sentRequest.Url == ClaudeUsageAccount.TokenEndpoint);
+                Dictionary<string, object> sent = Object(exchange.Body);
+                string challenge;
+                using (SHA256 sha = SHA256.Create())
+                    challenge = Convert.ToBase64String(sha.ComputeHash(Encoding.ASCII.GetBytes((string)sent["code_verifier"])))
+                        .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+                Require(exchange.ContentType == "application/json" && exchange.AccessToken == null &&
+                    (string)sent["grant_type"] == "authorization_code" && (string)sent["code"] == "fixture-code" &&
+                    (string)sent["redirect_uri"] == redirect && (string)sent["state"] == query["state"] &&
+                    (string)sent["client_id"] == ClaudeUsageAccount.OAuthClientId && challenge == query["code_challenge"], "Code exchange contract changed.");
+                var oauth = (Dictionary<string, object>)Object(File.ReadAllText(login.CredentialPath))["claudeAiOauth"];
+                Require((string)oauth["subscriptionType"] == "max" && (string)oauth["accessToken"] == "renewed-access" &&
+                    (string)oauth["refreshToken"] == "renewed-refresh", "Login did not store the subscription sign-in.");
+                Require(account.RefreshAsync().GetAwaiter().GetResult().IdentityVerified, "Completed browser login did not become usable.");
                 account.LogoutAsync().GetAwaiter().GetResult();
-                Require(invocations.All(info => info.WorkingDirectory == login.Root) && !File.Exists(login.CredentialPath), "CLI login/logout profile escaped isolation.");
+                Require(!File.Exists(login.CredentialPath) &&
+                    account.RefreshAsync().GetAwaiter().GetResult().ErrorKind == AccountErrorKind.LoginRequired, "Logout kept the sign-in.");
             }
-            completion = new TaskCompletionSource<int>();
-            using (ClaudeUsageAccount account = login.Create(null, run))
+            using (ClaudeUsageAccount account = login.Create())
             {
                 AccountLoginPrompt prompt = account.StartLoginAsync().GetAwaiter().GetResult(); prompt.Cancel();
                 try { prompt.Completion.GetAwaiter().GetResult(); throw new Exception("Cancel unexpectedly succeeded."); }
                 catch (AccountProviderException error) { Require(error.Kind == AccountErrorKind.Canceled, "Login cancellation not classified."); }
             }
-            using (ClaudeUsageAccount absent = new ClaudeUsageAccount(Path.Combine(root, "no-cli"),
-                (r, c) => { throw new Exception("Network forbidden"); }, run,
-                () => ClaudeCli.FindFrom("", Path.Combine(root, "no-native-install")), () => Initial))
-                Require(absent.RefreshAsync().GetAwaiter().GetResult().ErrorKind == AccountErrorKind.InstallNeeded, "Missing CLI did not offer installation guidance.");
+            using (ClaudeUsageAccount absent = new ClaudeUsageAccount(Path.Combine(root, "unconnected"),
+                (r, c) => { throw new Exception("Network forbidden"); }, () => Initial))
+                Require(absent.RefreshAsync().GetAwaiter().GetResult().ErrorKind == AccountErrorKind.LoginRequired, "Unconnected slot did not ask for login.");
             Fixture nonSubscription = new Fixture(Path.Combine(root, "api-login"));
             nonSubscription.Save("api-auth", Initial.AddHours(2), "refresh", "api");
             using (ClaudeUsageAccount account = nonSubscription.Create())
@@ -652,11 +654,9 @@ namespace CodexUsageMeter
                         { "expiresAt", (expires - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds },
                         { "scopes", scopes ?? new[] { "user:profile", "user:inference" } } } } }));
             }
-            internal ClaudeUsageAccount Create(Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> transport = null,
-                Func<ProcessStartInfo, CancellationToken, Task<int>> run = null)
+            internal ClaudeUsageAccount Create(Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> transport = null)
             {
-                return new ClaudeUsageAccount(Root, transport ?? Send, run ?? ((info, cancellation) => { throw new Exception("Unexpected real CLI boundary."); }),
-                    () => Path.Combine(Root, "mock-claude.exe"), () => Now);
+                return new ClaudeUsageAccount(Root, transport ?? Send, () => Now);
             }
             private Task<ClaudeResponse> Send(ClaudeRequest request, CancellationToken cancellation)
             {
@@ -698,6 +698,20 @@ namespace CodexUsageMeter
         private static Dictionary<string, object> Object(string json)
         { return (Dictionary<string, object>)new JavaScriptSerializer().DeserializeObject(json); }
         private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
+
+        // Plays the browser returning to the meter's loopback address.
+        private static int Callback(string url)
+        {
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+            request.Proxy = null; request.Timeout = 15000;
+            try { using (HttpWebResponse response = (HttpWebResponse)request.GetResponse()) return (int)response.StatusCode; }
+            catch (WebException error)
+            {
+                HttpWebResponse response = error.Response as HttpWebResponse;
+                if (response == null) throw;
+                using (response) return (int)response.StatusCode;
+            }
+        }
     }
 
 #if PROVIDER_CORE_TEST

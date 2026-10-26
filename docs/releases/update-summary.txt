@@ -1,1 +1,1 @@
-Fix overlapping header buttons and missing history backgrounds in full and compact cards.
+Connect Claude accounts with browser sign-in; Claude Code CLI is no longer required.

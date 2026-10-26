@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -15,7 +16,7 @@ namespace CodexUsageMeter
 {
     internal sealed class ClaudeRequest
     {
-        internal string Url, Method = "GET", AccessToken, Body;
+        internal string Url, Method = "GET", AccessToken, Body, ContentType = "application/x-www-form-urlencoded";
     }
 
     internal sealed class ClaudeResponse
@@ -24,65 +25,141 @@ namespace CodexUsageMeter
         internal string Body, RetryAfter;
     }
 
-    internal static class ClaudeCli
+    // Claude Code's own browser sign-in (OAuth PKCE with a loopback callback), run by the meter itself
+    // so no Claude Code installation is needed. Same request shape as Claude Code and Mixdog.
+    internal sealed class ClaudeLoopbackLogin : IDisposable
     {
-        internal const string InstallMessage = "Claude CLI를 찾지 못했습니다. https://code.claude.com/docs/en/setup 에서 Windows 기본 설치를 진행한 뒤 다시 연결해 주세요. 미터기는 자동 설치하지 않습니다.";
+        internal const string AuthorizeEndpoint = "https://claude.com/cai/oauth/authorize";
+        internal const string Scope = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+        private const string CallbackPath = "/callback";
+        private readonly List<TcpListener> _listeners = new List<TcpListener>();
+        internal readonly string State = RandomText(), Verifier = RandomText(), RedirectUri, AuthorizeUrl;
 
-        internal static string Find()
+        internal ClaudeLoopbackLogin(string clientId)
         {
-            return FindFrom(Environment.GetEnvironmentVariable("PATH"),
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+            TcpListener first = new TcpListener(IPAddress.Loopback, 0);
+            first.Start(); _listeners.Add(first);
+            int port = ((IPEndPoint)first.LocalEndpoint).Port;
+            // Browsers may try IPv6 localhost first; IPv4 alone stays a working fallback.
+            try { TcpListener v6 = new TcpListener(IPAddress.IPv6Loopback, port); v6.Start(); _listeners.Add(v6); }
+            catch (SocketException) { }
+            RedirectUri = "http://localhost:" + port.ToString(CultureInfo.InvariantCulture) + CallbackPath;
+            string challenge;
+            using (SHA256 hash = SHA256.Create()) challenge = Base64Url(hash.ComputeHash(Encoding.ASCII.GetBytes(Verifier)));
+            AuthorizeUrl = AuthorizeEndpoint + "?code=true&client_id=" + Uri.EscapeDataString(clientId) + "&response_type=code&redirect_uri=" +
+                Uri.EscapeDataString(RedirectUri) + "&scope=" + Uri.EscapeDataString(Scope) + "&code_challenge=" + challenge +
+                "&code_challenge_method=S256&state=" + State;
         }
 
-        internal static string FindFrom(string path, string home)
+        // Waits for the matching browser callback. The page answers after the exchange so it shows the true outcome.
+        internal async Task ReceiveAsync(Func<string, Task> exchange, CancellationToken cancellation)
         {
-            foreach (string directory in (path ?? "").Split(Path.PathSeparator).Concat(new[] { Path.Combine(home, ".local", "bin") }))
+            using (cancellation.Register(Dispose))
             {
-                string value = directory.Trim().Trim('"');
-                // Never resolve an empty PATH entry against the dashboard's current directory.
-                if (!Path.IsPathRooted(value)) continue;
-                string candidate = Path.Combine(value, "claude.exe");
-                if (File.Exists(candidate)) return Path.GetFullPath(candidate);
-            }
-            throw new AccountProviderException(AccountErrorKind.InstallNeeded, InstallMessage);
-        }
-
-        internal static ProcessStartInfo StartInfo(string executable, string profile, bool login)
-        {
-            ProcessStartInfo info = new ProcessStartInfo(executable, login ? "auth login" : "auth logout");
-            info.UseShellExecute = false;
-            info.CreateNoWindow = !login;
-            info.WorkingDirectory = Path.GetFullPath(profile);
-            // All auth and cloud-provider overrides are removed, not merely the common API key.
-            foreach (string key in info.EnvironmentVariables.Keys.Cast<string>().ToArray())
-                if (new[] { "ANTHROPIC_", "CLAUDE_", "AWS_", "GOOGLE_", "GCLOUD_", "CLOUDSDK_", "AZURE_", "BEDROCK_", "VERTEX_" }
-                    .Any(prefix => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-                    info.EnvironmentVariables.Remove(key);
-            info.EnvironmentVariables["CLAUDE_CONFIG_DIR"] = info.WorkingDirectory;
-            info.EnvironmentVariables["DISABLE_AUTOUPDATER"] = "1";
-            return info;
-        }
-
-        internal static Task<int> RunAsync(ProcessStartInfo info, CancellationToken cancellation)
-        {
-            // No stdout/stderr is retained: auth output may contain secrets.
-            return Task.Run(delegate {
-                cancellation.ThrowIfCancellationRequested();
-                using (Process process = new Process { StartInfo = info })
+                Task<TcpClient>[] pending = _listeners.Select(listener => listener.AcceptTcpClientAsync()).ToArray();
+                while (true)
                 {
-                    process.Start();
-                    using (cancellation.Register(delegate {
-                        try { if (!process.HasExited) process.Kill(); }
-                        catch (InvalidOperationException) { }
-                    }))
+                    Task<TcpClient> accepted = await Task.WhenAny(pending).ConfigureAwait(false);
+                    cancellation.ThrowIfCancellationRequested();
+                    int index = Array.IndexOf(pending, accepted);
+                    TcpClient client = await accepted.ConfigureAwait(false);
+                    pending[index] = _listeners[index].AcceptTcpClientAsync();
+                    using (client)
                     {
-                        process.WaitForExit();
-                        cancellation.ThrowIfCancellationRequested();
-                        return process.ExitCode;
+                        Dictionary<string, string> query = await ReadQueryAsync(client, cancellation).ConfigureAwait(false);
+                        if (query == null) { await RespondAsync(client, 404, "찾을 수 없는 주소입니다.").ConfigureAwait(false); continue; }
+                        string state, code;
+                        query.TryGetValue("state", out state); query.TryGetValue("code", out code);
+                        if (state != State)
+                        {
+                            await RespondAsync(client, 400, "이 로그인 요청과 맞지 않는 응답입니다. 미터기에서 다시 연결해 주세요.").ConfigureAwait(false);
+                            continue;
+                        }
+                        Exception failure = null;
+                        if (String.IsNullOrEmpty(code))
+                            failure = new AccountProviderException(AccountErrorKind.LoginRequired, "브라우저에서 Claude 로그인을 승인하지 않았습니다. 다시 연결해 주세요.");
+                        else
+                        {
+                            try { await exchange(code).ConfigureAwait(false); }
+                            catch (Exception error) { failure = error; }
+                        }
+                        await RespondAsync(client, failure == null ? 200 : 500, failure == null
+                            ? "Claude 연결을 마쳤습니다. 이 창을 닫고 미터기로 돌아가세요."
+                            : "Claude 연결을 마치지 못했습니다. 미터기의 안내를 확인해 주세요.").ConfigureAwait(false);
+                        if (failure != null) throw failure;
+                        return;
                     }
                 }
-            }, cancellation);
+            }
         }
+
+        private static async Task<Dictionary<string, string>> ReadQueryAsync(TcpClient client, CancellationToken cancellation)
+        {
+            byte[] buffer = new byte[8192];
+            int length = 0;
+            using (CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation))
+            {
+                // A browser's idle speculative connection must not hold up the real callback.
+                timeout.CancelAfter(TimeSpan.FromSeconds(10));
+                using (timeout.Token.Register(client.Close))
+                try
+                {
+                    NetworkStream stream = client.GetStream();
+                    while (length < buffer.Length && Encoding.ASCII.GetString(buffer, 0, length).IndexOf("\r\n", StringComparison.Ordinal) < 0)
+                    {
+                        int count = await stream.ReadAsync(buffer, length, buffer.Length - length).ConfigureAwait(false);
+                        if (count == 0) break;
+                        length += count;
+                    }
+                }
+                catch (IOException) { return null; }
+                catch (ObjectDisposedException) { return null; }
+                catch (InvalidOperationException) { return null; }
+            }
+            string[] parts = Encoding.ASCII.GetString(buffer, 0, length).Split(new[] { "\r\n" }, StringSplitOptions.None)[0].Split(' ');
+            if (parts.Length != 3 || parts[0] != "GET") return null;
+            string target = parts[1];
+            int mark = target.IndexOf('?');
+            if ((mark < 0 ? target : target.Substring(0, mark)) != CallbackPath) return null;
+            Dictionary<string, string> query = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (mark >= 0)
+                foreach (string pair in target.Substring(mark + 1).Split('&'))
+                {
+                    int equals = pair.IndexOf('=');
+                    if (equals > 0) query[Decode(pair.Substring(0, equals))] = Decode(pair.Substring(equals + 1));
+                }
+            return query;
+        }
+
+        private static async Task RespondAsync(TcpClient client, int status, string message)
+        {
+            byte[] body = Encoding.UTF8.GetBytes("<!doctype html><meta charset=\"utf-8\"><title>코덱스 미터기</title>" +
+                "<body style=\"font-family:sans-serif;padding:48px\"><h2>" + WebUtility.HtmlEncode(message) + "</h2></body>");
+            byte[] head = Encoding.ASCII.GetBytes("HTTP/1.1 " + status.ToString(CultureInfo.InvariantCulture) + (status == 200 ? " OK" : " Error") +
+                "\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + body.Length.ToString(CultureInfo.InvariantCulture) +
+                "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n");
+            // A browser that already left does not change the sign-in result.
+            try
+            {
+                NetworkStream stream = client.GetStream();
+                await stream.WriteAsync(head, 0, head.Length).ConfigureAwait(false);
+                await stream.WriteAsync(body, 0, body.Length).ConfigureAwait(false);
+            }
+            catch (IOException) { }
+            catch (ObjectDisposedException) { }
+            catch (InvalidOperationException) { }
+        }
+
+        private static string Decode(string value) { return Uri.UnescapeDataString(value.Replace('+', ' ')); }
+        private static string Base64Url(byte[] bytes) { return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_'); }
+        private static string RandomText()
+        {
+            byte[] bytes = new byte[32];
+            using (RandomNumberGenerator random = RandomNumberGenerator.Create()) random.GetBytes(bytes);
+            return Base64Url(bytes);
+        }
+
+        public void Dispose() { foreach (TcpListener listener in _listeners) listener.Stop(); }
     }
 
     internal sealed class ClaudeUsageAccount : IUsageAccount
@@ -97,13 +174,12 @@ namespace CodexUsageMeter
         private const int MaximumBytes = 1024 * 1024;
         private static readonly DateTime Epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         private readonly Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> _transport;
-        private readonly Func<ProcessStartInfo, CancellationToken, Task<int>> _run;
-        private readonly Func<string> _locate;
         private readonly Func<DateTime> _now;
         private readonly SemaphoreSlim _gate = new SemaphoreSlim(1, 1);
         private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
         private CancellationTokenSource _loginCancellation;
         private Task _login;
+        private string _loginUrl;
         private DateTime _retryAt;
         private string _terminalCredentials;
         private AccountProviderException _terminalError;
@@ -113,10 +189,9 @@ namespace CodexUsageMeter
         public string ProfileRoot { get; private set; }
         public event EventHandler AccountChanged;
 
-        internal ClaudeUsageAccount(string profileRoot) : this(profileRoot, SendAsync, ClaudeCli.RunAsync, ClaudeCli.Find, () => DateTime.UtcNow) { }
-        internal ClaudeUsageAccount(string profileRoot, Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> transport,
-            Func<ProcessStartInfo, CancellationToken, Task<int>> run, Func<string> locate, Func<DateTime> now)
-        { ProfileRoot = Path.GetFullPath(profileRoot); _transport = transport; _run = run; _locate = locate; _now = now; }
+        internal ClaudeUsageAccount(string profileRoot) : this(profileRoot, SendAsync, () => DateTime.UtcNow) { }
+        internal ClaudeUsageAccount(string profileRoot, Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> transport, Func<DateTime> now)
+        { ProfileRoot = Path.GetFullPath(profileRoot); _transport = transport; _now = now; }
 
         private sealed class Credentials
         {
@@ -127,7 +202,7 @@ namespace CodexUsageMeter
 
         private sealed class Identity
         {
-            internal string Account, Organization, Email;
+            internal string Account, Organization, Email, Plan;
             internal bool Same(Identity other) { return other != null && Account == other.Account && Organization == other.Organization; }
         }
 
@@ -143,13 +218,10 @@ namespace CodexUsageMeter
             {
                 await _gate.WaitAsync(_lifetime.Token).ConfigureAwait(false); entered = true;
                 if (_login != null && !_login.IsCompleted)
-                    throw Fault(AccountErrorKind.LoginRequired, "Claude 로그인 창에서 인증을 마쳐 주세요. 다른 계정은 계속 갱신됩니다.");
+                    throw Fault(AccountErrorKind.LoginRequired, "브라우저에서 Claude 로그인을 마쳐 주세요. 다른 계정은 계속 갱신됩니다.");
                 raw = ReadOptional(CredentialPath);
                 if (raw == null)
-                {
-                    _locate(); // Distinguish an unconnected slot from a missing native CLI.
                     throw Fault(AccountErrorKind.LoginRequired, "연결에서 Claude 구독 계정으로 로그인해 주세요.");
-                }
                 if (raw == _terminalCredentials && _terminalError != null) throw _terminalError;
                 if (_now() < _retryAt) throw Fault(AccountErrorKind.RateLimited, "Claude 요청이 많아 잠시 대기합니다. " + _retryAt.ToLocalTime().ToString("HH:mm") + " 이후 자동으로 다시 확인합니다.");
                 Credentials credentials = ParseCredentials(raw);
@@ -201,12 +273,13 @@ namespace CodexUsageMeter
             {
                 if (_login != null && !_login.IsCompleted)
                     return LoginPrompt();
-                string executable = _locate();
                 Directory.CreateDirectory(ProfileRoot);
+                ClaudeLoopbackLogin browser = new ClaudeLoopbackLogin(OAuthClientId);
                 _loginCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
                 _loginCancellation.CancelAfter(TimeSpan.FromMinutes(10));
                 _terminalCredentials = null; _terminalError = null; _retryAt = default(DateTime);
-                _login = CompleteLoginAsync(_run(ClaudeCli.StartInfo(executable, ProfileRoot, true), _loginCancellation.Token));
+                _loginUrl = browser.AuthorizeUrl;
+                _login = CompleteLoginAsync(browser, _loginCancellation.Token);
                 return LoginPrompt();
             }
             catch (Exception error) { throw SafeError(error, _lifetime.IsCancellationRequested); }
@@ -216,24 +289,57 @@ namespace CodexUsageMeter
         private AccountLoginPrompt LoginPrompt()
         {
             CancellationTokenSource cancellation = _loginCancellation;
-            return new AccountLoginPrompt { Completion = _login, Cancel = () => cancellation.Cancel(),
-                Message = "Claude CLI 로그인 창에서 구독 계정 인증을 마쳐 주세요. 인증 후에는 브라우저를 닫아도 사용량과 초기화 시간이 자동 갱신됩니다.\n\nAPI 키·Console 계정·setup-token은 지원하지 않습니다." };
+            return new AccountLoginPrompt { Completion = _login, Cancel = () => cancellation.Cancel(), VerificationUrl = _loginUrl,
+                Message = "브라우저에서 Claude 구독 계정으로 로그인해 주세요. 로그인이 끝나면 브라우저를 닫아도 사용량과 초기화 시간이 자동 갱신됩니다.\n\nAPI 키·Console 계정은 지원하지 않습니다." };
         }
 
-        private async Task CompleteLoginAsync(Task<int> process)
+        private async Task CompleteLoginAsync(ClaudeLoopbackLogin browser, CancellationToken cancellation)
         {
             try
             {
-                if (await process.ConfigureAwait(false) != 0)
-                    throw Fault(AccountErrorKind.LoginRequired, "Claude 로그인을 마치지 못했습니다. CLI 창의 안내를 확인하고 다시 연결해 주세요.");
-                ParseCredentials(ReadOptional(CredentialPath));
+                using (browser)
+                    await browser.ReceiveAsync(code => ExchangeAsync(browser, code, cancellation), cancellation).ConfigureAwait(false);
             }
-            catch (Exception error) { throw SafeError(error, _loginCancellation.IsCancellationRequested); }
+            catch (Exception error) { throw SafeError(error, cancellation.IsCancellationRequested); }
             finally
             {
                 EventHandler changed = AccountChanged;
                 if (!_disposed && changed != null) changed(this, EventArgs.Empty);
             }
+        }
+
+        private async Task ExchangeAsync(ClaudeLoopbackLogin browser, string code, CancellationToken cancellation)
+        {
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            ClaudeResponse response = await RequestAsync(new ClaudeRequest { Url = TokenEndpoint, Method = "POST", ContentType = "application/json",
+                Body = serializer.Serialize(new Dictionary<string, object> { { "grant_type", "authorization_code" }, { "code", code },
+                    { "redirect_uri", browser.RedirectUri }, { "client_id", OAuthClientId }, { "code_verifier", browser.Verifier }, { "state", browser.State } }) },
+                cancellation).ConfigureAwait(false);
+            Dictionary<string, object> token = ParseObject(response.Body);
+            double seconds = TokenLifetime(token, AccountErrorKind.InvalidResponse, "Claude 로그인 응답을 확인하지 못했습니다. 다시 연결해 주세요.");
+            string access = Text(token, "access_token");
+            Identity identity = await ReadIdentityAsync(access, cancellation).ConfigureAwait(false);
+            // OAuth omits scope when it equals the requested scope.
+            string scope = Text(token, "scope") ?? ClaudeLoopbackLogin.Scope;
+            string raw = serializer.Serialize(new Dictionary<string, object> { { "claudeAiOauth", new Dictionary<string, object> {
+                { "accessToken", access }, { "refreshToken", Text(token, "refresh_token") },
+                { "expiresAt", (_now().AddSeconds(seconds) - Epoch).TotalMilliseconds },
+                { "scopes", scope.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries) }, { "subscriptionType", identity.Plan } } } });
+            Credentials credentials = ParseCredentials(raw);
+            cancellation.ThrowIfCancellationRequested();
+            AtomicWrite(CredentialPath, raw);
+            SaveBinding(credentials, identity);
+        }
+
+        private double TokenLifetime(Dictionary<string, object> token, AccountErrorKind kind, string message)
+        {
+            string access = Text(token, "access_token"), type = Text(token, "token_type");
+            double seconds = Number(JsonValue.Get(token, "expires_in"));
+            if (String.IsNullOrWhiteSpace(access) || !Finite(seconds) || seconds <= 0 ||
+                seconds > (DateTime.MaxValue - _now()).TotalSeconds ||
+                (type != null && !String.Equals(type, "Bearer", StringComparison.OrdinalIgnoreCase)))
+                throw Fault(kind, message);
+            return seconds;
         }
 
         public async Task LogoutAsync()
@@ -243,17 +349,10 @@ namespace CodexUsageMeter
             await _gate.WaitAsync(_lifetime.Token).ConfigureAwait(false);
             try
             {
-                string executable = _locate();
-                Directory.CreateDirectory(ProfileRoot);
-                using (CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token))
-                {
-                    timeout.CancelAfter(TimeSpan.FromSeconds(20));
-                    if (await _run(ClaudeCli.StartInfo(executable, ProfileRoot, false), timeout.Token).ConfigureAwait(false) != 0)
-                        throw Fault(AccountErrorKind.LoginRequired, "Claude 연결 해제를 마치지 못했습니다. 다시 시도해 주세요.");
-                }
-                // The unmodified CLI owns logout. Never delete a credential file on its behalf.
-                _terminalCredentials = null; _terminalError = null; _retryAt = default(DateTime);
+                // Only this slot's own sign-in is removed; Claude Code and other apps keep theirs.
+                if (File.Exists(CredentialPath)) File.Delete(CredentialPath);
                 if (File.Exists(BindingPath)) File.Delete(BindingPath);
+                _terminalCredentials = null; _terminalError = null; _retryAt = default(DateTime);
             }
             catch (Exception error) { throw SafeError(error, _lifetime.IsCancellationRequested); }
             finally { _gate.Release(); }
@@ -269,12 +368,8 @@ namespace CodexUsageMeter
             ClaudeResponse response = await RequestAsync(new ClaudeRequest { Url = TokenEndpoint, Method = "POST",
                 Body = "grant_type=refresh_token&refresh_token=" + Uri.EscapeDataString(old.Refresh) + "&client_id=" + Uri.EscapeDataString(OAuthClientId) }, cancellation).ConfigureAwait(false);
             Dictionary<string, object> token = ParseObject(response.Body);
-            string access = Text(token, "access_token"), refresh = Text(token, "refresh_token"), type = Text(token, "token_type");
-            double seconds = Number(JsonValue.Get(token, "expires_in"));
-            if (String.IsNullOrWhiteSpace(access) || !Finite(seconds) || seconds <= 0 ||
-                seconds > (DateTime.MaxValue - _now()).TotalSeconds ||
-                (type != null && !String.Equals(type, "Bearer", StringComparison.OrdinalIgnoreCase)))
-                throw Fault(AccountErrorKind.RenewalBlocked, "Claude 인증 갱신 응답을 확인하지 못했습니다. 연결에서 다시 로그인해 주세요.");
+            double seconds = TokenLifetime(token, AccountErrorKind.RenewalBlocked, "Claude 인증 갱신 응답을 확인하지 못했습니다. 연결에서 다시 로그인해 주세요.");
+            string access = Text(token, "access_token"), refresh = Text(token, "refresh_token");
             Identity actual = await ReadIdentityAsync(access, cancellation).ConfigureAwait(false);
             if (!expected.Same(actual))
                 throw Fault(AccountErrorKind.IdentityMismatch, "Claude 인증 갱신 계정이 일치하지 않아 저장하지 않았습니다. 다시 연결해 주세요.");
@@ -328,7 +423,22 @@ namespace CodexUsageMeter
                 !Guid.TryParse(Text(organization, "uuid"), out organizationId) || organizationId == Guid.Empty)
                 throw Fault(AccountErrorKind.IdentityUnavailable, "Claude 계정·조직 식별을 확인하지 못해 사용량을 저장하지 않았습니다.");
             return new Identity { Account = accountId.ToString("D"), Organization = organizationId.ToString("D"),
-                Email = Text(account, "email_address") };
+                Email = Text(account, "email_address"), Plan = PlanOf(account, organization) };
+        }
+
+        // The token response carries no plan; Claude Code derives it from the profile the same way.
+        internal static string PlanOf(Dictionary<string, object> account, Dictionary<string, object> organization)
+        {
+            switch (Text(organization, "organization_type"))
+            {
+                case "claude_max": return "max";
+                case "claude_pro": return "pro";
+                case "claude_team": return "team";
+                case "claude_enterprise": return "enterprise";
+            }
+            if (Object.Equals(JsonValue.Get(account, "has_claude_max"), true)) return "max";
+            if (Object.Equals(JsonValue.Get(account, "has_claude_pro"), true)) return "pro";
+            return null;
         }
 
         internal static RateWindow ParseWindow(Dictionary<string, object> body, int minutes, string name)
@@ -379,7 +489,7 @@ namespace CodexUsageMeter
                 request.Headers["Authorization"] = "Bearer " + input.AccessToken;
                 request.Headers["anthropic-beta"] = "oauth-2025-04-20";
             }
-            if (input.Body != null) request.ContentType = "application/x-www-form-urlencoded";
+            if (input.Body != null) request.ContentType = input.ContentType;
             return request;
         }
 
@@ -482,7 +592,7 @@ namespace CodexUsageMeter
                 return Fault(AccountErrorKind.Timeout, "Claude 응답 시간이 초과되었습니다. 다음 갱신에서 다시 확인합니다.");
             if (error is IOException || error is UnauthorizedAccessException)
                 return Fault(AccountErrorKind.Storage, "Claude 전용 인증을 안전하게 읽거나 저장하지 못했습니다. 다른 로그인 작업을 마치고 다시 연결해 주세요.");
-            return Fault(AccountErrorKind.Network, "Claude 연결을 확인하지 못했습니다. 네트워크와 CLI 설치 상태를 확인해 주세요.");
+            return Fault(AccountErrorKind.Network, "Claude 연결을 확인하지 못했습니다. 네트워크 상태를 확인해 주세요.");
         }
 
         public void Dispose()

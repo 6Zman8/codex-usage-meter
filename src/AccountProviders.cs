@@ -28,7 +28,7 @@ namespace CodexUsageMeter
     internal sealed class AccountLoginPrompt
     {
         internal string VerificationUrl, UserCode, Message;
-        // External CLI login returns immediately; only this task waits for the person.
+        // Browser login returns immediately; only this task waits for the person.
         internal Task Completion;
         internal Action Cancel;
     }
