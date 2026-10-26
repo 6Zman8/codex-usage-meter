@@ -41,7 +41,7 @@ namespace CodexUsageMeter
             Quotas(); report("PASS providers: missing/invalid/zero quotas, independent windows and timezone-correct resets");
             IdentityAndHistory(root); report("PASS providers: verified identity, replacement, token rotation, isolation and truthful observations");
             Renewal(root); report("PASS providers: encoded OAuth refresh contract, isolated atomic persistence and renewal blockers");
-            Errors(root); report("PASS providers: per-account failure isolation, 401, scope denial, 429 backoff, timeout, cancellation and safe errors");
+            Errors(root); report("PASS providers: per-account failure isolation, 401, scope denial, 429 backoff with usage-only minute polling and kept last reading, timeout, cancellation and safe errors");
             RefreshRetry(root); report("PASS providers: parsed quota recovery, five-second Codex-only delay, per-invocation cap, concurrent accounts and preserved credentials/exclusions");
             LoginAndEnvironment(root); report("PASS providers: browser PKCE login, forged callback rejection, code exchange, plan detection, logout and nonblocking login");
             SwitchFiltering(root); report("PASS providers: Codex detection, synchronization and switching exclude retained non-Codex slots");
@@ -110,9 +110,13 @@ namespace CodexUsageMeter
                 Require(first.IdentityVerified && first.ProviderId == "claude" && first.RemoteAccountId == AccountA &&
                     first.RemoteOrganizationId == Organization && first.Primary.RemainingPercent == 75 &&
                     first.Secondary.RemainingPercent == 60 && first.RateLimitsObservedAtUtc == Initial, "Verified quota mapping failed.");
-                Require(fixture.Requests.Count == 3 && fixture.Requests.All(r => r.AccessToken == "token-a") &&
-                    fixture.Requests.Select(r => r.Url).SequenceEqual(new[] { ClaudeUsageAccount.ProfileEndpoint, ClaudeUsageAccount.UsageEndpoint, ClaudeUsageAccount.ProfileEndpoint }),
+                Require(fixture.Requests.Count == 2 && fixture.Requests.All(r => r.AccessToken == "token-a") &&
+                    fixture.Requests.Select(r => r.Url).SequenceEqual(new[] { ClaudeUsageAccount.ProfileEndpoint, ClaudeUsageAccount.UsageEndpoint }),
                     "Quota and identity must use the same isolated credential and exact endpoints.");
+                fixture.Now = Initial.AddSeconds(55);
+                AccountSnapshot polled = account.RefreshAsync().GetAwaiter().GetResult();
+                Require(polled.IdentityVerified && polled.RemoteAccountId == AccountA && polled.Email == first.Email && fixture.Requests.Count == 3 &&
+                    fixture.Requests.Last().Url == ClaudeUsageAccount.UsageEndpoint, "A minute poll of an unchanged sign-in must send only the usage request.");
                 UsageHistoryStore store = new UsageHistoryStore(Path.Combine(root, "h")); store.Record(first);
                 fixture.Now = Initial.AddMinutes(1); fixture.Save("rotated-token", Initial.AddHours(3));
                 AccountSnapshot rotated = account.RefreshAsync().GetAwaiter().GetResult(); store.Record(rotated);
@@ -124,14 +128,11 @@ namespace CodexUsageMeter
                 AccountSnapshot codex = new AccountSnapshot { IsAuthenticated = true, ProviderId = "codex",
                     RemoteAccountId = replaced.RemoteAccountId, Email = replaced.Email, IdentityVerified = true };
                 Require(AccountProviders.DuplicateKey(codex) != AccountProviders.DuplicateKey(replaced), "Cross-provider email/identity marked duplicate.");
-                fixture.Profile = "{}";
+                fixture.Now = Initial.AddMinutes(7); fixture.Profile = "{}"; File.Delete(Path.Combine(fixture.Root, "meter-identity.json"));
                 AccountSnapshot missing = account.RefreshAsync().GetAwaiter().GetResult();
                 Require(missing.ErrorKind == AccountErrorKind.IdentityUnavailable && missing.HistoryKey == null &&
                     missing.RateLimitsObservedAtUtc == default(DateTime), "Missing identity created a sample.");
                 fixture.Profile = null;
-                fixture.OnUsage = () => fixture.Account = AccountA;
-                AccountSnapshot mismatch = account.RefreshAsync().GetAwaiter().GetResult();
-                Require(mismatch.ErrorKind == AccountErrorKind.IdentityMismatch && mismatch.HistoryKey == null, "Mismatched remote identity created a sample.");
                 fixture.OnUsage = () => fixture.Save("changed-during-query", Initial.AddHours(3));
                 fixture.Save("before-concurrent-change", Initial.AddHours(3));
                 Require(account.RefreshAsync().GetAwaiter().GetResult().ErrorKind == AccountErrorKind.IdentityMismatch, "Concurrent credential replacement accepted.");
@@ -157,7 +158,7 @@ namespace CodexUsageMeter
             using (ClaudeUsageAccount account = fixture.Create())
             {
                 string originalKey = account.RefreshAsync().GetAwaiter().GetResult().HistoryKey;
-                fixture.Now = Initial.AddMinutes(3);
+                fixture.Now = Initial.AddMinutes(5);
                 AccountSnapshot refreshed = account.RefreshAsync().GetAwaiter().GetResult();
                 ClaudeRequest request = fixture.Requests.Single(r => r.Method == "POST");
                 Require(request.Url == "https://platform.claude.com/v1/oauth/token" && request.AccessToken == null &&
@@ -183,7 +184,7 @@ namespace CodexUsageMeter
             {
                 account.RefreshAsync().GetAwaiter().GetResult();
                 string saved = File.ReadAllText(mismatch.CredentialPath);
-                mismatch.Account = AccountB; mismatch.Now = Initial.AddMinutes(3);
+                mismatch.Account = AccountB; mismatch.Now = Initial.AddMinutes(5);
                 Require(account.RefreshAsync().GetAwaiter().GetResult().ErrorKind == AccountErrorKind.IdentityMismatch &&
                     File.ReadAllText(mismatch.CredentialPath) == saved, "Renewal overwrote a mismatched identity.");
             }
@@ -218,6 +219,23 @@ namespace CodexUsageMeter
                         Require(account.RefreshAsync().GetAwaiter().GetResult().IdentityVerified, "Changed login failed to recover.");
                     }
                 }
+            }
+            Fixture busy = new Fixture(Path.Combine(root, "throttle")); busy.Save("token", Initial.AddHours(2));
+            using (ClaudeUsageAccount account = busy.Create())
+            {
+                AccountSnapshot good = account.RefreshAsync().GetAwaiter().GetResult();
+                busy.Now = Initial.AddSeconds(30);
+                Require(good.IdentityVerified && System.Object.ReferenceEquals(account.RefreshAsync().GetAwaiter().GetResult(), good) &&
+                    busy.Requests.Count == 2, "Claude was polled again before the poll interval.");
+                busy.Now = Initial.AddMinutes(5); busy.Status = 429; busy.RetryAfter = "0";
+                AccountSnapshot limited = account.RefreshAsync().GetAwaiter().GetResult();
+                Require(limited.ErrorKind == AccountErrorKind.RateLimited && limited.RetryAfterUtc == busy.Now.AddMinutes(5) &&
+                    limited.Primary.RemainingPercent == 75 && limited.RateLimitsObservedAtUtc == Initial && limited.HistoryKey == null,
+                    "Throttling hid the last reading, recorded it again or ignored Retry-After: 0.");
+                busy.Now = Initial.AddMinutes(10);
+                Require(account.RefreshAsync().GetAwaiter().GetResult().RetryAfterUtc == busy.Now.AddMinutes(10), "Repeated throttling did not back off.");
+                busy.Status = 200; busy.Now = Initial.AddMinutes(20);
+                Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == busy.Now, "Throttled account never recovered.");
             }
             Fixture timed = new Fixture(Path.Combine(root, "timeout")); timed.Save("token", Initial.AddHours(2));
             using (ClaudeUsageAccount account = timed.Create((request, cancellation) => { throw new TimeoutException("secret"); }))
@@ -643,6 +661,7 @@ namespace CodexUsageMeter
             internal DateTime Now = Initial;
             internal string Account = AccountA, Profile, Usage;
             internal int Status = 200;
+            internal string RetryAfter = "120";
             internal Action OnUsage;
             internal readonly List<ClaudeRequest> Requests = new List<ClaudeRequest>();
             internal Fixture(string root) { Root = Path.GetFullPath(root); Directory.CreateDirectory(Root); }
@@ -661,7 +680,7 @@ namespace CodexUsageMeter
             private Task<ClaudeResponse> Send(ClaudeRequest request, CancellationToken cancellation)
             {
                 Requests.Add(request);
-                if (Status != 200) return Task.FromResult(new ClaudeResponse { Status = Status, Body = "server-secret", RetryAfter = "120" });
+                if (Status != 200) return Task.FromResult(new ClaudeResponse { Status = Status, Body = "server-secret", RetryAfter = RetryAfter });
                 string body;
                 if (request.Url == ClaudeUsageAccount.ProfileEndpoint)
                     body = Profile ?? "{\"account\":{\"uuid\":\"" + Account + "\",\"email_address\":\"private@example.test\"},\"organization\":{\"uuid\":\"" + Organization + "\"}}";

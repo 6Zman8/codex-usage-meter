@@ -172,6 +172,10 @@ namespace CodexUsageMeter
         internal const string ProfileEndpoint = "https://api.anthropic.com/api/oauth/profile";
         internal const string UsageEndpoint = "https://api.anthropic.com/api/oauth/usage";
         private const int MaximumBytes = 1024 * 1024;
+        // One usage request per minute tick; under the 60-second timer so tick jitter never skips a poll.
+        internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(50);
+        // The usage endpoint throttles per account with 429 and Retry-After: 0.
+        private static readonly TimeSpan FirstBackoff = TimeSpan.FromMinutes(5), MaximumBackoff = TimeSpan.FromMinutes(60);
         private static readonly DateTime Epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         private readonly Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> _transport;
         private readonly Func<DateTime> _now;
@@ -180,7 +184,10 @@ namespace CodexUsageMeter
         private CancellationTokenSource _loginCancellation;
         private Task _login;
         private string _loginUrl;
-        private DateTime _retryAt;
+        private DateTime _retryAt, _nextPoll;
+        private int _rateLimitStreak;
+        private AccountSnapshot _lastGood;
+        private string _lastGoodCredentials;
         private string _terminalCredentials;
         private AccountProviderException _terminalError;
         private bool _disposed;
@@ -224,21 +231,24 @@ namespace CodexUsageMeter
                     throw Fault(AccountErrorKind.LoginRequired, "연결에서 Claude 구독 계정으로 로그인해 주세요.");
                 if (raw == _terminalCredentials && _terminalError != null) throw _terminalError;
                 if (_now() < _retryAt) throw Fault(AccountErrorKind.RateLimited, "Claude 요청이 많아 잠시 대기합니다. " + _retryAt.ToLocalTime().ToString("HH:mm") + " 이후 자동으로 다시 확인합니다.");
+                // Between polls the last verified reading is reused; a changed sign-in is read at once.
+                if (_lastGood != null && raw == _lastGoodCredentials && _now() < _nextPoll) return _lastGood;
                 Credentials credentials = ParseCredentials(raw);
                 snapshot.IsAuthenticated = true;
                 if (credentials.Expires <= _now().AddMinutes(1))
                     credentials = await RenewAsync(credentials, _lifetime.Token).ConfigureAwait(false);
                 raw = credentials.Raw;
-                Identity before = await ReadIdentityAsync(credentials.Access, _lifetime.Token).ConfigureAwait(false);
+                // A token belongs to one account: its identity is read once per credential and kept in the binding.
+                Identity bound = BoundIdentity(credentials.Raw);
+                Identity after = bound ?? await ReadIdentityAsync(credentials.Access, _lifetime.Token).ConfigureAwait(false);
                 ClaudeResponse usage = await RequestAsync(new ClaudeRequest { Url = UsageEndpoint, AccessToken = credentials.Access }, _lifetime.Token).ConfigureAwait(false);
                 DateTime observed = _now();
-                Identity after = await ReadIdentityAsync(credentials.Access, _lifetime.Token).ConfigureAwait(false);
-                if (!before.Same(after) || ReadOptional(CredentialPath) != credentials.Raw)
+                if (ReadOptional(CredentialPath) != credentials.Raw)
                     throw Fault(AccountErrorKind.IdentityMismatch, "조회 중 계정이 바뀌어 이번 사용량을 저장하지 않았습니다. 다시 연결 상태를 확인해 주세요.");
                 Dictionary<string, object> body = ParseObject(usage.Body);
                 snapshot.Primary = ParseWindow(JsonValue.AsObject(JsonValue.Get(body, "five_hour")), 300, "5시간 한도");
                 snapshot.Secondary = ParseWindow(JsonValue.AsObject(JsonValue.Get(body, "seven_day")), 10080, "주간 한도");
-                SaveBinding(credentials, after);
+                if (bound == null) SaveBinding(credentials, after);
                 snapshot.Email = after.Email;
                 snapshot.PlanType = credentials.Plan;
                 snapshot.RemoteAccountId = after.Account;
@@ -248,6 +258,7 @@ namespace CodexUsageMeter
                 snapshot.RateLimitsObservedAtUtc = observed;
                 if (snapshot.Primary == null && snapshot.Secondary == null)
                     snapshot.UsageError = "Claude가 유효한 단기·주간 한도를 제공하지 않았습니다.";
+                _lastGood = snapshot; _lastGoodCredentials = raw; _nextPoll = observed + PollInterval; _rateLimitStreak = 0;
             }
             catch (Exception error)
             {
@@ -261,6 +272,16 @@ namespace CodexUsageMeter
                     safe.Kind == AccountErrorKind.RenewalBlocked || safe.Kind == AccountErrorKind.IdentityMismatch))
                 { _terminalCredentials = raw; _terminalError = safe; }
                 snapshot.RetryAfterUtc = _retryAt > _now() ? (DateTime?)_retryAt : null;
+                if (safe.Kind != AccountErrorKind.RateLimited || raw != _lastGoodCredentials) _lastGood = null;
+                else if (_lastGood != null)
+                {
+                    // Throttling does not make the last verified reading wrong; keep showing it with its own time.
+                    snapshot.IsAuthenticated = true; snapshot.Email = _lastGood.Email; snapshot.PlanType = _lastGood.PlanType;
+                    snapshot.Primary = _lastGood.Primary; snapshot.Secondary = _lastGood.Secondary;
+                    snapshot.RateLimitsObservedAtUtc = _lastGood.RateLimitsObservedAtUtc;
+                    snapshot.Error = "Claude 요청 제한으로 " + _lastGood.RateLimitsObservedAtUtc.ToLocalTime().ToString("HH:mm") +
+                        "에 받은 값을 표시합니다. " + _retryAt.ToLocalTime().ToString("HH:mm") + " 이후 다시 확인합니다.";
+                }
             }
             finally { if (entered) _gate.Release(); }
             return snapshot;
@@ -392,7 +413,17 @@ namespace CodexUsageMeter
         private void SaveBinding(Credentials credentials, Identity identity)
         {
             AtomicWrite(BindingPath, new JavaScriptSerializer().Serialize(new Dictionary<string, object> {
-                { "credentialHash", Hash(credentials.Raw) }, { "account", identity.Account }, { "organization", identity.Organization } }));
+                { "credentialHash", Hash(credentials.Raw) }, { "account", identity.Account }, { "organization", identity.Organization },
+                { "email", identity.Email ?? "" } }));
+        }
+
+        private Identity BoundIdentity(string raw)
+        {
+            Dictionary<string, object> binding = ParseObject(ReadOptional(BindingPath) ?? "{}");
+            Identity identity = new Identity { Account = Text(binding, "account"), Organization = Text(binding, "organization"), Email = Text(binding, "email") };
+            // Bindings from older versions carry no email and are re-read once.
+            return Text(binding, "credentialHash") == Hash(raw) && !String.IsNullOrEmpty(identity.Account) &&
+                !String.IsNullOrEmpty(identity.Organization) && identity.Email != null ? identity : null;
         }
 
         private static Credentials ParseCredentials(string raw)
@@ -469,7 +500,11 @@ namespace CodexUsageMeter
                 DateTimeOffset date;
                 if (!Double.TryParse(response.RetryAfter, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds) || !Finite(seconds))
                     seconds = DateTimeOffset.TryParse(response.RetryAfter, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out date)
-                        ? (date.UtcDateTime - _now()).TotalSeconds : 60;
+                        ? (date.UtcDateTime - _now()).TotalSeconds : 0;
+                // Retry-After: 0 or none is not a usable wait here; back off 5, 10, 20... up to 60 minutes.
+                if (seconds <= 0)
+                    seconds = Math.Min(MaximumBackoff.TotalSeconds, FirstBackoff.TotalSeconds * Math.Pow(2, Math.Min(_rateLimitStreak, 10)));
+                _rateLimitStreak++;
                 _retryAt = _now().AddSeconds(Math.Max(1, Math.Min(86400, seconds)));
                 throw Fault(AccountErrorKind.RateLimited, "Claude 요청이 많아 잠시 대기합니다. 잠시 후 자동으로 다시 확인합니다.");
             }

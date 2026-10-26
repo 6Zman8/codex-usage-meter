@@ -1,1 +1,1 @@
-Connect Claude accounts with browser sign-in; Claude Code CLI is no longer required.
+Poll Claude usage with one request per minute and back off on rate limits while keeping the last reading.
