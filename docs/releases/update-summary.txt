@@ -1,1 +1,1 @@
-Fix the layout editor showing only part of its content when maximized on a monitor with a different scale.
+Fix Claude reset countdowns being off by the local time zone offset.

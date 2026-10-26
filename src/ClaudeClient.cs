@@ -481,7 +481,8 @@ namespace CodexUsageMeter
             DateTime? resets = DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out reset) &&
                 // A reset without a timezone is not a confirmed instant.
                 raw != null && (raw.EndsWith("Z", StringComparison.OrdinalIgnoreCase) ||
-                System.Text.RegularExpressions.Regex.IsMatch(raw, @"[+-]\d{2}:\d{2}$")) ? (DateTime?)reset.UtcDateTime : null;
+                System.Text.RegularExpressions.Regex.IsMatch(raw, @"[+-]\d{2}:\d{2}$")) ? (DateTime?)reset.LocalDateTime : null;
+            // Local like Codex resets: the display subtracts DateTime.Now, which ignores DateTimeKind.
             return new RateWindow { Name = name, UsedPercent = used, RemainingPercent = 100 - used, DurationMinutes = minutes, ResetsAt = resets };
         }
 

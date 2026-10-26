@@ -94,7 +94,8 @@ namespace CodexUsageMeter
                 "{\"utilization\":-1}", "{\"utilization\":101}" })
                 Require(ClaudeUsageAccount.ParseWindow(Object(value), 300, "5시간 한도") == null, "Absent/invalid quota became free quota.");
             RateWindow zero = ClaudeUsageAccount.ParseWindow(Object("{\"utilization\":100,\"resets_at\":\"2030-01-02T21:00:00+09:00\"}"), 300, "5시간 한도");
-            Require(zero.RemainingPercent == 0 && zero.ResetsAt == Initial && zero.ResetsAt.Value.Kind == DateTimeKind.Utc, "Zero or timezone reset changed.");
+            Require(zero.RemainingPercent == 0 && zero.ResetsAt.Value.ToUniversalTime() == Initial && zero.ResetsAt.Value.Kind == DateTimeKind.Local &&
+                zero.ResetsAt.Value - Initial.ToLocalTime() == TimeSpan.Zero, "Zero or timezone reset changed, or would not count down against local time.");
             RateWindow full = ClaudeUsageAccount.ParseWindow(Object("{\"utilization\":0,\"resets_at\":\"not-a-date\"}"), 10080, "주간 한도");
             Require(full.RemainingPercent == 100 && full.ResetsAt == null && full.DurationMinutes == 10080, "Valid 0% usage or unavailable reset changed.");
             RateWindow unzoned = ClaudeUsageAccount.ParseWindow(Object("{\"utilization\":12,\"resets_at\":\"2030-01-02T12:00:00\"}"), 300, "5시간 한도");
