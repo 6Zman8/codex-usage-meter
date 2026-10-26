@@ -1,1 +1,1 @@
-Poll Claude usage with one request per minute and back off on rate limits while keeping the last reading.
+Fix the layout editor showing only part of its content when maximized on a monitor with a different scale.

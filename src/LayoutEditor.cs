@@ -240,8 +240,11 @@ namespace CodexUsageMeter
             else
             {
                 _normalBounds = WindowPlacement.Bounds(this);
-                _maximized = true; ResizeMode = ResizeMode.NoResize;
+                _maximized = true;
+                // Resize before dropping the resize frame. In the other order an editor that opened on a
+                // 100% monitor was shown by DWM at 2/3 size on a 150% monitor, with the rest left black.
                 WindowPlacement.Maximize(this);
+                ResizeMode = ResizeMode.NoResize;
             }
             _maximize.Content = _maximized ? "❐" : "□"; _maximize.ToolTip = _maximized ? "이전 크기로 복원" : "최대화";
         }
