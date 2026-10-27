@@ -120,6 +120,7 @@ namespace CodexUsageMeter
                     "Quota and identity must use the same isolated credential and exact endpoints.");
                 fixture.Now = Initial.AddSeconds(55);
                 AccountSnapshot polled = account.RefreshAsync().GetAwaiter().GetResult();
+                Require(first.Email == "private@example.test" && ClaudeWeb.IdentityOf(polled) != null, "The OAuth profile email was not read, so claude.ai cannot be connected.");
                 Require(polled.IdentityVerified && polled.RemoteAccountId == AccountA && polled.Email == first.Email && fixture.Requests.Count == 3 &&
                     fixture.Requests.Last().Url == ClaudeUsageAccount.UsageEndpoint, "A minute poll of an unchanged sign-in must send only the usage request.");
                 UsageHistoryStore store = new UsageHistoryStore(Path.Combine(root, "h")); store.Record(first);
@@ -278,7 +279,7 @@ namespace CodexUsageMeter
                 ClaudeUsageAccount.PlanOf(Object("{\"has_claude_pro\":true}"), null) == "pro" &&
                 ClaudeUsageAccount.PlanOf(Object("{}"), Object("{\"organization_type\":\"api\"}")) == null, "Plan detection changed.");
             Fixture login = new Fixture(Path.Combine(root, "browser-login"));
-            login.Profile = "{\"account\":{\"uuid\":\"" + AccountA + "\",\"email_address\":\"private@example.test\"},\"organization\":{\"uuid\":\"" +
+            login.Profile = "{\"account\":{\"uuid\":\"" + AccountA + "\",\"email\":\"private@example.test\"},\"organization\":{\"uuid\":\"" +
                 Organization + "\",\"organization_type\":\"claude_max\"}}";
             using (ClaudeUsageAccount account = login.Create())
             {
@@ -815,7 +816,7 @@ namespace CodexUsageMeter
                 if (Status != 200) return Task.FromResult(new ClaudeResponse { Status = Status, Body = "server-secret", RetryAfter = RetryAfter });
                 string body;
                 if (request.Url == ClaudeUsageAccount.ProfileEndpoint)
-                    body = Profile ?? "{\"account\":{\"uuid\":\"" + Account + "\",\"email_address\":\"private@example.test\"},\"organization\":{\"uuid\":\"" + Organization + "\"}}";
+                    body = Profile ?? "{\"account\":{\"uuid\":\"" + Account + "\",\"email\":\"private@example.test\"},\"organization\":{\"uuid\":\"" + Organization + "\"}}";
                 else if (request.Url == ClaudeUsageAccount.UsageEndpoint)
                 {
                     if (OnUsage != null) OnUsage();

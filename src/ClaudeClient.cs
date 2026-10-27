@@ -458,7 +458,7 @@ namespace CodexUsageMeter
                 !Guid.TryParse(Text(organization, "uuid"), out organizationId) || organizationId == Guid.Empty)
                 throw Fault(AccountErrorKind.IdentityUnavailable, "Claude 계정·조직 식별을 확인하지 못해 사용량을 저장하지 않았습니다.");
             return new Identity { Account = accountId.ToString("D"), Organization = organizationId.ToString("D"),
-                Email = Text(account, "email_address"), Plan = PlanOf(account, organization) };
+                Email = Text(account, "email"), Plan = PlanOf(account, organization) }; // /api/oauth/profile names it "email" (claude.ai /api/account uses "email_address").
         }
 
         // The token response carries no plan; Claude Code derives it from the profile the same way.

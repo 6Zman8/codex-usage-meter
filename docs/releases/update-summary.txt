@@ -1,1 +1,1 @@
-Show reset credits, subscription date and usage statistics on Claude cards like Codex cards.
+Fix the Claude account email not being read, which blocked the claude.ai connection.
