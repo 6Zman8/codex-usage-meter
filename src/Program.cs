@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.14.0")]
-[assembly: AssemblyFileVersion("1.9.14.0")]
+[assembly: AssemblyVersion("1.9.15.0")]
+[assembly: AssemblyFileVersion("1.9.15.0")]
 
 namespace CodexUsageMeter
 {
@@ -2340,15 +2340,10 @@ namespace CodexUsageMeter
                 AccountLoginPrompt login = await targetClient.StartLoginAsync();
                 if (login.Completion != null)
                 {
-                    bool opened = false;
-                    try { Process.Start(new ProcessStartInfo(login.VerificationUrl) { UseShellExecute = true }); opened = true; }
-                    catch { }
+                    // Claude: one claude.ai window in this slot's profile signs in, approves and reads the web data.
                     if (Object.ReferenceEquals(view.Client, targetClient))
-                        view.Status.Text = "브라우저에서 로그인을 마치면 자동으로 갱신됩니다.";
-                    ShowModal(targetLabel + " · " + targetClient.Provider.DisplayName + " 연결", opened ? login.Message :
-                        "브라우저를 자동으로 열지 못했습니다. 아래 주소를 브라우저에서 열어 로그인해 주세요.\n\n" + login.VerificationUrl,
-                        null, "확인", "로그인 취소", null, login.Cancel);
-                    ObserveExternalLoginAsync(view, targetClient, login.Completion);
+                        view.Status.Text = "Claude 연결 창에서 로그인을 마치면 자동으로 갱신됩니다.";
+                    RunClaudeSignIn(view, targetClient, targetLabel, login);
                     return;
                 }
                 bool copied = TrySetClipboardText(login.UserCode);
@@ -2394,21 +2389,43 @@ namespace CodexUsageMeter
             }
         }
 
-        private async void ObserveExternalLoginAsync(AccountView view, IUsageAccount client, Task completion)
+        private async void RunClaudeSignIn(AccountView view, IUsageAccount client, string label, AccountLoginPrompt login)
         {
-            try { await completion; }
+            string webError = null, failure = null;
+            try
+            {
+                webError = await ClaudeWebService.SignInAsync(_window, client.ProfileRoot, login,
+                    async () => ClaudeWeb.IdentityOf(await AccountProviders.RefreshSafelyAsync(client)));
+            }
+            catch (Exception error) { login.Cancel(); webError = failure = error.Message; }
+            bool signedIn = true;
+            try { await login.Completion; }
             catch (Exception error)
             {
-                if (_disposed) return;
+                signedIn = false;
                 AccountProviderException safe = error as AccountProviderException;
+                // Closing the window is the person's own cancel and needs no dialog.
+                if (failure == null && (safe == null || safe.Kind != AccountErrorKind.Canceled))
+                    failure = safe == null ? "로그인을 마치지 못했습니다. 다시 연결해 주세요." : safe.Message;
+            }
+            if (_disposed) return;
+            if (!signedIn)
+            {
                 if (Object.ReferenceEquals(view.Client, client))
                 {
-                    view.Status.Text = safe == null ? "로그인을 마치지 못했습니다. 다시 연결해 주세요." : safe.Message;
+                    view.Status.Text = failure ?? "Claude 로그인을 취소했습니다.";
                     view.Status.Visibility = Visibility.Visible;
-                    ShowModal("계정 연결", view.Status.Text, null, "확인", null, null, null);
                 }
+                if (failure != null) ShowModal("계정 연결", failure, null, "확인", null, null, null);
+                await RefreshAccountsAsync();
+                return;
             }
-            if (!_disposed) await RefreshAccountsAsync();
+            await RefreshAccountsAsync();
+            // The OAuth connection stays; only the claude.ai part is retried from the card's subscription line.
+            if (webError != null)
+                ShowModal(label + " · Claude 연결", "Claude 사용량 연결을 마쳤습니다.\n\nclaude.ai의 초기화권·구독 날짜는 확인하지 못했습니다.\n" + webError +
+                    "\n\n사용량 연결은 그대로 유지됩니다. 카드의 ‘구독 날짜 · claude.ai 연결하기’를 눌러 이 부분만 다시 확인할 수 있습니다.",
+                    null, "확인", null, null, null);
         }
 
         private void ConfirmCodexLoginChange(AccountView view)

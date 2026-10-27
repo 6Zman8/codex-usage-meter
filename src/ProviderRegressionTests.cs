@@ -44,6 +44,7 @@ namespace CodexUsageMeter
             Migration(root); report("PASS providers: legacy paths/keys, mixed slots, metadata restart, retained profiles, unknown IDs and no Gemini");
             Quotas(); report("PASS providers: missing/invalid/zero quotas, independent windows and timezone-correct resets");
             IdentityAndHistory(root); report("PASS providers: verified identity, replacement, token rotation, isolation and truthful observations");
+            EmptyBindingEmail(root); report("PASS providers: a binding saved with an empty email re-reads the profile once, then polls send only usage");
             Renewal(root); report("PASS providers: encoded OAuth refresh contract, isolated atomic persistence and renewal blockers");
             Errors(root); report("PASS providers: per-account failure isolation, 401, scope denial, 429 backoff with usage-only minute polling and kept last reading, timeout, cancellation and safe errors");
             RefreshRetry(root); report("PASS providers: parsed quota recovery, five-second Codex-only delay, per-invocation cap, concurrent accounts and preserved credentials/exclusions");
@@ -156,6 +157,34 @@ namespace CodexUsageMeter
                 AccountSnapshot value = account.RefreshAsync().GetAwaiter().GetResult();
                 Require(value.Primary == null && value.Secondary.RemainingPercent == 70, "Weekly/model-specific quota became primary.");
             }
+        }
+
+        // Older versions saved "email":"" (wrong profile field); such a binding must be re-read exactly once.
+        private static void EmptyBindingEmail(string root)
+        {
+            Fixture fixture = new Fixture(Path.Combine(root, "empty-email")); fixture.Save("token-e", Initial.AddHours(2));
+            string hash, bindingPath = Path.Combine(fixture.Root, "meter-identity.json");
+            using (SHA256 sha = SHA256.Create())
+                hash = Convert.ToBase64String(sha.ComputeHash(Encoding.UTF8.GetBytes(File.ReadAllText(fixture.CredentialPath))));
+            File.WriteAllText(bindingPath, new JavaScriptSerializer().Serialize(new Dictionary<string, object> {
+                { "credentialHash", hash }, { "account", AccountA }, { "organization", Organization }, { "email", "" } }));
+            using (ClaudeUsageAccount account = fixture.Create())
+            {
+                AccountSnapshot first = account.RefreshAsync().GetAwaiter().GetResult();
+                Require(first.IdentityVerified && first.Email == "private@example.test" && ClaudeWeb.IdentityOf(first) != null &&
+                    fixture.Requests.Select(r => r.Url).SequenceEqual(new[] { ClaudeUsageAccount.ProfileEndpoint, ClaudeUsageAccount.UsageEndpoint }) &&
+                    (string)Object(File.ReadAllText(bindingPath))["email"] == "private@example.test", "An empty-email binding was not re-read once and saved with the email.");
+                for (int minute = 1; minute <= 2; minute++)
+                {
+                    fixture.Now = Initial.AddMinutes(minute);
+                    AccountSnapshot polled = account.RefreshAsync().GetAwaiter().GetResult();
+                    Require(polled.IdentityVerified && polled.Email == "private@example.test" && fixture.Requests.Count == 2 + minute &&
+                        fixture.Requests.Last().Url == ClaudeUsageAccount.UsageEndpoint, "A minute poll after the email repair re-read the profile.");
+                }
+            }
+            using (ClaudeUsageAccount restart = fixture.Create())
+                Require(restart.RefreshAsync().GetAwaiter().GetResult().Email == "private@example.test" &&
+                    fixture.Requests.Count(r => r.Url == ClaudeUsageAccount.ProfileEndpoint) == 1, "The repaired binding was read again after a restart.");
         }
 
         private static void Renewal(string root)
@@ -292,7 +321,8 @@ namespace CodexUsageMeter
                 Require(prompt.VerificationUrl.StartsWith(ClaudeLoopbackLogin.AuthorizeEndpoint + "?") && query["code"] == "true" &&
                     query["client_id"] == ClaudeUsageAccount.OAuthClientId && query["response_type"] == "code" &&
                     query["code_challenge_method"] == "S256" && query["scope"].Split(' ').Contains("user:profile") &&
-                    redirect.StartsWith("http://localhost:") && redirect.EndsWith("/callback"), "Browser login request changed.");
+                    redirect.StartsWith("http://localhost:") && redirect.EndsWith("/callback") && prompt.CallbackUrl == redirect,
+                    "Browser login request changed or the sign-in window would admit a different callback.");
                 Require(!prompt.Completion.IsCompleted && account.RefreshAsync().GetAwaiter().GetResult().HistoryKey == null,
                     "Pending login blocked refresh or fabricated usage.");
                 Require(Callback(redirect + "?code=fixture-code&state=forged") == 400 && Callback(redirect.Replace("/callback", "/favicon.ico")) == 404 &&

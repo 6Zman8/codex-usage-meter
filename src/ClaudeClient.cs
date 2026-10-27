@@ -77,14 +77,14 @@ namespace CodexUsageMeter
                         }
                         Exception failure = null;
                         if (String.IsNullOrEmpty(code))
-                            failure = new AccountProviderException(AccountErrorKind.LoginRequired, "브라우저에서 Claude 로그인을 승인하지 않았습니다. 다시 연결해 주세요.");
+                            failure = new AccountProviderException(AccountErrorKind.LoginRequired, "Claude 로그인을 승인하지 않았습니다. 다시 연결해 주세요.");
                         else
                         {
                             try { await exchange(code).ConfigureAwait(false); }
                             catch (Exception error) { failure = error; }
                         }
                         await RespondAsync(client, failure == null ? 200 : 500, failure == null
-                            ? "Claude 연결을 마쳤습니다. 이 창을 닫고 미터기로 돌아가세요."
+                            ? "Claude 로그인을 마쳤습니다. 이어서 claude.ai의 초기화권과 구독 날짜를 확인합니다."
                             : "Claude 연결을 마치지 못했습니다. 미터기의 안내를 확인해 주세요.").ConfigureAwait(false);
                         if (failure != null) throw failure;
                         return;
@@ -183,7 +183,7 @@ namespace CodexUsageMeter
         private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
         private CancellationTokenSource _loginCancellation;
         private Task _login;
-        private string _loginUrl;
+        private string _loginUrl, _loginCallback;
         private DateTime _retryAt, _nextPoll;
         private int _rateLimitStreak;
         private AccountSnapshot _lastGood;
@@ -225,7 +225,7 @@ namespace CodexUsageMeter
             {
                 await _gate.WaitAsync(_lifetime.Token).ConfigureAwait(false); entered = true;
                 if (_login != null && !_login.IsCompleted)
-                    throw Fault(AccountErrorKind.LoginRequired, "브라우저에서 Claude 로그인을 마쳐 주세요. 다른 계정은 계속 갱신됩니다.");
+                    throw Fault(AccountErrorKind.LoginRequired, "Claude 연결 창에서 로그인을 마쳐 주세요. 다른 계정은 계속 갱신됩니다.");
                 raw = ReadOptional(CredentialPath);
                 if (raw == null)
                     throw Fault(AccountErrorKind.LoginRequired, "연결에서 Claude 구독 계정으로 로그인해 주세요.");
@@ -303,7 +303,7 @@ namespace CodexUsageMeter
                 _loginCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
                 _loginCancellation.CancelAfter(TimeSpan.FromMinutes(10));
                 _terminalCredentials = null; _terminalError = null; _retryAt = default(DateTime);
-                _loginUrl = browser.AuthorizeUrl;
+                _loginUrl = browser.AuthorizeUrl; _loginCallback = browser.RedirectUri;
                 _login = CompleteLoginAsync(browser, _loginCancellation.Token);
                 return LoginPrompt();
             }
@@ -314,8 +314,8 @@ namespace CodexUsageMeter
         private AccountLoginPrompt LoginPrompt()
         {
             CancellationTokenSource cancellation = _loginCancellation;
-            return new AccountLoginPrompt { Completion = _login, Cancel = () => cancellation.Cancel(), VerificationUrl = _loginUrl,
-                Message = "브라우저에서 Claude 구독 계정으로 로그인해 주세요. 로그인이 끝나면 브라우저를 닫아도 사용량과 초기화 시간이 자동 갱신됩니다.\n\nAPI 키·Console 계정은 지원하지 않습니다." };
+            return new AccountLoginPrompt { Completion = _login, Cancel = () => cancellation.Cancel(), VerificationUrl = _loginUrl, CallbackUrl = _loginCallback,
+                Message = "이 창에서 Claude 구독 계정으로 로그인한 뒤 승인해 주세요. 한 번 로그인하면 사용량·초기화권·구독 날짜가 함께 연결되고 창은 자동으로 닫힙니다.\nAPI 키·Console 계정은 지원하지 않습니다. 로그인 정보는 이 계정 칸에만 보관됩니다." };
         }
 
         private async Task CompleteLoginAsync(ClaudeLoopbackLogin browser, CancellationToken cancellation)
@@ -425,9 +425,9 @@ namespace CodexUsageMeter
         {
             Dictionary<string, object> binding = ParseObject(ReadOptional(BindingPath) ?? "{}");
             Identity identity = new Identity { Account = Text(binding, "account"), Organization = Text(binding, "organization"), Email = Text(binding, "email") };
-            // Bindings from older versions carry no email and are re-read once.
+            // Bindings from older versions carry no email, or an empty one saved while the profile field name was wrong; re-read them once.
             return Text(binding, "credentialHash") == Hash(raw) && !String.IsNullOrEmpty(identity.Account) &&
-                !String.IsNullOrEmpty(identity.Organization) && identity.Email != null ? identity : null;
+                !String.IsNullOrEmpty(identity.Organization) && !String.IsNullOrWhiteSpace(identity.Email) ? identity : null;
         }
 
         private static Credentials ParseCredentials(string raw)

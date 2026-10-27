@@ -340,26 +340,72 @@ namespace CodexUsageMeter
             try { using (ClaudeWebWindow window = new ClaudeWebWindow(root, identity, true)) return await window.RunAsync(owner); }
             finally { WebSubscriptionService.Gate.Release(); lock (Pending) Pending.Remove(root); }
         }
+
+        // The card's 연결: one window signs in to claude.ai, approves the OAuth request and reads the web data with the same session.
+        // Returns null once the web data is saved, otherwise why it is not; the OAuth result is the login's own Completion.
+        internal static async Task<string> SignInAsync(Window owner, string root, AccountLoginPrompt login, Func<Task<ClaudeWebIdentity>> identify)
+        {
+            // Holding the slot keeps a hidden refresh from queueing behind the sign-in; an existing holder only delays the window.
+            bool owned;
+            lock (Pending) owned = Pending.Add(root);
+            try
+            {
+                await WebSubscriptionService.Gate.WaitAsync();
+                try
+                {
+                    if (login.Completion.IsCompleted) return "Claude 연결 창을 열기 전에 로그인 요청이 끝났습니다.";
+                    using (ClaudeWebWindow window = new ClaudeWebWindow(root, login, identify, true)) return await window.SignInAsync(owner);
+                }
+                finally { WebSubscriptionService.Gate.Release(); }
+            }
+            finally { if (owned) lock (Pending) Pending.Remove(root); }
+        }
     }
 
     // Reads claude.ai with the page's own session from inside the page (same origin), so cookies never leave the slot's WebView2 profile.
     internal sealed class ClaudeWebWindow : WebLoginWindow
     {
         private readonly string _root;
-        private readonly ClaudeWebIdentity _identity;
+        private ClaudeWebIdentity _identity;
+        private readonly AccountLoginPrompt _login;
+        private readonly Func<Task<ClaudeWebIdentity>> _identify;
+        private Uri _callback;
         private readonly string _nonce = Guid.NewGuid().ToString("N");
         private CoreWebView2 _web;
         private DispatcherTimer _poll;
         private bool _reading;
+        // Last reason the web data was not saved; shown after a sign-in window closes.
+        internal string WebError { get; private set; }
 
         internal ClaudeWebWindow(string root, ClaudeWebIdentity identity, bool interactive)
             : base("claude.ai 연결 · Codex 미터기", identity.Email + " 계정으로 claude.ai에 로그인해 주세요.\n초기화권과 구독 날짜를 확인하면 자동으로 닫힙니다. 로그인 정보는 이 계정 칸에만 보관됩니다.",
                 ClaudeWeb.ProfileFolder(root), ClaudeWeb.StartUrl, interactive)
         { _root = root; _identity = identity; }
 
+        // One sign-in: the OAuth approval runs in this slot's claude.ai profile, then the same session's web data is read.
+        internal ClaudeWebWindow(string root, AccountLoginPrompt login, Func<Task<ClaudeWebIdentity>> identify, bool interactive)
+            : base("Claude 연결 · Codex 미터기", login.Message, ClaudeWeb.ProfileFolder(root), login.VerificationUrl, interactive)
+        { _root = root; _login = login; _identify = identify; _callback = new Uri(login.CallbackUrl); }
+
         protected override TimeSpan BackgroundTimeout { get { return TimeSpan.FromSeconds(40); } }
         protected override string TimeoutError { get { return "claude.ai 로그인이 만료되었거나 응답을 받지 못했습니다. 구독 날짜 줄을 눌러 다시 연결해 주세요."; } }
-        protected override void RecordFailure(string error) { ClaudeWeb.Failed(_root, _identity, error, DateTime.UtcNow); }
+        protected override void RecordFailure(string error) { if (_identity != null) ClaudeWeb.Failed(_root, _identity, error, DateTime.UtcNow); }
+        protected override bool AllowsNavigation(Uri uri) { return base.AllowsNavigation(uri) || IsCallback(uri, _callback); }
+
+        // Exactly this run's loopback callback (scheme, host, port and path); the query carries the code and state.
+        internal static bool IsCallback(Uri uri, Uri callback)
+        {
+            return callback != null && uri != null && uri.Scheme == Uri.UriSchemeHttp && String.IsNullOrEmpty(uri.UserInfo) &&
+                String.Equals(uri.Host, callback.Host, StringComparison.OrdinalIgnoreCase) && uri.Port == callback.Port &&
+                uri.AbsolutePath == callback.AbsolutePath;
+        }
+
+        // Closing the window ends a pending sign-in. Returns null once the web data is saved, otherwise why it is not.
+        internal async Task<string> SignInAsync(Window owner)
+        {
+            try { return await RunAsync(owner) ? null : (WebError ?? "claude.ai 정보를 확인하기 전에 창이 닫혔습니다."); }
+            finally { if (!_login.Completion.IsCompleted) _login.Cancel(); }
+        }
 
         protected override void Attach(CoreWebView2 web)
         {
@@ -371,7 +417,35 @@ namespace CodexUsageMeter
             _poll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
             _poll.Tick += delegate { if (Closed) _poll.Stop(); else Read(); };
             _poll.Start();
+            if (_login != null) FinishLogin();
         }
+
+        // After the OAuth callback the verified owner comes from the account refresh; the same window then reads claude.ai.
+        private async void FinishLogin()
+        {
+            try { await _login.Completion; }
+            catch (Exception)
+            {
+                // The sign-in error is reported by the caller; nothing is left for this window.
+                _callback = null; Complete(false); return;
+            }
+            _callback = null;
+            if (Closed) return;
+            ShowStatus("Claude 로그인을 마쳤습니다. 같은 로그인으로 claude.ai의 초기화권과 구독 날짜를 확인하는 중입니다…");
+            ClaudeWebIdentity identity = null;
+            try { identity = await _identify(); }
+            catch (Exception) { }
+            if (Closed) return;
+            if (identity == null)
+            {
+                WebError = "Claude 계정 정보를 확인하지 못해 claude.ai 정보를 읽지 않았습니다.";
+                Complete(false); return;
+            }
+            _identity = identity;
+            _web.Navigate(ClaudeWeb.StartUrl);
+        }
+
+        private void Report(string text) { WebError = text; ShowStatus(text); }
 
         internal static bool IsClaudePage(string address)
         {
@@ -381,7 +455,8 @@ namespace CodexUsageMeter
 
         private async void Read()
         {
-            if (Closed || _reading || _web == null || !IsClaudePage(_web.Source)) return;
+            // A sign-in run reads only after the OAuth callback has given the verified owner.
+            if (Closed || _reading || _web == null || _identity == null || !IsClaudePage(_web.Source)) return;
             _reading = true;
             try { await _web.ExecuteScriptAsync(Script(_identity.OrganizationId, _nonce)); }
             catch { _reading = false; }
@@ -415,8 +490,13 @@ namespace CodexUsageMeter
             if (AccountSubscription.Text(message, "meter") != "claude-web" || AccountSubscription.Text(message, "nonce") != _nonce) return;
             _reading = false;
             string stage = AccountSubscription.Text(message, "stage");
-            if (stage == "signin") return; // Not signed in yet; the person signs in (interactive) or the hidden run times out.
-            if (stage != "data") { ShowStatus("claude.ai 정보를 읽지 못했습니다. 웹 페이지의 로그인 상태를 확인해 주세요."); return; }
+            if (stage == "signin")
+            {
+                // Not signed in yet; the person signs in (interactive) or the hidden run times out.
+                if (_login != null) Report("Claude 사용량은 연결했지만 claude.ai 로그인 상태를 확인하지 못했습니다. 이 창에서 claude.ai에 로그인하면 이어서 확인합니다.");
+                return;
+            }
+            if (stage != "data") { Report("claude.ai 정보를 읽지 못했습니다. 웹 페이지의 로그인 상태를 확인해 주세요."); return; }
             string error; bool accepted;
             try
             {
@@ -427,13 +507,13 @@ namespace CodexUsageMeter
             catch (Exception ex)
             {
                 // A WebView2 event callback must not let a disk/permission failure escape and end the process; keep the previous record.
-                if (Interactive) ShowStatus("claude.ai 정보를 저장하지 못했습니다(" + ex.GetType().Name + "). 디스크 공간이나 폴더 권한을 확인한 뒤 다시 시도해 주세요.");
-                else Complete(false);
+                Report("claude.ai 정보를 저장하지 못했습니다(" + ex.GetType().Name + "). 디스크 공간이나 폴더 권한을 확인한 뒤 다시 시도해 주세요.");
+                if (!Interactive) Complete(false);
                 return;
             }
             if (accepted) { Complete(true); return; }
-            if (Interactive) { ShowStatus(error + "\n웹 화면에서 로그아웃한 뒤 " + _identity.Email + " 계정으로 다시 로그인해 주세요. 미터기 정보는 변경하지 않았습니다."); return; }
-            RecordFailure(error); Complete(false);
+            if (Interactive) { Report(error + "\n웹 화면에서 로그아웃한 뒤 " + _identity.Email + " 계정으로 다시 로그인해 주세요. 미터기 정보는 변경하지 않았습니다."); return; }
+            WebError = error; RecordFailure(error); Complete(false);
         }
 
         private static int Status(Dictionary<string, object> message, string key)

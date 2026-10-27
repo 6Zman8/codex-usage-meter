@@ -30,6 +30,8 @@ namespace CodexUsageMeter
     internal sealed class AccountLoginPrompt
     {
         internal string VerificationUrl, UserCode, Message;
+        // Loopback address that receives the sign-in result (Claude); the sign-in window admits only this non-https address.
+        internal string CallbackUrl;
         // Browser login returns immediately; only this task waits for the person.
         internal Task Completion;
         internal Action Cancel;

@@ -160,7 +160,14 @@ namespace CodexUsageMeter
                     if (_interactive && Uri.TryCreate(e.Uri, UriKind.Absolute, out uri) && uri.Scheme == "https") web.Navigate(uri.AbsoluteUri);
                 };
                 web.NavigationStarting += delegate(object sender, CoreWebView2NavigationStartingEventArgs e) {
-                    Uri uri; if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out uri) || uri.Scheme != "https") e.Cancel = true;
+                    Uri uri; if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out uri) || !AllowsNavigation(uri)) e.Cancel = true;
+                };
+                // A cancelled navigation can still send its request, so non-https requests are answered here and never leave.
+                web.AddWebResourceRequestedFilter("http://*", CoreWebView2WebResourceContext.All);
+                web.WebResourceRequested += delegate(object sender, CoreWebView2WebResourceRequestedEventArgs e) {
+                    Uri uri;
+                    if (!Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out uri) || !AllowsNavigation(uri))
+                        e.Response = environment.CreateWebResourceResponse(new MemoryStream(), 403, "Forbidden", "Content-Type: text/plain");
                 };
                 Attach(web);
                 if (ConfigureForTest != null) ConfigureForTest(environment, web);
@@ -184,6 +191,8 @@ namespace CodexUsageMeter
         }
 
         protected virtual TimeSpan BackgroundTimeout { get { return TimeSpan.FromSeconds(25); } }
+        // Only https pages load; a sign-in run may additionally admit its own loopback callback.
+        protected virtual bool AllowsNavigation(Uri uri) { return uri.Scheme == "https"; }
 
         private void Resize()
         {

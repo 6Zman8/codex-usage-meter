@@ -1,1 +1,1 @@
-Fix the Claude account email not being read, which blocked the claude.ai connection.
+Connect Claude in one sign-in inside the meter, and fix the missing Claude account email.
