@@ -43,6 +43,18 @@ namespace CodexUsageMeter
         public DateTime RateLimitsObservedAtUtc { get; set; }
         public string HistoryKey { get; set; }
         public string HistoryError { get; set; }
+        // Null: Usage/DailyUsage are tokens. "weekly-percent": % of the weekly limit derived from the meter's own history.
+        public string UsageUnit { get; set; }
+        // A provider whose reset credits/subscription need a separate web connection that is not linked yet.
+        public bool WebConnectionNeeded { get; set; }
+        public string ResetCreditsNote { get; set; }
+        public List<ModelUsageShare> ModelShares { get; set; }
+    }
+
+    internal sealed class ModelUsageShare
+    {
+        public string Name { get; set; }
+        public double Percent { get; set; }
     }
 
     internal sealed class ResetCreditInfo
@@ -60,12 +72,16 @@ namespace CodexUsageMeter
         public long? LongestRunningTurnSeconds { get; set; }
         public long? CurrentStreakDays { get; set; }
         public long? LongestStreakDays { get; set; }
+        public double? LifetimePercent { get; set; }
+        public double? PeakDailyPercent { get; set; }
+        public DateTime? RecordedSince { get; set; }
     }
 
     internal sealed class DailyUsageBucket
     {
         public DateTime Date { get; set; }
         public long Tokens { get; set; }
+        public double Percent { get; set; }
     }
 
     internal sealed class DeviceLoginInfo

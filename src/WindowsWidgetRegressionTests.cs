@@ -240,9 +240,8 @@ namespace CodexUsageMeter
                             Enumerable.Range(1, 4).Any(number => !titles.Contains("계정 " + number)))
                             throw new InvalidOperationException("Mixed-provider widget lost identification or leaked private data");
                         foreach (var page in sizePages)
-                            if (page["alt"].Contains("✳ Claude") && !page["alt"].Contains("GPT/Codex") &&
-                                (page["alt"].Contains("초기화권") || page["alt"].Contains("구독 날짜")))
-                                throw new InvalidOperationException("Widget layout restored unsupported Claude content");
+                            if (page["alt"].Contains("✳ Claude") && !page["alt"].Contains("GPT/Codex") && !page["alt"].Contains("초기화권"))
+                                throw new InvalidOperationException("Claude widget lost the reset credits shown on Codex cards");
                     }
                 }
             }

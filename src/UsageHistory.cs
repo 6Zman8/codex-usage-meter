@@ -278,6 +278,60 @@ namespace CodexUsageMeter
         }
     }
 
+    // Statistics in % of the weekly limit, derived only from this meter's own samples (no tokens are known).
+    internal static class UsageHistoryStats
+    {
+        internal const string WeeklyPercentUnit = "weekly-percent";
+
+        // Daily consumed weekly-limit %: positive increases of used % within a window, plus the used % of a
+        // new window (its reset passed before the reading). A drop within a window (a redeemed reset) only moves the baseline.
+        internal static SortedDictionary<DateTime, double> WeeklyPercentByDay(IEnumerable<UsageHistorySample> samples)
+        {
+            SortedDictionary<DateTime, double> days = new SortedDictionary<DateTime, double>();
+            UsageHistoryQuota previous = null;
+            foreach (UsageHistorySample sample in samples.OrderBy(s => s.FirstUtc))
+            {
+                UsageHistoryQuota quota = sample.Secondary;
+                if (quota == null || quota.DurationMinutes != 10080) continue;
+                double used = 100 - quota.RemainingPercent, consumed = 0;
+                if (previous != null)
+                {
+                    double before = 100 - previous.RemainingPercent;
+                    if (previous.ResetsAtUtc.HasValue && sample.FirstUtc.ToUniversalTime() >= previous.ResetsAtUtc.Value.ToUniversalTime()) consumed = used;
+                    else if (used > before) consumed = used - before;
+                }
+                DateTime day = sample.FirstUtc.ToLocalTime().Date;
+                double total;
+                days.TryGetValue(day, out total);
+                days[day] = total + consumed;
+                previous = quota;
+            }
+            return days;
+        }
+
+        internal static void ApplyWeeklyPercent(AccountSnapshot snapshot, IEnumerable<UsageHistorySample> samples, DateTime today)
+        {
+            SortedDictionary<DateTime, double> days = WeeklyPercentByDay(samples);
+            today = today.Date;
+            snapshot.UsageUnit = WeeklyPercentUnit;
+            snapshot.DailyUsage = days.Select(p => new DailyUsageBucket { Date = p.Key, Percent = Math.Round(p.Value, 2) }).ToList();
+            if (days.Count == 0) { snapshot.Usage = null; return; }
+            double value;
+            DateTime cursor = days.TryGetValue(today, out value) && value > 0 ? today : today.AddDays(-1);
+            long current = 0, longest = 0, run = 0;
+            while (days.TryGetValue(cursor, out value) && value > 0) { current++; cursor = cursor.AddDays(-1); }
+            DateTime? last = null;
+            foreach (KeyValuePair<DateTime, double> day in days)
+            {
+                if (day.Value <= 0) { run = 0; last = null; continue; }
+                run = last.HasValue && last.Value.AddDays(1) == day.Key ? run + 1 : 1;
+                longest = Math.Max(longest, run); last = day.Key;
+            }
+            snapshot.Usage = new UsageSummary { LifetimePercent = days.Values.Sum(), PeakDailyPercent = days.Values.Max(),
+                CurrentStreakDays = current, LongestStreakDays = longest, RecordedSince = days.Keys.First() };
+        }
+    }
+
     internal sealed class UsageHistoryMonth
     {
         public int Schema { get; set; }

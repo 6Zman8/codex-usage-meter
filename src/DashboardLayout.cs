@@ -395,7 +395,7 @@ namespace CodexUsageMeter
                     tile.Card.Visibility = view.State != null && tile.Settings.Visible ? Visibility.Visible : Visibility.Collapsed;
                     bool shortQuota = tile.Settings.Shows("short"), weekly = tile.Settings.Shows("weekly");
                     AccountProvider provider = AccountProviders.For(view.LastSnapshot);
-                    if (mode == 0) ApplyExpandedAccount(tile, shortQuota, weekly, fontScale, provider.Supports(AccountCapabilities.CodexExtras));
+                    if (mode == 0) ApplyExpandedAccount(tile, shortQuota, weekly, fontScale, provider.Supports(AccountCapabilities.UsageExtras));
                     else ApplyCompactAccount(slot, tile, shortQuota, weekly, fontScale, provider);
                     CardContentLayout.ApplyVisibility(tile);
                 }
@@ -466,10 +466,10 @@ namespace CodexUsageMeter
             string prefix = "CompactAccount" + (slot + 1);
             ((FrameworkElement)Find<ProgressBar>(prefix + "PrimaryTimeBar").Parent).Visibility = shortQuota ? Visibility.Visible : Visibility.Collapsed;
             ((FrameworkElement)Find<ProgressBar>(prefix + "SecondaryTimeBar").Parent).Visibility = weekly ? Visibility.Visible : Visibility.Collapsed;
-            bool credits = provider.Supports(AccountCapabilities.CodexExtras) && tile.Settings.Shows("credits") && tile.Settings.ShowsItem("credits");
+            bool credits = provider.Supports(AccountCapabilities.UsageExtras) && tile.Settings.Shows("credits") && tile.Settings.ShowsItem("credits");
             Find<TextBlock>(prefix + "ResetValue").Visibility = credits ? Visibility.Visible : Visibility.Collapsed;
             Find<TextBlock>(prefix + "SubscriptionValue").Visibility =
-                provider.Supports(AccountCapabilities.ChatGptSubscription) ? Visibility.Visible : Visibility.Collapsed;
+                provider.Supports(AccountCapabilities.SubscriptionDate) ? Visibility.Visible : Visibility.Collapsed;
             Grid body = tile.Content;
             body.RowDefinitions[1].Height = hasQuota ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
             tile.MinimumHeight = (85 + (credits ? 23 : 0)) * Math.Max(1, fontScale / 1.5) + (hasQuota ? 132 : 0);

@@ -139,12 +139,60 @@ namespace CodexUsageMeter
                     Require(afterTimeout != null && !String.IsNullOrWhiteSpace(afterTimeout.LastError) && !WebSubscriptionStore.IsDue(afterTimeout, DateTime.UtcNow) &&
                         File.ReadAllText(Path.Combine(root, "auth.json")) == authBefore, "Timeout did not preserve auth and apply retry cooldown.");
                     report.AppendLine("PASS initialization cancellation and silent timeout preserve auth and retry cooldown");
+                    await RunClaudeBrowser(Path.Combine(evidence, "claude-browser-fixture"));
+                    report.AppendLine("PASS hidden claude.ai window: in-page reads, identity check before storing, mismatch rejection and signed-out timeout");
                     code = 0;
                 }
                 catch (Exception error) { report.AppendLine("FAIL " + error); }
                 finally { File.WriteAllText(output, report.ToString()); app.Shutdown(); }
             }));
             app.Run(); return code;
+        }
+
+        // Fixture claude.ai served inside the WebView2 profile; no network or real session is used.
+        private static async Task RunClaudeBrowser(string root)
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+            Directory.CreateDirectory(root);
+            const string org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+            ClaudeWebIdentity identity = new ClaudeWebIdentity { AccountId = "11111111-1111-4111-8111-111111111111", OrganizationId = org, Email = "web@example.invalid" };
+            string ends = DateTime.UtcNow.AddDays(5).ToString("yyyy-MM-ddTHH:mm:ssZ"), charge = DateTime.UtcNow.AddDays(12).ToString("yyyy-MM-ddTHH:mm:ssZ");
+            Func<string, int, Action<CoreWebView2Environment, CoreWebView2>> serve = (email, accountStatus) => delegate(CoreWebView2Environment environment, CoreWebView2 web) {
+                web.AddWebResourceRequestedFilter("https://claude.ai/*", CoreWebView2WebResourceContext.All);
+                web.WebResourceRequested += delegate(object sender, CoreWebView2WebResourceRequestedEventArgs request) {
+                    string path = new Uri(request.Request.Uri).PathAndQuery, body = "<!doctype html><meta charset='utf-8'><p>claude fixture</p>", type = "text/html";
+                    int status = 200;
+                    if (path == "/api/account") { type = "application/json"; status = accountStatus;
+                        body = "{\"email_address\":\"" + email + "\",\"memberships\":[{\"organization\":{\"uuid\":\"" + org + "\"}}]}"; }
+                    else if (path == "/api/organizations/" + org + "/usage?cedar_ember=1&skip_spend=1") { type = "application/json";
+                        body = "{\"cedar_ember\":{\"eligible\":true,\"grants\":[{\"id\":\"g\",\"resets_left\":1,\"paused\":false,\"ends_at\":\"" + ends + "\"}]}}"; }
+                    else if (path == "/api/organizations/" + org + "/subscription_details") { type = "application/json";
+                        body = "{\"status\":\"active\",\"next_charge_at\":\"" + charge + "\",\"next_charge_date\":null,\"plan_ending_at\":null,\"plan_ending_before\":null}"; }
+                    request.Response = environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(body)), status, status == 200 ? "OK" : "Error", "Content-Type: " + type);
+                };
+            };
+            using (ClaudeWebWindow mismatch = new ClaudeWebWindow(root, identity, false))
+            {
+                mismatch.ConfigureForTest = serve("other@example.invalid", 200);
+                Require(!await mismatch.RunAsync(null) && !File.Exists(ClaudeWeb.PathFor(root)), "A different claude.ai account was stored.");
+            }
+            using (ClaudeWebWindow window = new ClaudeWebWindow(root, identity, false))
+            {
+                window.ConfigureForTest = serve("web@example.invalid", 200);
+                Require(await window.RunAsync(null), "Hidden claude.ai window did not read the verified session.");
+            }
+            AccountSnapshot snapshot = new AccountSnapshot { ProviderId = "claude", IsAuthenticated = true, Email = identity.Email,
+                RemoteAccountId = identity.AccountId, RemoteOrganizationId = org };
+            ClaudeWeb.Apply(snapshot, root, DateTime.UtcNow);
+            Require(snapshot.ResetCreditCount == 1 && snapshot.Subscription.Kind == "renewal" && snapshot.Subscription.Date.HasValue &&
+                Directory.Exists(ClaudeWeb.ProfileFolder(root)), "claude.ai data did not reach the slot record.");
+            using (ClaudeWebWindow signedOut = new ClaudeWebWindow(root, identity, false))
+            {
+                signedOut.ConfigureForTest = serve("web@example.invalid", 401);
+                Require(!await signedOut.RunAsync(null), "Signed-out session completed.");
+            }
+            ClaudeWebRecord record = ClaudeWeb.Load(root);
+            Require(record != null && !String.IsNullOrWhiteSpace(record.LastError) && record.Grants.Count == 1, "Signed-out timeout lost data or cooldown.");
         }
 
         private static void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); }

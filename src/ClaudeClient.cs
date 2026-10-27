@@ -248,6 +248,7 @@ namespace CodexUsageMeter
                 Dictionary<string, object> body = ParseObject(usage.Body);
                 snapshot.Primary = ParseWindow(JsonValue.AsObject(JsonValue.Get(body, "five_hour")), 300, "5시간 한도");
                 snapshot.Secondary = ParseWindow(JsonValue.AsObject(JsonValue.Get(body, "seven_day")), 10080, "주간 한도");
+                snapshot.ModelShares = ParseModelShares(body);
                 if (bound == null) SaveBinding(credentials, after);
                 snapshot.Email = after.Email;
                 snapshot.PlanType = credentials.Plan;
@@ -279,6 +280,9 @@ namespace CodexUsageMeter
                     snapshot.IsAuthenticated = true; snapshot.Email = _lastGood.Email; snapshot.PlanType = _lastGood.PlanType;
                     snapshot.Primary = _lastGood.Primary; snapshot.Secondary = _lastGood.Secondary;
                     snapshot.RateLimitsObservedAtUtc = _lastGood.RateLimitsObservedAtUtc;
+                    // Same credential, so the verified owner still identifies statistics and the web connection; no new history is written.
+                    snapshot.RemoteAccountId = _lastGood.RemoteAccountId; snapshot.RemoteOrganizationId = _lastGood.RemoteOrganizationId;
+                    snapshot.ModelShares = _lastGood.ModelShares;
                     snapshot.Error = "Claude 요청 제한으로 " + _lastGood.RateLimitsObservedAtUtc.ToLocalTime().ToString("HH:mm") +
                         "에 받은 값을 표시합니다. " + _retryAt.ToLocalTime().ToString("HH:mm") + " 이후 다시 확인합니다.";
                 }
@@ -484,6 +488,22 @@ namespace CodexUsageMeter
                 System.Text.RegularExpressions.Regex.IsMatch(raw, @"[+-]\d{2}:\d{2}$")) ? (DateTime?)reset.LocalDateTime : null;
             // Local like Codex resets: the display subtracts DateTime.Now, which ignores DateTimeKind.
             return new RateWindow { Name = name, UsedPercent = used, RemainingPercent = 100 - used, DurationMinutes = minutes, ResetsAt = resets };
+        }
+
+        // Per-model share of the 7-day usage from the same usage response (no extra request).
+        internal static List<ModelUsageShare> ParseModelShares(Dictionary<string, object> body)
+        {
+            List<ModelUsageShare> shares = new List<ModelUsageShare>();
+            Dictionary<string, object> breakdown = JsonValue.AsObject(JsonValue.Get(body, "seven_day_breakdown"));
+            foreach (object row in JsonValue.AsItems(JsonValue.Get(breakdown, "rows")))
+            {
+                Dictionary<string, object> item = JsonValue.AsObject(row);
+                string name = Text(item, "display_name");
+                double percent = Number(JsonValue.Get(item, "percent"));
+                if (!String.IsNullOrWhiteSpace(name) && Finite(percent) && percent >= 0 && percent <= 100)
+                    shares.Add(new ModelUsageShare { Name = name.Trim(), Percent = percent });
+            }
+            return shares.OrderByDescending(share => share.Percent).ToList();
         }
 
         private async Task<ClaudeResponse> RequestAsync(ClaudeRequest request, CancellationToken cancellation)

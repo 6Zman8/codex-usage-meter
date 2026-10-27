@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.12.0")]
-[assembly: AssemblyFileVersion("1.9.12.0")]
+[assembly: AssemblyVersion("1.9.13.0")]
+[assembly: AssemblyFileVersion("1.9.13.0")]
 
 namespace CodexUsageMeter
 {
@@ -379,7 +379,10 @@ namespace CodexUsageMeter
         public TextBlock CompactBadgeText;
         public TextBlock Identity;
         public Button LoginButton;
-        public FrameworkElement[] CodexExtras;
+        public FrameworkElement[] UsageExtras;
+        public TextBlock LifetimeLabel;
+        public TextBlock PeakLabel;
+        public TextBlock StreakLabel;
         public Button CodexLoginButton;
         public Button CompactCodexLoginButton;
         public Button LogoutButton;
@@ -877,7 +880,10 @@ namespace CodexUsageMeter
             view.CompactSecondaryTimeValue = Find<TextBlock>(compactPrefix + "SecondaryTimeValue");
             view.CompactSecondaryRecommendationRing = Find<System.Windows.Shapes.Path>(compactPrefix + "SecondaryRecommendationRing");
             view.CompactPaceValue = Find<TextBlock>(compactPrefix + "PaceValue");
-            view.CodexExtras = new FrameworkElement[] {
+            view.LifetimeLabel = (TextBlock)((Panel)view.LifetimeValue.Parent).Children[0];
+            view.PeakLabel = (TextBlock)((Panel)view.PeakValue.Parent).Children[0];
+            view.StreakLabel = (TextBlock)((Panel)view.StreakValue.Parent).Children[0];
+            view.UsageExtras = new FrameworkElement[] {
                 AccountExtraBorder(view.ResetCreditsValue), AccountExtraBorder(view.LifetimeValue),
                 AccountExtraBorder(view.PeakValue), AccountExtraBorder(view.StreakValue),
                 (FrameworkElement)LogicalTreeHelper.GetParent(LogicalTreeHelper.GetParent(view.CalendarTitle))
@@ -885,11 +891,11 @@ namespace CodexUsageMeter
             foreach (TextBlock link in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
             {
                 link.Cursor = Cursors.Hand; link.Focusable = true; link.TextDecorations = TextDecorations.Underline;
-                link.MouseLeftButtonUp += delegate(object sender, MouseButtonEventArgs e) { e.Handled = true; ConnectWebSubscription(view); };
+                link.MouseLeftButtonUp += delegate(object sender, MouseButtonEventArgs e) { e.Handled = true; OpenSubscriptionConnection(view); };
                 link.KeyDown += delegate(object sender, KeyEventArgs e) {
-                    if (e.Key == Key.Enter || e.Key == Key.Space) { e.Handled = true; ConnectWebSubscription(view); }
+                    if (e.Key == Key.Enter || e.Key == Key.Space) { e.Handled = true; OpenSubscriptionConnection(view); }
                 };
-                System.Windows.Automation.AutomationProperties.SetHelpText(link, "웹 ChatGPT에 연결하여 구독 날짜를 자동 확인합니다.");
+                System.Windows.Automation.AutomationProperties.SetHelpText(link, "웹 계정에 연결하여 구독 날짜를 자동 확인합니다.");
             }
             return view;
         }
@@ -1283,7 +1289,7 @@ namespace CodexUsageMeter
             int expected = GetCalendarDetailLevel(view.UsageGrid.ActualHeight);
             if (expected != view.CalendarDetailLevel)
             {
-                RenderUsageGrid(view, view.LastSnapshot.DailyUsage);
+                RenderUsageGrid(view, view.LastSnapshot.DailyUsage, view.LastSnapshot.UsageUnit);
             }
         }
 
@@ -1974,7 +1980,14 @@ namespace CodexUsageMeter
                         try { _usageHistory.Record(snapshot); }
                         catch (Exception) { snapshot.HistoryError = "사용량 이력 저장 실패 · 기존 기록은 보존했습니다. 이력에서 확인해 주세요."; }
                     }
+                    for (int index = 0; index < states.Length; index++)
+                        ApplyProviderExtras(snapshots[index], states[index].Client);
                 });
+                for (int index = 0; index < states.Length; index++)
+                {
+                    ClaudeWebIdentity identity = states[index].Client.Provider.Supports(AccountCapabilities.ClaudeWeb) ? ClaudeWeb.IdentityOf(snapshots[index]) : null;
+                    if (identity != null) ClaudeWebService.QueueRefresh(states[index].Client.ProfileRoot, identity);
+                }
                 for (int index = 0; index < states.Length; index++)
                 {
                     states[index].LastSnapshot = snapshots[index];
@@ -2003,6 +2016,20 @@ namespace CodexUsageMeter
                     _resumeRefresh.TryRunPending();
                 }
             }
+        }
+
+        // Claude: statistics from this meter's own weekly-limit history and reset credits/subscription from the slot's claude.ai record.
+        // Neither sends an OAuth request.
+        private void ApplyProviderExtras(AccountSnapshot snapshot, IUsageAccount client)
+        {
+            if (snapshot == null || !snapshot.IsAuthenticated || !client.Provider.Supports(AccountCapabilities.ClaudeWeb)) return;
+            ClaudeWeb.Apply(snapshot, client.ProfileRoot, DateTime.UtcNow);
+            snapshot.UsageUnit = UsageHistoryStats.WeeklyPercentUnit;
+            snapshot.DailyUsage = new List<DailyUsageBucket>(); snapshot.Usage = null;
+            string key = snapshot.HistoryKey ?? UsageHistoryStore.ProviderAccountKey(snapshot.ProviderId, snapshot.RemoteAccountId, snapshot.RemoteOrganizationId);
+            if (key == null) return;
+            try { UsageHistoryStats.ApplyWeeklyPercent(snapshot, _usageHistory.Read(key), DateTime.Today); }
+            catch (Exception) { snapshot.DailyUsage = new List<DailyUsageBucket>(); snapshot.Usage = null; }
         }
 
         private void ShowSystemHistory(bool compact)
@@ -2247,6 +2274,12 @@ namespace CodexUsageMeter
                 MenuItem reconnect = new MenuItem { Header = view.Client.Provider.DisplayName + " 다시 로그인" };
                 reconnect.Click += async delegate { await StartAccountLoginAsync(view, state.Client, state.Label); };
                 menu.Items.Add(reconnect);
+            }
+            if (view.Client.Provider.Supports(AccountCapabilities.ClaudeWeb) && view.LastSnapshot != null && view.LastSnapshot.IsAuthenticated)
+            {
+                MenuItem web = new MenuItem { Header = "claude.ai 웹 연결 (초기화권·구독 날짜)" };
+                web.Click += delegate { ConnectClaudeWeb(view); };
+                menu.Items.Add(web);
             }
             foreach (AccountProvider provider in AccountProviders.Registered)
             {
@@ -2620,8 +2653,8 @@ namespace CodexUsageMeter
             AccountProvider provider = AccountProviders.For(snapshot);
             view.TitleText.Text = provider.CardTitle(view.Label);
             view.CompactTitleText.Text = provider.CardTitle(view.Label);
-            bool extras = provider.Supports(AccountCapabilities.CodexExtras);
-            foreach (FrameworkElement element in view.CodexExtras) element.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
+            bool extras = provider.Supports(AccountCapabilities.UsageExtras);
+            foreach (FrameworkElement element in view.UsageExtras) element.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
             view.LoginButton.Content = snapshot.IsAuthenticated ? "연결 ▾" : "연결";
             view.LoginButton.Visibility = Visibility.Visible;
             if (!snapshot.IsAuthenticated)
@@ -2633,7 +2666,7 @@ namespace CodexUsageMeter
                 view.LogoutButton.Visibility = Visibility.Collapsed;
                 ClearWindow(view.PrimaryName, view.PrimaryValue, view.PrimaryBar, view.PrimaryTimeBar, view.PrimaryReset, view.PrimaryRemaining, "단기 한도", false);
                 ClearWindow(view.SecondaryName, view.SecondaryValue, view.SecondaryBar, view.SecondaryTimeBar, view.SecondaryReset, view.SecondaryRemaining, "장기 한도", true);
-                ClearAccountExtras(view);
+                ClearAccountExtras(view, provider);
                 view.Status.Text = String.IsNullOrWhiteSpace(snapshot.Error)
                     ? "연결 버튼으로 이 칸 전용 계정을 등록하세요."
                     : snapshot.Error;
@@ -2707,16 +2740,22 @@ namespace CodexUsageMeter
             view.HistoryAccountKey = null;
         }
 
-        private static void ClearAccountExtras(AccountView view)
+        private static void ClearAccountExtras(AccountView view, AccountProvider provider)
         {
+            bool percent = provider.Id != AccountProviders.Codex.Id;
+            SetUsageLabels(view, percent, null);
             view.ResetCreditsValue.Text = "초기화권 --";
+            view.ResetCreditsValue.ToolTip = null;
             view.ResetCreditsDetail.Text = "연결 후 보유 여부와 만료일을 표시합니다.";
+            view.ResetCreditsDetail.ToolTip = null;
             view.LifetimeValue.Text = "--";
             view.PeakValue.Text = "--";
             view.StreakValue.Text = "--";
-            view.LongestTurnValue.Text = "최장 작업 --";
-            RenderUsageGrid(view, new List<DailyUsageBucket>());
-            RenderWeeklyUsage(view, new List<DailyUsageBucket>());
+            view.LongestTurnValue.Text = percent ? "모델별 7일 --" : "최장 작업 --";
+            view.LongestTurnValue.ToolTip = null;
+            string unit = percent ? UsageHistoryStats.WeeklyPercentUnit : null;
+            RenderUsageGrid(view, new List<DailyUsageBucket>(), unit);
+            RenderWeeklyUsage(view, new List<DailyUsageBucket>(), unit);
             view.UsageEmpty.Text = "계정 연결 후 이번 달 사용량이 표시됩니다.";
         }
 
@@ -2733,7 +2772,7 @@ namespace CodexUsageMeter
             TextBlock resetValue = (TextBlock)window.FindName(prefix + "ResetValue");
             AccountProvider provider = AccountProviders.For(snapshot);
             ((TextBlock)window.FindName(prefix + "TitleText")).Text = provider.CardTitle(view.Label ?? "계정 " + slot);
-            resetValue.Visibility = provider.Supports(AccountCapabilities.CodexExtras) ? Visibility.Visible : Visibility.Collapsed;
+            resetValue.Visibility = provider.Supports(AccountCapabilities.UsageExtras) ? Visibility.Visible : Visibility.Collapsed;
             ((Button)window.FindName(prefix + "CodexLoginButton")).Visibility =
                 snapshot != null && snapshot.IsAuthenticated && provider.Supports(AccountCapabilities.CodexSwitch) ? Visibility.Visible : Visibility.Collapsed;
             string primaryLabel = snapshot == null || snapshot.Primary == null ? "5시간" : snapshot.Primary.Name.Replace(" 한도", "");
@@ -2779,9 +2818,10 @@ namespace CodexUsageMeter
                 view.CompactPrimaryTimeValue.Text = "미제공";
             }
 
+            resetValue.ToolTip = snapshot.ResetCreditsNote;
             if (!snapshot.ResetCreditCount.HasValue)
             {
-                resetValue.Text = "초기화권 정보 없음";
+                resetValue.Text = snapshot.WebConnectionNeeded ? "초기화권 · claude.ai 연결 필요" : "초기화권 정보 없음";
             }
             else if (snapshot.ResetCreditCount.Value <= 0)
             {
@@ -2827,9 +2867,33 @@ namespace CodexUsageMeter
                     catch (Exception error) { ShowModal("스크립트 설치", error.Message, null, "확인", null, null, null); } });
         }
 
+        private void OpenSubscriptionConnection(AccountView view)
+        {
+            if (view.Client != null && view.Client.Provider.Supports(AccountCapabilities.ClaudeWeb)) ConnectClaudeWeb(view);
+            else ConnectWebSubscription(view);
+        }
+
+        // Opens this slot's claude.ai sign-in window; the person signs in once and later reads run hidden.
+        private async void ConnectClaudeWeb(AccountView view)
+        {
+            if (_switchingAccount || view.Client == null || !view.Client.Provider.Supports(AccountCapabilities.ClaudeWeb)) return;
+            ClaudeWebIdentity identity = ClaudeWeb.IdentityOf(view.LastSnapshot);
+            if (identity == null)
+            {
+                ShowModal("claude.ai 연결", "먼저 이 칸의 Claude 계정을 연결하고 사용량이 표시될 때까지 기다려 주세요.", null, "확인", null, null, null);
+                return;
+            }
+            try
+            {
+                if (await ClaudeWebService.ConnectAsync(_window, view.Client.ProfileRoot, identity)) await RefreshAccountsAsync();
+            }
+            catch (Exception error) { ShowModal("claude.ai 연결", error.Message, null, "확인", null, null, null); }
+        }
+
         private static void UpdateSubscription(AccountView view, AccountSnapshot snapshot)
         {
-            bool supported = AccountProviders.For(snapshot).Supports(AccountCapabilities.ChatGptSubscription);
+            AccountProvider provider = AccountProviders.For(snapshot);
+            bool supported = provider.Supports(AccountCapabilities.SubscriptionDate);
             foreach (TextBlock label in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
             {
                 label.Visibility = supported ? Visibility.Visible : Visibility.Collapsed;
@@ -2838,7 +2902,8 @@ namespace CodexUsageMeter
             }
             if (!supported) return;
             AccountSubscriptionInfo subscription = snapshot == null ? null : snapshot.Subscription;
-            string text = snapshot == null || !snapshot.IsAuthenticated ? "구독 날짜 --" : AccountSubscription.Format(subscription, DateTime.Today);
+            string text = snapshot == null || !snapshot.IsAuthenticated ? "구독 날짜 --" :
+                snapshot.WebConnectionNeeded ? "구독 날짜 · claude.ai 연결하기" : AccountSubscription.Format(subscription, DateTime.Today);
             string detail = subscription == null ? "계정의 구독 정보를 확인한 뒤 표시합니다." : subscription.Error;
             if (subscription != null && subscription.Date.HasValue)
                 detail = subscription.Date.Value.ToString("yyyy-MM-dd HH:mm") + " · " + (subscription.Kind == "period" ? "확인된 이용 기간이며 자동 갱신 여부는 미확인입니다." : "계정의 결제 정보에서 확인한 날짜입니다.") +
@@ -2846,7 +2911,9 @@ namespace CodexUsageMeter
             foreach (TextBlock label in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
             {
                 label.Text = text;
-                label.ToolTip = (detail ?? "") + "\n클릭하여 크롬 열기 · 탬퍼몽키 연결 스크립트 최초 1회 설치";
+                label.ToolTip = (detail ?? "") + (provider.Supports(AccountCapabilities.ClaudeWeb)
+                    ? "\n클릭하여 claude.ai 로그인 창 열기 · 초기화권과 구독 날짜를 함께 확인"
+                    : "\n클릭하여 크롬 열기 · 탬퍼몽키 연결 스크립트 최초 1회 설치");
             }
         }
 
@@ -2887,21 +2954,57 @@ namespace CodexUsageMeter
         private static void UpdateUsage(AccountView view, AccountSnapshot snapshot)
         {
             UsageSummary usage = snapshot.Usage;
-            view.LifetimeValue.Text = usage == null ? "--" : FormatTokenCount(usage.LifetimeTokens);
-            view.PeakValue.Text = usage == null ? "--" : FormatTokenCount(usage.PeakDailyTokens);
+            bool percent = snapshot.UsageUnit == UsageHistoryStats.WeeklyPercentUnit;
+            SetUsageLabels(view, percent, usage == null ? null : usage.RecordedSince);
+            view.LifetimeValue.Text = usage == null ? "--" : percent ? FormatUsagePercent(usage.LifetimePercent) : FormatTokenCount(usage.LifetimeTokens);
+            view.PeakValue.Text = usage == null ? "--" : percent ? FormatUsagePercent(usage.PeakDailyPercent) : FormatTokenCount(usage.PeakDailyTokens);
             view.StreakValue.Text = usage == null || !usage.CurrentStreakDays.HasValue
                 ? "--"
                 : usage.CurrentStreakDays.Value.ToString() + "일" +
                   (usage.LongestStreakDays.HasValue ? " / " + usage.LongestStreakDays.Value.ToString() + "일" : String.Empty);
-            view.LongestTurnValue.Text = usage == null || !usage.LongestRunningTurnSeconds.HasValue
-                ? "최장 작업 --"
-                : "최장 작업 " + FormatDuration(usage.LongestRunningTurnSeconds.Value);
-            RenderUsageGrid(view, snapshot.DailyUsage);
-            RenderWeeklyUsage(view, snapshot.DailyUsage);
+            if (percent)
+            {
+                // Per-model share of the 7-day usage replaces the Codex-only longest-turn text in the same slot.
+                List<ModelUsageShare> shares = snapshot.ModelShares ?? new List<ModelUsageShare>();
+                view.LongestTurnValue.Text = shares.Count == 0 ? "모델별 7일 --" :
+                    "7일 " + String.Join(" · ", shares.Take(2).Select(share => share.Name + " " + FormatUsagePercent(share.Percent)));
+                view.LongestTurnValue.ToolTip = shares.Count == 0 ? "Claude가 모델별 7일 사용 비중을 제공하지 않았습니다." :
+                    "최근 7일 모델별 사용 비중\n" + String.Join("\n", shares.Select(share => share.Name + " " + FormatUsagePercent(share.Percent)));
+            }
+            else
+            {
+                view.LongestTurnValue.ToolTip = null;
+                view.LongestTurnValue.Text = usage == null || !usage.LongestRunningTurnSeconds.HasValue
+                    ? "최장 작업 --"
+                    : "최장 작업 " + FormatDuration(usage.LongestRunningTurnSeconds.Value);
+            }
+            RenderUsageGrid(view, snapshot.DailyUsage, snapshot.UsageUnit);
+            RenderWeeklyUsage(view, snapshot.DailyUsage, snapshot.UsageUnit);
         }
 
-        private static void RenderUsageGrid(AccountView view, List<DailyUsageBucket> buckets)
+        // Claude statistics are % of the weekly limit from the meter's own records, never tokens.
+        private static void SetUsageLabels(AccountView view, bool percent, DateTime? since)
         {
+            view.LifetimeLabel.Text = !percent ? "누적 토큰" : since.HasValue ? "누적 % · " + since.Value.ToString("M/d") + "~" : "누적 % (주간 한도)";
+            view.PeakLabel.Text = percent ? "최고 일간 %" : "최고 일간";
+            view.StreakLabel.Text = "연속 사용";
+            string help = percent ? "토큰이 아닌 주간 한도 대비 사용 %입니다. 미터기가 기록을 시작한 " +
+                (since.HasValue ? since.Value.ToString("yyyy-MM-dd") + " " : "") + "이후의 기록만 포함합니다." : null;
+            view.LifetimeValue.ToolTip = help; view.PeakValue.ToolTip = help; view.StreakValue.ToolTip = help;
+        }
+
+        private static string FormatUsagePercent(double? value)
+        {
+            if (!value.HasValue) return "--";
+            return (value.Value >= 10 || value.Value == 0 ? value.Value.ToString("0") : value.Value.ToString("0.#")) + "%";
+        }
+
+        private static double BucketValue(DailyUsageBucket bucket, bool percent) { return percent ? bucket.Percent : bucket.Tokens; }
+        private static string FormatAmount(double value, bool percent) { return percent ? FormatUsagePercent(value) : FormatTokenCount((long)value); }
+
+        private static void RenderUsageGrid(AccountView view, List<DailyUsageBucket> buckets, string unit)
+        {
+            bool percent = unit == UsageHistoryStats.WeeklyPercentUnit;
             view.UsageGrid.Children.Clear();
             view.CalendarDetailLevel = GetCalendarDetailLevel(view.UsageGrid.ActualHeight);
             DateTime currentMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
@@ -2909,7 +3012,7 @@ namespace CodexUsageMeter
             DateTime nextMonth = monthStart.AddMonths(1);
             int daysInMonth = DateTime.DaysInMonth(monthStart.Year, monthStart.Month);
             int leadingCells = (int)monthStart.DayOfWeek;
-            Dictionary<DateTime, long> byDate = new Dictionary<DateTime, long>();
+            Dictionary<DateTime, double> byDate = new Dictionary<DateTime, double>();
             if (buckets != null)
             {
                 foreach (DailyUsageBucket bucket in buckets)
@@ -2917,17 +3020,19 @@ namespace CodexUsageMeter
                     DateTime date = bucket.Date.Date;
                     if (date >= monthStart && date < nextMonth)
                     {
-                        byDate[date] = bucket.Tokens;
+                        byDate[date] = BucketValue(bucket, percent);
                     }
                 }
             }
-            long monthTotal = byDate.Values.Sum();
-            long maximum = byDate.Count == 0 ? 1L : Math.Max(1L, byDate.Values.Max());
-            view.CalendarTitle.Text = monthStart.ToString("yyyy년 M월") + " · " + FormatTokenCount(monthTotal);
+            double monthTotal = byDate.Values.Sum();
+            double maximum = byDate.Count == 0 ? 1.0 : Math.Max(percent ? 0.01 : 1.0, byDate.Values.Max());
+            view.CalendarTitle.Text = monthStart.ToString("yyyy년 M월") + " · " + FormatAmount(monthTotal, percent);
+            view.CalendarTitle.ToolTip = percent ? "날짜별 주간 한도 사용 % (미터기 기록 기준, 토큰 아님)" : null;
             view.CalendarPreviousButton.IsEnabled = view.CalendarMonthOffset > -1;
             view.CalendarNextButton.IsEnabled = view.CalendarMonthOffset < 1;
             view.UsageEmpty.Visibility = byDate.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            view.UsageEmpty.Text = monthStart.ToString("M월") + " 사용 기록이 없습니다.";
+            view.UsageEmpty.Text = percent ? monthStart.ToString("M월") + " 미터기 기록이 없습니다. 기록은 미터기 실행 중에만 쌓입니다."
+                : monthStart.ToString("M월") + " 사용 기록이 없습니다.";
 
             for (int slot = 0; slot < 42; slot++)
             {
@@ -2944,9 +3049,9 @@ namespace CodexUsageMeter
                 }
 
                 DateTime date = monthStart.AddDays(dayNumber - 1);
-                long tokens;
+                double tokens;
                 byDate.TryGetValue(date, out tokens);
-                double intensity = Math.Sqrt(Math.Max(0.0, Math.Min(1.0, tokens / (double)maximum)));
+                double intensity = Math.Sqrt(Math.Max(0.0, Math.Min(1.0, tokens / maximum)));
                 byte red = (byte)Math.Round(36.0 + 4.0 * intensity);
                 byte green = (byte)Math.Round(36.0 + 77.0 * intensity);
                 byte blue = (byte)Math.Round(36.0 + 55.0 * intensity);
@@ -2958,7 +3063,7 @@ namespace CodexUsageMeter
                 cell.BorderThickness = date == DateTime.Today ? new Thickness(1) : new Thickness(0);
                 cell.BorderBrush = new SolidColorBrush(Color.FromRgb(114, 212, 181));
                 cell.Opacity = date > DateTime.Today ? 0.46 : 1.0;
-                cell.ToolTip = date.ToString("M월 d일") + " · " + FormatTokenCount(tokens) + " 토큰";
+                cell.ToolTip = date.ToString("M월 d일") + " · " + (percent ? "주간 한도 " + FormatUsagePercent(tokens) + " 사용" : FormatTokenCount((long)tokens) + " 토큰");
 
                 StackPanel content = new StackPanel();
                 content.HorizontalAlignment = HorizontalAlignment.Center;
@@ -2973,9 +3078,9 @@ namespace CodexUsageMeter
                         : new SolidColorBrush(Color.FromRgb(183, 183, 190));
                 day.HorizontalAlignment = HorizontalAlignment.Center;
                 TextBlock amount = new TextBlock();
-                amount.Text = tokens == 0L || view.CalendarDetailLevel <= 0
+                amount.Text = tokens == 0.0 || view.CalendarDetailLevel <= 0
                     ? "·"
-                    : FormatTokenCount(tokens);
+                    : FormatAmount(tokens, percent);
                 amount.FontSize = 8;
                 amount.FontWeight = FontWeights.SemiBold;
                 amount.Foreground = new SolidColorBrush(Color.FromRgb(239, 253, 250));
@@ -2994,42 +3099,44 @@ namespace CodexUsageMeter
             return 0;
         }
 
-        private static void RenderWeeklyUsage(AccountView view, List<DailyUsageBucket> buckets)
+        private static void RenderWeeklyUsage(AccountView view, List<DailyUsageBucket> buckets, string unit)
         {
+            bool percent = unit == UsageHistoryStats.WeeklyPercentUnit;
             view.WeeklyUsageGrid.Children.Clear();
-            Dictionary<DateTime, long> byDate = new Dictionary<DateTime, long>();
+            Dictionary<DateTime, double> byDate = new Dictionary<DateTime, double>();
             if (buckets != null)
             {
                 foreach (DailyUsageBucket bucket in buckets)
                 {
-                    byDate[bucket.Date.Date] = Math.Max(0L, bucket.Tokens);
+                    byDate[bucket.Date.Date] = Math.Max(0.0, BucketValue(bucket, percent));
                 }
             }
             DateTime start = DateTime.Today.AddDays(-6);
-            long weeklyTotal = 0L;
-            long maximum = 1L;
+            double weeklyTotal = 0.0;
+            double maximum = percent ? 0.01 : 1.0;
             for (int day = 0; day < 7; day++)
             {
-                long tokens;
+                double tokens;
                 byDate.TryGetValue(start.AddDays(day), out tokens);
                 weeklyTotal += tokens;
                 maximum = Math.Max(maximum, tokens);
             }
-            view.WeeklyUsageValue.Text = "최근 7일 · " + FormatTokenCount(weeklyTotal);
+            view.WeeklyUsageValue.Text = "최근 7일 · " + FormatAmount(weeklyTotal, percent);
+            view.WeeklyUsageValue.ToolTip = percent ? "주간 한도 대비 사용 % 합계 (미터기 기록 기준)" : null;
 
             for (int day = 0; day < 7; day++)
             {
                 DateTime date = start.AddDays(day);
-                long tokens;
+                double tokens;
                 byDate.TryGetValue(date, out tokens);
-                Grid slot = new Grid { Margin = new Thickness(1.5, 0.0, 1.5, 0.0), ToolTip = date.ToString("MM'/'dd") + " · " + FormatTokenCount(tokens) };
+                Grid slot = new Grid { Margin = new Thickness(1.5, 0.0, 1.5, 0.0), ToolTip = date.ToString("MM'/'dd") + " · " + FormatAmount(tokens, percent) };
                 slot.RowDefinitions.Add(new RowDefinition { Height = new GridLength(26.0) });
                 slot.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                 Grid barArea = new Grid { Margin = new Thickness(0.0, 0.0, 0.0, 2.0) };
                 Border track = new Border { Background = BrushFromHex("#303030"), CornerRadius = new CornerRadius(3.0), VerticalAlignment = VerticalAlignment.Stretch };
                 Border fill = new Border {
                     Background = BrushFromHex("#2F9E7E"), CornerRadius = new CornerRadius(3.0), VerticalAlignment = VerticalAlignment.Bottom,
-                    Height = tokens <= 0 ? 2.0 : 4.0 + 19.0 * tokens / (double)maximum
+                    Height = tokens <= 0 ? 2.0 : 4.0 + 19.0 * tokens / maximum
                 };
                 TextBlock dateLabel = new TextBlock {
                     Text = day == 6 ? "오늘" : date.ToString("dd"),
@@ -3055,16 +3162,19 @@ namespace CodexUsageMeter
             {
                 view.State.CalendarMonthOffset = view.CalendarMonthOffset;
             }
-            RenderUsageGrid(view, view.LastSnapshot == null ? null : view.LastSnapshot.DailyUsage);
+            RenderUsageGrid(view, view.LastSnapshot == null ? null : view.LastSnapshot.DailyUsage, view.LastSnapshot == null ? null : view.LastSnapshot.UsageUnit);
         }
 
         private static void UpdateResetCredits(AccountView view, AccountSnapshot snapshot)
         {
+            view.ResetCreditsValue.ToolTip = snapshot.ResetCreditsNote;
+            view.ResetCreditsDetail.ToolTip = snapshot.ResetCreditsNote;
             if (!snapshot.ResetCreditCount.HasValue)
             {
-                view.ResetCreditsValue.Text = "초기화권 정보 없음";
+                view.ResetCreditsValue.Text = snapshot.WebConnectionNeeded ? "초기화권 · claude.ai 연결 필요" : "초기화권 정보 없음";
                 view.ResetCreditsValue.Foreground = new SolidColorBrush(Color.FromRgb(161, 161, 170));
-                view.ResetCreditsDetail.Text = "현재 계정에서 상세 정보를 제공하지 않습니다.";
+                view.ResetCreditsDetail.Text = String.IsNullOrWhiteSpace(snapshot.ResetCreditsNote)
+                    ? "현재 계정에서 상세 정보를 제공하지 않습니다." : snapshot.ResetCreditsNote.Split('\n')[0];
                 return;
             }
 

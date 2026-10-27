@@ -1,1 +1,1 @@
-Fix Claude reset countdowns being off by the local time zone offset.
+Show reset credits, subscription date and usage statistics on Claude cards like Codex cards.

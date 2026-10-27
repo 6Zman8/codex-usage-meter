@@ -7,8 +7,10 @@ using Microsoft.Win32;
 
 namespace CodexUsageMeter
 {
+    // UsageExtras: reset credits, statistics and calendar sections. SubscriptionDate: the subscription line.
+    // ChatGptSubscription: the Chrome/ChatGPT billing connection. ClaudeWeb: the per-slot claude.ai web connection.
     [Flags]
-    internal enum AccountCapabilities { None = 0, CodexSwitch = 1, ChatGptSubscription = 2, CodexExtras = 4 }
+    internal enum AccountCapabilities { None = 0, CodexSwitch = 1, ChatGptSubscription = 2, UsageExtras = 4, SubscriptionDate = 8, ClaudeWeb = 16 }
 
     internal sealed class AccountProvider
     {
@@ -59,11 +61,12 @@ namespace CodexUsageMeter
     internal static class AccountProviders
     {
         internal static readonly AccountProvider Codex = new AccountProvider("codex", "GPT/Codex", "◎",
-            AccountCapabilities.CodexSwitch | AccountCapabilities.ChatGptSubscription | AccountCapabilities.CodexExtras,
+            AccountCapabilities.CodexSwitch | AccountCapabilities.ChatGptSubscription | AccountCapabilities.UsageExtras | AccountCapabilities.SubscriptionDate,
             (root, number) => Path.Combine(root, "account-" + number),
             path => new CodexUsageAccount(new CodexRpcClient(new Func<string>(CodexLocator.Find), path)), "auth.json");
         internal static readonly AccountProvider Claude = new AccountProvider("claude", "Claude", "✳",
-            AccountCapabilities.None, (root, number) => Path.Combine(root, "claude", "account-" + number),
+            AccountCapabilities.UsageExtras | AccountCapabilities.SubscriptionDate | AccountCapabilities.ClaudeWeb,
+            (root, number) => Path.Combine(root, "claude", "account-" + number),
             path => new ClaudeUsageAccount(path), ".credentials.json");
         internal static readonly AccountProvider[] Registered = { Codex, Claude };
 

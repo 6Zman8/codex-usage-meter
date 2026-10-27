@@ -16,7 +16,8 @@ namespace CodexUsageMeter
     internal static class WebSubscriptionService
     {
         private static readonly HashSet<string> Pending = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        private static readonly SemaphoreSlim Gate = new SemaphoreSlim(1, 1);
+        // Shared by every hidden/interactive web connection window so only one WebView2 runs at a time.
+        internal static readonly SemaphoreSlim Gate = new SemaphoreSlim(1, 1);
 
         internal static void QueueRefresh(string root, string account, string email, string plan)
         {
@@ -48,24 +49,79 @@ namespace CodexUsageMeter
         }
     }
 
-    internal sealed class WebSubscriptionWindow : IDisposable
+    internal sealed class WebSubscriptionWindow : WebLoginWindow
     {
         private readonly string _root, _account, _email, _plan;
+        private bool _accepting;
+
+        internal WebSubscriptionWindow(string root, string account, string email, string plan, bool interactive)
+            : base("웹 구독 연결 · Codex 미터기", email + " 계정으로 웹 ChatGPT에 로그인해 주세요.\n구독 정보를 확인하면 자동으로 닫힙니다.",
+                Path.Combine(root, "web-subscription"), "https://chatgpt.com/", interactive)
+        { _root = root; _account = account; _email = email; _plan = plan; }
+
+        protected override void Attach(CoreWebView2 web) { web.WebResourceResponseReceived += Receive; }
+        protected override void RecordFailure(string error) { WebSubscriptionStore.Failed(_root, _account, _plan, error, DateTime.UtcNow); }
+        protected override string TimeoutError { get { return "웹 로그인이 만료되었거나 응답을 받지 못했습니다. 날짜를 눌러 다시 연결해 주세요."; } }
+
+        private async void Receive(object sender, CoreWebView2WebResourceResponseReceivedEventArgs e)
+        {
+            if (Closed || _accepting || !IsAccountResponse(e.Request.Uri) || e.Response.StatusCode != 200) return;
+            _accepting = true;
+            try
+            {
+                string json;
+                using (Stream stream = await e.Response.GetContentAsync())
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                {
+                    char[] buffer = new char[4096]; StringBuilder body = new StringBuilder(); int count;
+                    while ((count = await reader.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                    { if (body.Length + count > AccountSubscription.MaximumJsonLength) return; body.Append(buffer, 0, count); }
+                    json = body.ToString();
+                }
+                if (Closed) return;
+                AccountSubscriptionInfo value;
+                if (WebSubscriptionStore.TryAccept(_root, _account, _email, _plan, json, DateTime.UtcNow, out value)) Complete(true);
+                else ShowStatus("이 웹 계정이 미터기의 " + _email + " 계정·플랜과 일치하지 않습니다.\n웹 프로필 메뉴에서 계정을 확인해 주세요. 미터기 정보는 변경하지 않았습니다.");
+            }
+            catch { ShowStatus("구독 정보를 읽지 못했습니다. 웹 페이지의 로그인 상태를 확인해 주세요."); }
+            finally { _accepting = false; }
+        }
+
+        internal static bool IsAccountResponse(string address)
+        {
+            Uri uri;
+            return Uri.TryCreate(address, UriKind.Absolute, out uri) && uri.Scheme == "https" && uri.Host == "chatgpt.com" && uri.IsDefaultPort &&
+                uri.AbsolutePath == "/backend-api/accounts/check/v4-2023-04-27";
+        }
+    }
+
+    // One WebView2 sign-in window whose profile lives in the account slot's own folder.
+    // Hidden runs never show or activate the window; interactive runs are started by the person.
+    internal abstract class WebLoginWindow : IDisposable
+    {
         private readonly bool _interactive;
+        private readonly string _userDataFolder, _startUrl;
         private readonly Window _window;
         private readonly Border _browserArea;
         private readonly TextBlock _status;
         private readonly TaskCompletionSource<bool> _done = new TaskCompletionSource<bool>();
         private CoreWebView2Controller _controller;
         private DispatcherTimer _timeout;
-        private bool _disposed, _accepting;
+        private bool _disposed;
         private static bool _loaderConfigured;
         internal Action<CoreWebView2Environment, CoreWebView2> ConfigureForTest;
 
-        internal WebSubscriptionWindow(string root, string account, string email, string plan, bool interactive)
+        protected abstract void Attach(CoreWebView2 web);
+        protected abstract void RecordFailure(string error);
+        protected abstract string TimeoutError { get; }
+        protected bool Interactive { get { return _interactive; } }
+        protected bool Closed { get { return _disposed || _done.Task.IsCompleted; } }
+        protected void ShowStatus(string text) { if (_interactive && !_disposed) _status.Text = text; }
+
+        protected WebLoginWindow(string title, string prompt, string userDataFolder, string startUrl, bool interactive)
         {
-            _root = root; _account = account; _email = email; _plan = plan; _interactive = interactive;
-            _window = new Window { Title = "웹 구독 연결 · Codex 미터기", Width = 900, Height = 680, MinWidth = 640, MinHeight = 480,
+            _interactive = interactive; _userDataFolder = userDataFolder; _startUrl = startUrl;
+            _window = new Window { Title = title, Width = 900, Height = 680, MinWidth = 640, MinHeight = 480,
                 ShowInTaskbar = interactive, ShowActivated = interactive, WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Background = new SolidColorBrush(Color.FromRgb(24, 24, 27)), Foreground = Brushes.White };
             DarkTheme.Apply(_window);
@@ -75,7 +131,7 @@ namespace CodexUsageMeter
             DockPanel header = new DockPanel { Margin = new Thickness(16, 12, 16, 12) };
             Button close = new Button { Content = "닫기", MinWidth = 62, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(12, 0, 0, 0) };
             close.Click += delegate { _window.Close(); }; DockPanel.SetDock(close, Dock.Right); header.Children.Add(close);
-            _status = new TextBlock { Text = email + " 계정으로 웹 ChatGPT에 로그인해 주세요.\n구독 정보를 확인하면 자동으로 닫힙니다.", TextWrapping = TextWrapping.Wrap, FontSize = 13 };
+            _status = new TextBlock { Text = prompt, TextWrapping = TextWrapping.Wrap, FontSize = 13 };
             header.Children.Add(_status); panel.Children.Add(header);
             _browserArea = new Border { Background = Brushes.Black }; Grid.SetRow(_browserArea, 1); panel.Children.Add(_browserArea);
             _window.Content = panel; _window.Closed += delegate { Complete(false); };
@@ -89,7 +145,7 @@ namespace CodexUsageMeter
                 if (_interactive) { if (owner != null) _window.Owner = owner; _window.Show(); }
                 IntPtr handle = new WindowInteropHelper(_window).EnsureHandle();
                 if (!_loaderConfigured) { CoreWebView2Environment.SetLoaderDllFolderPath(WebViewRuntime.LoaderFolder()); _loaderConfigured = true; }
-                CoreWebView2Environment environment = await CoreWebView2Environment.CreateAsync(null, Path.Combine(_root, "web-subscription"));
+                CoreWebView2Environment environment = await CoreWebView2Environment.CreateAsync(null, _userDataFolder);
                 if (_disposed || _done.Task.IsCompleted) return false;
                 _controller = await environment.CreateCoreWebView2ControllerAsync(handle);
                 if (_disposed || _done.Task.IsCompleted) { _controller.Close(); return false; }
@@ -106,60 +162,28 @@ namespace CodexUsageMeter
                 web.NavigationStarting += delegate(object sender, CoreWebView2NavigationStartingEventArgs e) {
                     Uri uri; if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out uri) || uri.Scheme != "https") e.Cancel = true;
                 };
-                web.WebResourceResponseReceived += Receive;
+                Attach(web);
                 if (ConfigureForTest != null) ConfigureForTest(environment, web);
                 _controller.IsVisible = _interactive; Resize();
                 if (!_interactive)
                 {
-                    _timeout = new DispatcherTimer { Interval = TimeSpan.FromSeconds(25) };
-                    _timeout.Tick += delegate {
-                        WebSubscriptionStore.Failed(_root, _account, _plan, "웹 로그인이 만료되었거나 응답을 받지 못했습니다. 날짜를 눌러 다시 연결해 주세요.", DateTime.UtcNow);
-                        Complete(false);
-                    };
+                    _timeout = new DispatcherTimer { Interval = BackgroundTimeout };
+                    _timeout.Tick += delegate { RecordFailure(TimeoutError); Complete(false); };
                     _timeout.Start();
                 }
-                web.Navigate("https://chatgpt.com/");
+                web.Navigate(_startUrl);
                 return await _done.Task;
             }
             catch (Exception)
             {
-                if (_interactive) throw new InvalidOperationException("웹 구독 연결 창을 열지 못했습니다. Microsoft Edge WebView2 Runtime 설치 상태를 확인해 주세요.");
-                WebSubscriptionStore.Failed(_root, _account, _plan, "웹 연결 창을 준비하지 못했습니다.", DateTime.UtcNow);
+                if (_interactive) throw new InvalidOperationException("웹 연결 창을 열지 못했습니다. Microsoft Edge WebView2 Runtime 설치 상태를 확인해 주세요.");
+                RecordFailure("웹 연결 창을 준비하지 못했습니다.");
                 return false;
             }
             finally { Dispose(); }
         }
 
-        private async void Receive(object sender, CoreWebView2WebResourceResponseReceivedEventArgs e)
-        {
-            if (_disposed || _accepting || _done.Task.IsCompleted || !IsAccountResponse(e.Request.Uri) || e.Response.StatusCode != 200) return;
-            _accepting = true;
-            try
-            {
-                string json;
-                using (Stream stream = await e.Response.GetContentAsync())
-                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
-                {
-                    char[] buffer = new char[4096]; StringBuilder body = new StringBuilder(); int count;
-                    while ((count = await reader.ReadAsync(buffer, 0, buffer.Length)) > 0)
-                    { if (body.Length + count > AccountSubscription.MaximumJsonLength) return; body.Append(buffer, 0, count); }
-                    json = body.ToString();
-                }
-                if (_disposed || _done.Task.IsCompleted) return;
-                AccountSubscriptionInfo value;
-                if (WebSubscriptionStore.TryAccept(_root, _account, _email, _plan, json, DateTime.UtcNow, out value)) Complete(true);
-                else if (_interactive) _status.Text = "이 웹 계정이 미터기의 " + _email + " 계정·플랜과 일치하지 않습니다.\n웹 프로필 메뉴에서 계정을 확인해 주세요. 미터기 정보는 변경하지 않았습니다.";
-            }
-            catch { if (_interactive) _status.Text = "구독 정보를 읽지 못했습니다. 웹 페이지의 로그인 상태를 확인해 주세요."; }
-            finally { _accepting = false; }
-        }
-
-        internal static bool IsAccountResponse(string address)
-        {
-            Uri uri;
-            return Uri.TryCreate(address, UriKind.Absolute, out uri) && uri.Scheme == "https" && uri.Host == "chatgpt.com" && uri.IsDefaultPort &&
-                uri.AbsolutePath == "/backend-api/accounts/check/v4-2023-04-27";
-        }
+        protected virtual TimeSpan BackgroundTimeout { get { return TimeSpan.FromSeconds(25); } }
 
         private void Resize()
         {
@@ -173,7 +197,7 @@ namespace CodexUsageMeter
                 Math.Max(1, (int)(_browserArea.ActualWidth * scale.M11)), Math.Max(1, (int)(_browserArea.ActualHeight * scale.M22)));
         }
 
-        private void Complete(bool success) { if (_timeout != null) _timeout.Stop(); _done.TrySetResult(success); }
+        protected void Complete(bool success) { if (_timeout != null) _timeout.Stop(); _done.TrySetResult(success); }
         internal void FinishProbe() { Complete(false); }
         public void Dispose()
         {
