@@ -45,8 +45,6 @@ namespace CodexUsageMeter
         public string HistoryError { get; set; }
         // Null: Usage/DailyUsage are tokens. "weekly-percent": % of the weekly limit derived from the meter's own history.
         public string UsageUnit { get; set; }
-        // A provider whose reset credits/subscription need a separate web connection that is not linked yet.
-        public bool WebConnectionNeeded { get; set; }
         public string ResetCreditsNote { get; set; }
         public List<ModelUsageShare> ModelShares { get; set; }
     }

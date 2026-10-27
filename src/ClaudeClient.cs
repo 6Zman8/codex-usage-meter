@@ -77,14 +77,14 @@ namespace CodexUsageMeter
                         }
                         Exception failure = null;
                         if (String.IsNullOrEmpty(code))
-                            failure = new AccountProviderException(AccountErrorKind.LoginRequired, "Claude 로그인을 승인하지 않았습니다. 다시 연결해 주세요.");
+                            failure = new AccountProviderException(AccountErrorKind.LoginRequired, "브라우저에서 Claude 로그인을 승인하지 않았습니다. 다시 연결해 주세요.");
                         else
                         {
                             try { await exchange(code).ConfigureAwait(false); }
                             catch (Exception error) { failure = error; }
                         }
                         await RespondAsync(client, failure == null ? 200 : 500, failure == null
-                            ? "Claude 로그인을 마쳤습니다. 이어서 claude.ai의 초기화권과 구독 날짜를 확인합니다."
+                            ? "Claude 연결을 마쳤습니다. 이 창을 닫고 미터기로 돌아가세요."
                             : "Claude 연결을 마치지 못했습니다. 미터기의 안내를 확인해 주세요.").ConfigureAwait(false);
                         if (failure != null) throw failure;
                         return;
@@ -170,7 +170,9 @@ namespace CodexUsageMeter
         internal const string TokenEndpoint = "https://platform.claude.com/v1/oauth/token";
         internal const string OAuthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
         internal const string ProfileEndpoint = "https://api.anthropic.com/api/oauth/profile";
-        internal const string UsageEndpoint = "https://api.anthropic.com/api/oauth/usage";
+        // cedar_ember=1 adds the reset-credit inventory to the same usage response (still one request per poll).
+        internal const string UsageEndpoint = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1";
+        private const int MaximumResets = 50;
         private const int MaximumBytes = 1024 * 1024;
         // One usage request per minute tick; under the 60-second timer so tick jitter never skips a poll.
         internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(50);
@@ -183,7 +185,7 @@ namespace CodexUsageMeter
         private readonly CancellationTokenSource _lifetime = new CancellationTokenSource();
         private CancellationTokenSource _loginCancellation;
         private Task _login;
-        private string _loginUrl, _loginCallback;
+        private string _loginUrl;
         private DateTime _retryAt, _nextPoll;
         private int _rateLimitStreak;
         private AccountSnapshot _lastGood;
@@ -225,7 +227,7 @@ namespace CodexUsageMeter
             {
                 await _gate.WaitAsync(_lifetime.Token).ConfigureAwait(false); entered = true;
                 if (_login != null && !_login.IsCompleted)
-                    throw Fault(AccountErrorKind.LoginRequired, "Claude 연결 창에서 로그인을 마쳐 주세요. 다른 계정은 계속 갱신됩니다.");
+                    throw Fault(AccountErrorKind.LoginRequired, "브라우저에서 Claude 로그인을 마쳐 주세요. 다른 계정은 계속 갱신됩니다.");
                 raw = ReadOptional(CredentialPath);
                 if (raw == null)
                     throw Fault(AccountErrorKind.LoginRequired, "연결에서 Claude 구독 계정으로 로그인해 주세요.");
@@ -249,6 +251,7 @@ namespace CodexUsageMeter
                 snapshot.Primary = ParseWindow(JsonValue.AsObject(JsonValue.Get(body, "five_hour")), 300, "5시간 한도");
                 snapshot.Secondary = ParseWindow(JsonValue.AsObject(JsonValue.Get(body, "seven_day")), 10080, "주간 한도");
                 snapshot.ModelShares = ParseModelShares(body);
+                ApplyResetCredits(snapshot, body, observed);
                 if (bound == null) SaveBinding(credentials, after);
                 snapshot.Email = after.Email;
                 snapshot.PlanType = credentials.Plan;
@@ -283,6 +286,8 @@ namespace CodexUsageMeter
                     // Same credential, so the verified owner still identifies statistics and the web connection; no new history is written.
                     snapshot.RemoteAccountId = _lastGood.RemoteAccountId; snapshot.RemoteOrganizationId = _lastGood.RemoteOrganizationId;
                     snapshot.ModelShares = _lastGood.ModelShares;
+                    snapshot.ResetCredits = _lastGood.ResetCredits; snapshot.ResetCreditCount = _lastGood.ResetCreditCount;
+                    snapshot.ResetCreditsNote = _lastGood.ResetCreditsNote;
                     snapshot.Error = "Claude 요청 제한으로 " + _lastGood.RateLimitsObservedAtUtc.ToLocalTime().ToString("HH:mm") +
                         "에 받은 값을 표시합니다. " + _retryAt.ToLocalTime().ToString("HH:mm") + " 이후 다시 확인합니다.";
                 }
@@ -303,7 +308,7 @@ namespace CodexUsageMeter
                 _loginCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
                 _loginCancellation.CancelAfter(TimeSpan.FromMinutes(10));
                 _terminalCredentials = null; _terminalError = null; _retryAt = default(DateTime);
-                _loginUrl = browser.AuthorizeUrl; _loginCallback = browser.RedirectUri;
+                _loginUrl = browser.AuthorizeUrl;
                 _login = CompleteLoginAsync(browser, _loginCancellation.Token);
                 return LoginPrompt();
             }
@@ -314,8 +319,8 @@ namespace CodexUsageMeter
         private AccountLoginPrompt LoginPrompt()
         {
             CancellationTokenSource cancellation = _loginCancellation;
-            return new AccountLoginPrompt { Completion = _login, Cancel = () => cancellation.Cancel(), VerificationUrl = _loginUrl, CallbackUrl = _loginCallback,
-                Message = "이 창에서 Claude 구독 계정으로 로그인한 뒤 승인해 주세요. 한 번 로그인하면 사용량·초기화권·구독 날짜가 함께 연결되고 창은 자동으로 닫힙니다.\nAPI 키·Console 계정은 지원하지 않습니다. 로그인 정보는 이 계정 칸에만 보관됩니다." };
+            return new AccountLoginPrompt { Completion = _login, Cancel = () => cancellation.Cancel(), VerificationUrl = _loginUrl,
+                Message = "브라우저에서 Claude 구독 계정으로 로그인해 주세요. 로그인이 끝나면 브라우저를 닫아도 사용량·초기화 시간·초기화권이 자동 갱신됩니다.\n\nAPI 키·Console 계정은 지원하지 않습니다." };
         }
 
         private async Task CompleteLoginAsync(ClaudeLoopbackLogin browser, CancellationToken cancellation)
@@ -415,10 +420,79 @@ namespace CodexUsageMeter
         }
 
         private void SaveBinding(Credentials credentials, Identity identity)
+        { WriteBinding(ProfileRoot, credentials.Raw, identity.Account, identity.Organization, identity.Email); }
+
+        // The binding ties the slot's exact credential text to its verified owner; Claude Code switching reuses it.
+        internal static void WriteBinding(string profileRoot, string raw, string account, string organization, string email)
         {
-            AtomicWrite(BindingPath, new JavaScriptSerializer().Serialize(new Dictionary<string, object> {
-                { "credentialHash", Hash(credentials.Raw) }, { "account", identity.Account }, { "organization", identity.Organization },
-                { "email", identity.Email ?? "" } }));
+            AtomicWrite(Path.Combine(profileRoot, "meter-identity.json"), new JavaScriptSerializer().Serialize(new Dictionary<string, object> {
+                { "credentialHash", Hash(raw) }, { "account", account }, { "organization", organization },
+                { "email", email ?? "" } }));
+        }
+
+        // Verified owner (account, organization, email) of the slot's current credential text, or null.
+        internal static string[] BoundOwner(string profileRoot, string raw)
+        {
+            try
+            {
+                Dictionary<string, object> binding = ParseObject(ReadOptional(Path.Combine(profileRoot, "meter-identity.json")) ?? "{}");
+                string account = Text(binding, "account"), organization = Text(binding, "organization");
+                if (raw == null || Text(binding, "credentialHash") != Hash(raw) || String.IsNullOrEmpty(account) || String.IsNullOrEmpty(organization)) return null;
+                return new[] { account, organization, Text(binding, "email") ?? "" };
+            }
+            catch (AccountProviderException) { return null; }
+            catch (IOException) { return null; }
+            catch (UnauthorizedAccessException) { return null; }
+        }
+
+        // cedar_ember block of the usage response: usable resets are started, unpaused and unexpired grants.
+        // eligible=false (e.g. "surface": redeemable only on claude.ai) still lists the person's grants, so they count.
+        internal static void ApplyResetCredits(AccountSnapshot snapshot, Dictionary<string, object> body, DateTime nowUtc)
+        {
+            nowUtc = nowUtc.ToUniversalTime();
+            snapshot.ResetCredits = new List<ResetCreditInfo>(); snapshot.ResetCreditCount = null; snapshot.ResetCreditsNote = null;
+            Dictionary<string, object> block = JsonValue.AsObject(JsonValue.Get(body, "cedar_ember"));
+            object rawGrants = JsonValue.Get(block, "grants");
+            // Without a grants list the inventory is unknown, which is not the same as having none.
+            if (block == null || !(rawGrants is System.Collections.IList)) return;
+            List<ResetCreditInfo> credits = new List<ResetCreditInfo>();
+            foreach (object item in JsonValue.AsItems(rawGrants))
+            {
+                Dictionary<string, object> grant = JsonValue.AsObject(item);
+                object left = JsonValue.Get(grant, "resets_left"), paused = JsonValue.Get(grant, "paused");
+                DateTime? starts, ends;
+                // An unreadable grant is dropped; other grants stay valid.
+                if (grant == null || !(left is int) || (int)left <= 0 || (paused != null && !(paused is bool)) || (paused is bool && (bool)paused) ||
+                    !OptionalInstant(JsonValue.Get(grant, "starts_at"), out starts) || !OptionalInstant(JsonValue.Get(grant, "ends_at"), out ends) ||
+                    (starts.HasValue && starts.Value > nowUtc) || (ends.HasValue && ends.Value <= nowUtc)) continue;
+                string label = Text(grant, "label");
+                for (int index = 0; index < (int)left && credits.Count <= MaximumResets; index++)
+                    credits.Add(new ResetCreditInfo { Status = "available", Title = String.IsNullOrWhiteSpace(label) ? null : label.Trim(),
+                        // Local like the 5-hour/weekly resets: the display subtracts DateTime.Now.
+                        GrantedAt = starts.HasValue ? (DateTime?)starts.Value.ToLocalTime() : null,
+                        ExpiresAt = ends.HasValue ? (DateTime?)ends.Value.ToLocalTime() : null });
+            }
+            if (credits.Count > MaximumResets) return;
+            snapshot.ResetCredits = credits; snapshot.ResetCreditCount = credits.Count;
+            if (Object.Equals(JsonValue.Get(block, "eligible"), false))
+            {
+                string reason = Text(block, "ineligible_reason");
+                snapshot.ResetCreditsNote = "초기화권은 claude.ai의 설정 → 사용량에서 사용합니다." +
+                    (String.IsNullOrWhiteSpace(reason) || reason == "surface" ? "" : "\nclaude.ai에서 현재 사용할 수 없는 상태입니다(" + reason.Trim() + ").");
+            }
+        }
+
+        private static bool OptionalInstant(object value, out DateTime? instant)
+        {
+            instant = null;
+            if (value == null) return true;
+            string text = value as string;
+            DateTimeOffset parsed;
+            if (text == null || text.Length > 64 || !(text.EndsWith("Z", StringComparison.OrdinalIgnoreCase) ||
+                System.Text.RegularExpressions.Regex.IsMatch(text, @"[+-]\d{2}:?\d{2}$")) ||
+                !DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed)) return false;
+            instant = parsed.UtcDateTime;
+            return true;
         }
 
         private Identity BoundIdentity(string raw)

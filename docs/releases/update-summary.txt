@@ -1,1 +1,1 @@
-Connect Claude in one sign-in inside the meter, and fix the missing Claude account email.
+Claude cards now work like Codex cards: browser sign-in, automatic reset credits, Chrome subscription date, reconnect and switch.

@@ -8,20 +8,28 @@ using Microsoft.Win32;
 namespace CodexUsageMeter
 {
     // UsageExtras: reset credits, statistics and calendar sections. SubscriptionDate: the subscription line.
-    // ChatGptSubscription: the Chrome/ChatGPT billing connection. ClaudeWeb: the per-slot claude.ai web connection.
+    // ChromeSubscription: the subscription date read from the person's own Chrome through the Tampermonkey bridge.
+    // AppSwitch: the card's 전환/다시 연결 makes the provider's own app (Codex / Claude Code) use this slot's account.
+    // Every registered provider has the same capabilities; only an unknown stored provider has none.
     [Flags]
-    internal enum AccountCapabilities { None = 0, CodexSwitch = 1, ChatGptSubscription = 2, UsageExtras = 4, SubscriptionDate = 8, ClaudeWeb = 16 }
+    internal enum AccountCapabilities { None = 0, AppSwitch = 1, ChromeSubscription = 2, UsageExtras = 4, SubscriptionDate = 8 }
 
     internal sealed class AccountProvider
     {
         internal readonly string Id, DisplayName, Symbol, CredentialFile;
+        // AppName: the app the 전환 button signs in. WebName/BillingUrl: the site whose billing page Chrome opens.
+        internal readonly string AppName, WebName, BillingUrl;
         internal readonly AccountCapabilities Capabilities;
         internal readonly Func<string, int, string> ProfilePath;
         internal readonly Func<string, IUsageAccount> Create;
 
         internal AccountProvider(string id, string name, string symbol, AccountCapabilities capabilities,
-            Func<string, int, string> path, Func<string, IUsageAccount> create, string credentialFile = null)
-        { Id = id; DisplayName = name; Symbol = symbol; Capabilities = capabilities; ProfilePath = path; Create = create; CredentialFile = credentialFile; }
+            Func<string, int, string> path, Func<string, IUsageAccount> create, string credentialFile = null,
+            string appName = null, string webName = null, string billingUrl = null)
+        {
+            Id = id; DisplayName = name; Symbol = symbol; Capabilities = capabilities; ProfilePath = path; Create = create; CredentialFile = credentialFile;
+            AppName = appName ?? name; WebName = webName; BillingUrl = billingUrl;
+        }
 
         internal bool Supports(AccountCapabilities capability) { return (Capabilities & capability) == capability; }
         internal string CardTitle(string label) { return Symbol + " " + DisplayName + " · " + label; }
@@ -30,8 +38,6 @@ namespace CodexUsageMeter
     internal sealed class AccountLoginPrompt
     {
         internal string VerificationUrl, UserCode, Message;
-        // Loopback address that receives the sign-in result (Claude); the sign-in window admits only this non-https address.
-        internal string CallbackUrl;
         // Browser login returns immediately; only this task waits for the person.
         internal Task Completion;
         internal Action Cancel;
@@ -62,14 +68,16 @@ namespace CodexUsageMeter
 
     internal static class AccountProviders
     {
+        private const AccountCapabilities AllCapabilities = AccountCapabilities.AppSwitch | AccountCapabilities.ChromeSubscription |
+            AccountCapabilities.UsageExtras | AccountCapabilities.SubscriptionDate;
         internal static readonly AccountProvider Codex = new AccountProvider("codex", "GPT/Codex", "◎",
-            AccountCapabilities.CodexSwitch | AccountCapabilities.ChatGptSubscription | AccountCapabilities.UsageExtras | AccountCapabilities.SubscriptionDate,
-            (root, number) => Path.Combine(root, "account-" + number),
-            path => new CodexUsageAccount(new CodexRpcClient(new Func<string>(CodexLocator.Find), path)), "auth.json");
+            AllCapabilities, (root, number) => Path.Combine(root, "account-" + number),
+            path => new CodexUsageAccount(new CodexRpcClient(new Func<string>(CodexLocator.Find), path)), "auth.json",
+            "Codex", "ChatGPT", "https://chatgpt.com/settings/billing");
         internal static readonly AccountProvider Claude = new AccountProvider("claude", "Claude", "✳",
-            AccountCapabilities.UsageExtras | AccountCapabilities.SubscriptionDate | AccountCapabilities.ClaudeWeb,
-            (root, number) => Path.Combine(root, "claude", "account-" + number),
-            path => new ClaudeUsageAccount(path), ".credentials.json");
+            AllCapabilities, (root, number) => Path.Combine(root, "claude", "account-" + number),
+            path => new ClaudeUsageAccount(path), ".credentials.json",
+            "Claude Code", "claude.ai", "https://claude.ai/settings/billing");
         internal static readonly AccountProvider[] Registered = { Codex, Claude };
 
         internal static AccountProvider Resolve(string id)

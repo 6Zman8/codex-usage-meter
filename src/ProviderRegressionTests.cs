@@ -29,8 +29,8 @@ namespace CodexUsageMeter
         internal static void Run(Action<string> report, string testRoot)
         {
             RunCore(report, testRoot);
-            ClaudeWebData(Path.Combine(testRoot, "w-" + Guid.NewGuid().ToString("N")));
-            report("PASS providers: claude.ai identity check, reset grants, subscription dates, slot record, staleness and connection need");
+            ClaudeResetCredits();
+            report("PASS providers: cedar_ember grants (started/paused/expired/malformed), surface-ineligible note, absent inventory and local expiry");
             WeeklyPercentStats();
             report("PASS providers: Claude weekly-limit % statistics, weekly resets, redeemed resets, streaks and model shares");
             Views();
@@ -121,7 +121,11 @@ namespace CodexUsageMeter
                     "Quota and identity must use the same isolated credential and exact endpoints.");
                 fixture.Now = Initial.AddSeconds(55);
                 AccountSnapshot polled = account.RefreshAsync().GetAwaiter().GetResult();
-                Require(first.Email == "private@example.test" && ClaudeWeb.IdentityOf(polled) != null, "The OAuth profile email was not read, so claude.ai cannot be connected.");
+                Require(first.Email == "private@example.test" && polled.RemoteOrganizationId == Organization,
+                    "The OAuth profile email/organization was not read, so the Chrome subscription date cannot be routed.");
+                Require(ClaudeUsageAccount.UsageEndpoint == "https://api.anthropic.com/api/oauth/usage?cedar_ember=1" &&
+                    fixture.Requests.Count(r => r.Url.StartsWith("https://api.anthropic.com/api/oauth/usage")) == 2,
+                    "The minute poll must be exactly one usage request that includes the reset-credit inventory.");
                 Require(polled.IdentityVerified && polled.RemoteAccountId == AccountA && polled.Email == first.Email && fixture.Requests.Count == 3 &&
                     fixture.Requests.Last().Url == ClaudeUsageAccount.UsageEndpoint, "A minute poll of an unchanged sign-in must send only the usage request.");
                 UsageHistoryStore store = new UsageHistoryStore(Path.Combine(root, "h")); store.Record(first);
@@ -171,7 +175,7 @@ namespace CodexUsageMeter
             using (ClaudeUsageAccount account = fixture.Create())
             {
                 AccountSnapshot first = account.RefreshAsync().GetAwaiter().GetResult();
-                Require(first.IdentityVerified && first.Email == "private@example.test" && ClaudeWeb.IdentityOf(first) != null &&
+                Require(first.IdentityVerified && first.Email == "private@example.test" && first.RemoteOrganizationId == Organization &&
                     fixture.Requests.Select(r => r.Url).SequenceEqual(new[] { ClaudeUsageAccount.ProfileEndpoint, ClaudeUsageAccount.UsageEndpoint }) &&
                     (string)Object(File.ReadAllText(bindingPath))["email"] == "private@example.test", "An empty-email binding was not re-read once and saved with the email.");
                 for (int minute = 1; minute <= 2; minute++)
@@ -256,16 +260,20 @@ namespace CodexUsageMeter
                 }
             }
             Fixture busy = new Fixture(Path.Combine(root, "throttle")); busy.Save("token", Initial.AddHours(2));
+            busy.Usage = "{\"five_hour\":{\"utilization\":25,\"resets_at\":\"2030-01-02T16:00:00Z\"},\"seven_day\":{\"utilization\":40}," +
+                "\"cedar_ember\":{\"eligible\":false,\"ineligible_reason\":\"surface\",\"grants\":[{\"resets_left\":1,\"ends_at\":\"2030-01-09T00:00:00Z\"}]}}";
             using (ClaudeUsageAccount account = busy.Create())
             {
                 AccountSnapshot good = account.RefreshAsync().GetAwaiter().GetResult();
+                Require(good.ResetCreditCount == 1 && good.ResetCreditsNote.Contains("설정 → 사용량"), "Reset credits were not read from the usage response.");
                 busy.Now = Initial.AddSeconds(30);
                 Require(good.IdentityVerified && System.Object.ReferenceEquals(account.RefreshAsync().GetAwaiter().GetResult(), good) &&
                     busy.Requests.Count == 2, "Claude was polled again before the poll interval.");
                 busy.Now = Initial.AddMinutes(5); busy.Status = 429; busy.RetryAfter = "0";
                 AccountSnapshot limited = account.RefreshAsync().GetAwaiter().GetResult();
                 Require(limited.ErrorKind == AccountErrorKind.RateLimited && limited.RetryAfterUtc == busy.Now.AddMinutes(5) &&
-                    limited.Primary.RemainingPercent == 75 && limited.RateLimitsObservedAtUtc == Initial && limited.HistoryKey == null,
+                    limited.Primary.RemainingPercent == 75 && limited.RateLimitsObservedAtUtc == Initial && limited.HistoryKey == null &&
+                    limited.ResetCreditCount == 1 && limited.ResetCreditsNote == good.ResetCreditsNote,
                     "Throttling hid the last reading, recorded it again or ignored Retry-After: 0.");
                 busy.Now = Initial.AddMinutes(10);
                 Require(account.RefreshAsync().GetAwaiter().GetResult().RetryAfterUtc == busy.Now.AddMinutes(10), "Repeated throttling did not back off.");
@@ -295,7 +303,7 @@ namespace CodexUsageMeter
         private static void LoginAndEnvironment(string root)
         {
             var request = ClaudeUsageAccount.CreateRequest(new ClaudeRequest { Url = ClaudeUsageAccount.UsageEndpoint, AccessToken = "fixture-bearer" });
-            Require(request.Address.AbsoluteUri == "https://api.anthropic.com/api/oauth/usage" && request.Method == "GET" &&
+            Require(request.Address.AbsoluteUri == "https://api.anthropic.com/api/oauth/usage?cedar_ember=1" && request.Method == "GET" &&
                 request.Headers["Authorization"] == "Bearer fixture-bearer" && request.Headers["anthropic-beta"] == "oauth-2025-04-20" &&
                 !request.AllowAutoRedirect && request.Timeout == 15000 && request.ReadWriteTimeout == 15000 &&
                 request.CookieContainer == null && String.IsNullOrEmpty(request.UserAgent), "Auth headers, request bounds or fingerprint isolation changed.");
@@ -321,8 +329,8 @@ namespace CodexUsageMeter
                 Require(prompt.VerificationUrl.StartsWith(ClaudeLoopbackLogin.AuthorizeEndpoint + "?") && query["code"] == "true" &&
                     query["client_id"] == ClaudeUsageAccount.OAuthClientId && query["response_type"] == "code" &&
                     query["code_challenge_method"] == "S256" && query["scope"].Split(' ').Contains("user:profile") &&
-                    redirect.StartsWith("http://localhost:") && redirect.EndsWith("/callback") && prompt.CallbackUrl == redirect,
-                    "Browser login request changed or the sign-in window would admit a different callback.");
+                    redirect.StartsWith("http://localhost:") && redirect.EndsWith("/callback") && prompt.Message.StartsWith("브라우저에서"),
+                    "Default-browser login request or its wording changed.");
                 Require(!prompt.Completion.IsCompleted && account.RefreshAsync().GetAwaiter().GetResult().HistoryKey == null,
                     "Pending login blocked refresh or fabricated usage.");
                 Require(Callback(redirect + "?code=fixture-code&state=forged") == 400 && Callback(redirect.Replace("/callback", "/favicon.ico")) == 404 &&
@@ -407,6 +415,16 @@ namespace CodexUsageMeter
                 UsageUnit = UsageHistoryStats.WeeklyPercentUnit,
                 Usage = new UsageSummary { LifetimePercent = 30, PeakDailyPercent = 20, CurrentStreakDays = 2, LongestStreakDays = 2, RecordedSince = DateTime.Today.AddDays(-1) },
                 DailyUsage = new List<DailyUsageBucket> { new DailyUsageBucket { Date = DateTime.Today.AddDays(-1), Percent = 10 }, new DailyUsageBucket { Date = DateTime.Today, Percent = 20 } } };
+            Type viewType = second.GetType();
+            Type stateType = typeof(ProviderRegressionTests).Assembly.GetType("CodexUsageMeter.AccountState", true);
+            IUsageAccount codexClient = new UnsupportedUsageAccount(AccountProviders.Codex), claudeClient = new UnsupportedUsageAccount(AccountProviders.Claude);
+            foreach (Tuple<object, IUsageAccount, int> card in new[] { Tuple.Create(first, codexClient, 1), Tuple.Create(second, claudeClient, 2) })
+            {
+                object state = Activator.CreateInstance(stateType);
+                stateType.GetField("Client").SetValue(state, card.Item2); stateType.GetField("Number").SetValue(state, card.Item3);
+                viewType.GetField("State").SetValue(card.Item1, state); viewType.GetField("Client").SetValue(card.Item1, card.Item2);
+            }
+            ProviderParity(window, dashboard, controller, first, second);
             dashboard.GetMethod("UpdateAccount", Private).Invoke(controller, new[] { second, snapshot });
             snapshot = new AccountSnapshot { IsAuthenticated = false, ProviderId = "codex" };
             dashboard.GetMethod("UpdateAccount", Private).Invoke(controller, new[] { first, snapshot });
@@ -417,8 +435,9 @@ namespace CodexUsageMeter
                 Require(codex.Contains("GPT/Codex") && codex.Contains("◎") && claude.Contains("Claude") && claude.Contains("✳") &&
                     claude.Contains("계정 2") && ((TextBlock)window.FindName(prefix + "Account2Identity")).Text.Contains("private@example.test"),
                     "Provider header replaced account identification or lost its distinct symbol/name.");
-                Require(((Button)window.FindName(prefix + "Account2CodexLoginButton")).Visibility == Visibility.Collapsed,
-                    "Claude exposes Codex switching.");
+                Button switchButton = (Button)window.FindName(prefix + "Account2CodexLoginButton");
+                Require(switchButton.Visibility == Visibility.Visible && (string)switchButton.Content == (prefix.Length == 0 ? "Claude Code로 전환" : "전환"),
+                    "Claude lacks the same switch button as Codex.");
                 Require(((TextBlock)window.FindName(prefix + "Account2SubscriptionValue")).Visibility == Visibility.Visible &&
                     ((TextBlock)window.FindName(prefix + "Account2SubscriptionValue")).Text.StartsWith("구독 갱신"),
                     "Claude subscription line is hidden or does not show the claude.ai date.");
@@ -434,26 +453,13 @@ namespace CodexUsageMeter
                 ((TextBlock)window.FindName("Account2CalendarTitle")).Text.EndsWith("%") && !((TextBlock)window.FindName("Account2CalendarTitle")).Text.Contains("토큰") &&
                 ((TextBlock)window.FindName("Account2WeeklyUsageValue")).Text.EndsWith("%") &&
                 ((TextBlock)window.FindName("Account2LongestTurnValue")).Text == "7일 Sonnet 62% · Opus 30%", "Claude extras are not filled with % data.");
-            Type viewType = second.GetType();
             Require(((TextBlock)viewType.GetField("LifetimeLabel").GetValue(second)).Text.StartsWith("누적 %"), "Claude statistics still say tokens.");
-            Type stateType = typeof(ProviderRegressionTests).Assembly.GetType("CodexUsageMeter.AccountState", true);
             foreach (FrameworkElement extra in (FrameworkElement[])viewType.GetField("UsageExtras").GetValue(second))
                 Require(extra.Visibility == Visibility.Visible, "Claude hides usage extras.");
-            using (IUsageAccount client = new UnsupportedUsageAccount(AccountProviders.Claude))
-            {
-                viewType.GetField("Client").SetValue(second, client);
-                // Authenticated Claude cannot enter ChatGPT billing even if called directly.
-                dashboard.GetMethod("ConnectWebSubscription", Private).Invoke(controller, new[] { second });
-                object state = Activator.CreateInstance(stateType);
-                stateType.GetField("Client").SetValue(state, client); stateType.GetField("Number").SetValue(state, 2);
-                viewType.GetField("State").SetValue(second, state);
-                dashboard.GetMethod("ConfirmCodexLoginChange", Private).Invoke(controller, new[] { second });
-                dashboard.GetMethod("BeginCodexLoginChange", Private).Invoke(controller, new[] { second });
-                Require(!(bool)dashboard.GetField("_switchingAccount", Private).GetValue(controller), "Claude entered Codex switching.");
-            }
-            object firstState = Activator.CreateInstance(stateType);
-            stateType.GetField("Number").SetValue(firstState, 1);
-            viewType.GetField("State").SetValue(first, firstState);
+            // A client that is neither the Codex nor the Claude implementation never enters switching.
+            dashboard.GetMethod("ConfirmCodexLoginChange", Private).Invoke(controller, new[] { second });
+            dashboard.GetMethod("BeginCodexLoginChange", Private).Invoke(controller, new[] { second });
+            Require(!(bool)dashboard.GetField("_switchingAccount", Private).GetValue(controller), "An unsupported client entered switching.");
             Type layoutType = typeof(ProviderRegressionTests).Assembly.GetType("CodexUsageMeter.DashboardLayoutView", true);
             object layout = Activator.CreateInstance(layoutType, Private, null, new object[] { window }, null);
             Type settingsType = typeof(ProviderRegressionTests).Assembly.GetType("CodexUsageMeter.LayoutSettings", true);
@@ -488,71 +494,104 @@ namespace CodexUsageMeter
             window.Close();
         }
 
-        private static void ClaudeWebData(string root)
+        // Codex and Claude cards with the same (missing) data show the same elements, states and texts;
+        // only the provider name/symbol and the app named on the switch button differ.
+        private static void ProviderParity(Window window, Type dashboard, object controller, object codex, object claude)
         {
-            Directory.CreateDirectory(root);
-            DateTime now = new DateTime(2030, 1, 2, 3, 0, 0, DateTimeKind.Utc);
-            ClaudeWebIdentity identity = new ClaudeWebIdentity { AccountId = AccountA, OrganizationId = Organization, Email = "private@example.test" };
-            string account = "{\"uuid\":\"" + AccountA + "\",\"email_address\":\"Private@Example.test\",\"memberships\":[{\"organization\":{\"uuid\":\"" + Organization + "\",\"name\":\"x\"}}]}";
-            string error;
-            Require(ClaudeWeb.VerifyAccount(account, identity, out error), "Matching claude.ai account rejected.");
-            Require(!ClaudeWeb.VerifyAccount(account.Replace("Private@", "other@"), identity, out error) && error.Contains("다릅니다") &&
-                !ClaudeWeb.VerifyAccount(account.Replace(Organization, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"), identity, out error) &&
-                !ClaudeWeb.VerifyAccount("{\"memberships\":[]}", identity, out error) && !ClaudeWeb.VerifyAccount("not json", identity, out error),
-                "Mismatched or unreadable claude.ai identity accepted.");
-            Func<string, string> usage = items => "{\"five_hour\":{\"utilization\":5},\"cedar_ember\":{\"eligible\":true,\"next_grant_id\":\"g1\",\"grants\":[" + items + "]}}";
-            string good = "{\"id\":\"g1\",\"label\":\"Full reset\",\"resets_left\":2,\"resets_total\":2,\"starts_at\":\"2030-01-01T00:00:00Z\",\"ends_at\":\"2030-01-05T16:00:00+00:00\",\"paused\":false,\"usable_now\":true,\"clears\":[\"five_hour\",\"seven_day\"]}";
-            bool? eligible; string reason;
-            List<ClaudeWebGrant> grants = ClaudeWeb.ParseResets(usage(good + "," +
-                "{\"resets_left\":\"many\"}," + "{\"resets_left\":1,\"paused\":true}," + "{\"resets_left\":1,\"ends_at\":\"next tuesday\"}," +
-                "{\"resets_left\":1,\"starts_at\":\"2030-01-03T00:00:00Z\"}," + "{\"resets_left\":1,\"ends_at\":\"2030-01-01T00:00:00Z\"}"), out eligible, out reason);
-            Require(eligible == true && grants.Count == 4 && grants[0].Remaining == 2 && grants[0].EndsAt == new DateTime(2030, 1, 5, 16, 0, 0, DateTimeKind.Utc),
-                "Reset grants parsed incorrectly.");
-            Require(ClaudeWeb.ParseResets("{\"cedar_ember\":{\"eligible\":false,\"ineligible_reason\":\"surface\",\"grants\":[" + good + "]}}", out eligible, out reason).Count == 0 &&
-                eligible == false && reason == "surface", "Ineligible inventory counted.");
-            foreach (string unknown in new[] { "{\"cedar_ember\":null}", "{}", "{\"cedar_ember\":{\"eligible\":\"yes\"}}", "{\"cedar_ember\":{\"eligible\":true,\"grants\":{}}}",
-                usage("{\"resets_left\":51}") })
-                Require(ClaudeWeb.ParseResets(unknown, out eligible, out reason) == null && eligible == null, "Absent/unreadable inventory became zero.");
-            Func<string, string, string, string, string> subscription = (status, charge, chargeDay, endDay) =>
-                "{\"status\":\"" + status + "\",\"next_charge_at\":" + charge + ",\"next_charge_date\":" + chargeDay + ",\"plan_ending_at\":null,\"plan_ending_before\":" + endDay + "}";
-            AccountSubscriptionInfo renewal = ClaudeWeb.ParseSubscription(subscription("active", "\"2030-01-20T14:15:04Z\"", "\"2030-01-20\"", "null"), now);
-            Require(renewal.Kind == "renewal" && renewal.Date.Value.ToUniversalTime() == new DateTime(2030, 1, 20, 14, 15, 4, DateTimeKind.Utc), "Next charge not read.");
-            AccountSubscriptionInfo ending = ClaudeWeb.ParseSubscription(subscription("canceled", "\"2030-01-20T14:15:04Z\"", "null", "\"2030-01-25\""), now);
-            Require(ending.Kind == "end" && ending.Date.Value == new DateTime(2030, 1, 25) && ending.Date.Value.Kind == DateTimeKind.Local, "Plan ending not read as its calendar day.");
-            Require(!ClaudeWeb.ParseSubscription(subscription("canceled", "\"2030-01-20T14:15:04Z\"", "null", "null"), now).Date.HasValue &&
-                !ClaudeWeb.ParseSubscription(subscription("unknown", "null", "\"2030-01-20\"", "null"), now).Date.HasValue &&
-                !ClaudeWeb.ParseSubscription("{\"status\":\"active\"}", now).Date.HasValue &&
-                !ClaudeWeb.ParseSubscription(subscription("active", "null", "\"2030-02-30\"", "null"), now).Date.HasValue, "Unknown subscription schema invented a date.");
+            MethodInfo update = dashboard.GetMethod("UpdateAccount", Private);
+            Func<string, AccountSnapshot> missing = provider => new AccountSnapshot { ProviderId = provider, IsAuthenticated = true,
+                Email = "same@example.test", PlanType = "pro", UpdatedAt = Initial,
+                Primary = new RateWindow { Name = "5시간 한도", DurationMinutes = 300, RemainingPercent = 75 },
+                Secondary = new RateWindow { Name = "주간 한도", DurationMinutes = 10080, RemainingPercent = 60 },
+                ResetCredits = new List<ResetCreditInfo>(), DailyUsage = new List<DailyUsageBucket>(),
+                Subscription = AccountSubscription.Unavailable("구독 정보를 받지 못했습니다.", DateTime.UtcNow),
+                UsageUnit = provider == "claude" ? UsageHistoryStats.WeeklyPercentUnit : null };
+            update.Invoke(controller, new object[] { codex, missing("codex") });
+            update.Invoke(controller, new object[] { claude, missing("claude") });
+            Type viewType = codex.GetType();
+            int compared = 0;
+            foreach (FieldInfo field in viewType.GetFields().Where(f => typeof(FrameworkElement).IsAssignableFrom(f.FieldType)))
+            {
+                FrameworkElement left = (FrameworkElement)field.GetValue(codex), right = (FrameworkElement)field.GetValue(claude);
+                if (left == null || right == null) continue;
+                compared++;
+                Require(left.Visibility == right.Visibility && left.IsEnabled == right.IsEnabled, "Codex and Claude differ in " + field.Name + ".");
+            }
+            foreach (string name in new[] { "HistoryButton", "LoginButton", "CodexLoginButton", "LogoutButton", "SubscriptionValue", "Identity" })
+            {
+                FrameworkElement left = (FrameworkElement)window.FindName("Account1" + name), right = (FrameworkElement)window.FindName("Account2" + name);
+                Require(left.Visibility == Visibility.Visible && right.Visibility == Visibility.Visible, "Card element is not shown for both providers: " + name);
+            }
+            foreach (string name in new[] { "HistoryButton", "CodexLoginButton", "SubscriptionValue", "ResetValue", "Identity" })
+            {
+                FrameworkElement left = (FrameworkElement)window.FindName("CompactAccount1" + name), right = (FrameworkElement)window.FindName("CompactAccount2" + name);
+                Require(left.Visibility == Visibility.Visible && right.Visibility == Visibility.Visible, "Compact element is not shown for both providers: " + name);
+            }
+            Func<string, string> text = name => {
+                object element = window.FindName(name);
+                return element is TextBlock ? ((TextBlock)element).Text : Convert.ToString(((ContentControl)element).Content);
+            };
+            foreach (string name in new[] { "ResetCreditsValue", "SubscriptionValue", "LoginButton", "LogoutButton", "HistoryButton" })
+                Require(text("Account1" + name) == text("Account2" + name), "Codex and Claude show different text in " + name + ": " + text("Account1" + name) + " / " + text("Account2" + name));
+            foreach (string name in new[] { "ResetValue", "SubscriptionValue", "CodexLoginButton", "HistoryButton" })
+                Require(text("CompactAccount1" + name) == text("CompactAccount2" + name), "Compact Codex and Claude differ in " + name + ".");
+            Require(text("Account2ResetCreditsValue") == "초기화권 정보 없음" && text("Account2SubscriptionValue") == "구독 날짜 조회 불가" &&
+                ((TextBlock)window.FindName("Account2SubscriptionValue")).ToolTip.ToString().EndsWith("클릭하여 크롬 열기 · 탬퍼몽키 연결 스크립트 최초 1회 설치") &&
+                ((TextBlock)window.FindName("Account1SubscriptionValue")).ToolTip.ToString() == ((TextBlock)window.FindName("Account2SubscriptionValue")).ToolTip.ToString(),
+                "Missing Claude data does not use the Codex missing-data texts and Chrome guidance.");
+            Require(compared > 20 && text("Account1CodexLoginButton") == "Codex로 전환" && text("Account2CodexLoginButton") == "Claude Code로 전환" &&
+                text("CompactAccount2CodexLoginButton") == "전환", "Switch buttons are not the same apart from the app name.");
+            dashboard.GetField("_activeCodexAccountNumber", Private).SetValue(controller, 1);
+            dashboard.GetField("_activeClaudeAccountNumber", Private).SetValue(controller, 2);
+            MethodInfo button = dashboard.GetMethod("UpdateCodexLoginButton", Private);
+            button.Invoke(controller, new object[] { codex, true }); button.Invoke(controller, new object[] { claude, true });
+            Require(text("Account1CodexLoginButton") == "Codex 다시 연결" && text("Account2CodexLoginButton") == "Claude Code 다시 연결" &&
+                text("CompactAccount1CodexLoginButton") == "재연결" && text("CompactAccount2CodexLoginButton") == "재연결" &&
+                text("Account1Identity").StartsWith("현재 Codex · ") && text("Account2Identity").StartsWith("현재 Claude Code · "),
+                "The current-account state differs between Codex and Claude.");
+            button.Invoke(controller, new object[] { claude, false });
+            Require(!((Button)window.FindName("Account2CodexLoginButton")).IsEnabled && !((Button)window.FindName("CompactAccount2CodexLoginButton")).IsEnabled,
+                "Claude's switch button ignores the disabled state.");
+            dashboard.GetField("_activeCodexAccountNumber", Private).SetValue(controller, null);
+            dashboard.GetField("_activeClaudeAccountNumber", Private).SetValue(controller, null);
+        }
 
-            AccountSnapshot snapshot = new AccountSnapshot { ProviderId = "claude", IsAuthenticated = true, Email = "private@example.test",
-                RemoteAccountId = AccountA, RemoteOrganizationId = Organization };
-            ClaudeWeb.Apply(snapshot, root, now);
-            Require(snapshot.WebConnectionNeeded && !snapshot.ResetCreditCount.HasValue, "Unlinked slot did not ask for claude.ai.");
-            Require(!ClaudeWeb.Accept(root, identity, account.Replace("Private@", "other@"), account, 200, usage(good), 200,
-                subscription("active", "\"2030-01-20T14:15:04Z\"", "null", "null"), now, out error) && !File.Exists(ClaudeWeb.PathFor(root)) &&
-                !ClaudeWeb.Accept(root, identity, account, account.Replace(Organization, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"), 200, usage(good), 200, "{}", now, out error) &&
-                !File.Exists(ClaudeWeb.PathFor(root)), "Mismatched web session stored data.");
-            Require(ClaudeWeb.Accept(root, identity, account, account, 200, usage(good), 200,
-                subscription("active", "\"2030-01-20T14:15:04Z\"", "null", "null"), now, out error), "Verified web data rejected.");
-            Require(!File.ReadAllText(ClaudeWeb.PathFor(root)).Contains("g1"), "Stored record contains grant IDs.");
-            ClaudeWeb.Apply(snapshot, root, now.AddHours(1));
-            Require(!snapshot.WebConnectionNeeded && snapshot.ResetCreditCount == 2 && snapshot.ResetCredits.All(c => c.ExpiresAt.Value.ToUniversalTime() == new DateTime(2030, 1, 5, 16, 0, 0, DateTimeKind.Utc)) &&
-                snapshot.Subscription.Kind == "renewal" && AccountSubscription.Format(snapshot.Subscription, new DateTime(2030, 1, 2)).StartsWith("구독 갱신"), "Verified web data not applied.");
-            ClaudeWeb.Apply(snapshot, root, new DateTime(2030, 1, 5, 17, 0, 0, DateTimeKind.Utc).AddHours(-25).AddHours(24));
-            Require(!snapshot.ResetCreditCount.HasValue && !snapshot.WebConnectionNeeded, "Stale web data still displayed.");
-            Require(!ClaudeWeb.IsDue(ClaudeWeb.Load(root), identity, now.AddHours(2)) && ClaudeWeb.IsDue(ClaudeWeb.Load(root), identity, now.AddHours(3)),
-                "Background claude.ai reads are not infrequent.");
-            ClaudeWeb.Failed(root, identity, "expired", now.AddHours(3));
-            Require(ClaudeWeb.IsDue(ClaudeWeb.Load(root), identity, now.AddHours(4)), "Failure retry cooldown changed.");
-            snapshot.RemoteAccountId = AccountB;
-            ClaudeWeb.Apply(snapshot, root, now.AddHours(1));
-            Require(snapshot.WebConnectionNeeded && !snapshot.ResetCreditCount.HasValue && snapshot.Subscription.Date == null &&
-                !ClaudeWeb.IsDue(ClaudeWeb.Load(root), ClaudeWeb.IdentityOf(snapshot), now.AddDays(1)), "Another account inherited the slot's web data.");
-            string script = ClaudeWebWindow.Script(Organization, "n");
-            Require(script.Contains("/api/account") && script.Contains("/usage?cedar_ember=1&skip_spend=1") && script.Contains("/subscription_details") &&
-                ClaudeWebWindow.IsClaudePage("https://claude.ai/settings/usage") && !ClaudeWebWindow.IsClaudePage("https://evil.example/claude.ai") &&
-                !ClaudeWebWindow.IsClaudePage("http://claude.ai/"), "Web read script or origin check changed.");
-            Require(ClaudeWeb.ProfileFolder(root).StartsWith(root) && ClaudeWeb.PathFor(root).StartsWith(root), "Web session left the slot profile.");
+        // cedar_ember fixtures; the grant item shape follows third-party docs (resets_left, starts_at, ends_at, paused, label).
+        private static void ClaudeResetCredits()
+        {
+            DateTime now = new DateTime(2030, 1, 2, 3, 0, 0, DateTimeKind.Utc);
+            Func<string, Dictionary<string, object>> usage = block => Object("{\"five_hour\":{\"utilization\":5},\"cedar_ember\":" + block + "}");
+            string good = "{\"label\":\"Full reset\",\"resets_left\":2,\"starts_at\":\"2030-01-01T00:00:00Z\",\"ends_at\":\"2030-01-05T16:00:00+00:00\",\"paused\":false}";
+            string soon = "{\"resets_left\":1,\"ends_at\":\"2030-01-04T00:00:00Z\"}";
+            AccountSnapshot snapshot = new AccountSnapshot();
+            ClaudeUsageAccount.ApplyResetCredits(snapshot, usage("{\"eligible\":true,\"grants\":[" + good + "," + soon + "," +
+                "{\"resets_left\":1,\"paused\":true},{\"resets_left\":1,\"ends_at\":\"2030-01-01T00:00:00Z\"}," +
+                "{\"resets_left\":1,\"starts_at\":\"2030-01-03T00:00:00Z\"},{\"resets_left\":\"many\"},{\"resets_left\":1,\"ends_at\":\"next tuesday\"}," +
+                "{\"resets_left\":0},{\"resets_left\":1,\"paused\":\"no\"}]}"), now);
+            DateTime nearest = snapshot.ResetCredits.Where(c => c.ExpiresAt.HasValue).Min(c => c.ExpiresAt.Value);
+            Require(snapshot.ResetCreditCount == 3 && snapshot.ResetCredits.Count == 3 && snapshot.ResetCreditsNote == null &&
+                snapshot.ResetCredits.All(c => c.ExpiresAt.Value.Kind == DateTimeKind.Local) &&
+                nearest.ToUniversalTime() == new DateTime(2030, 1, 4, 0, 0, 0, DateTimeKind.Utc) &&
+                nearest == new DateTime(2030, 1, 4, 0, 0, 0, DateTimeKind.Utc).ToLocalTime(),
+                "Started, unpaused, unexpired grants were not counted or their expiry is not local.");
+            Require(snapshot.ResetCredits.Count(c => c.Title == "Full reset") == 2, "Grant label was lost.");
+            ClaudeUsageAccount.ApplyResetCredits(snapshot, usage("{\"eligible\":false,\"ineligible_reason\":\"surface\",\"grants\":[" + good + "]}"), now);
+            Require(snapshot.ResetCreditCount == 2 && snapshot.ResetCreditsNote == "초기화권은 claude.ai의 설정 → 사용량에서 사용합니다.",
+                "A surface-ineligible inventory was zeroed or lacks the claude.ai note.");
+            // The live-verified shape of an account without grants.
+            ClaudeUsageAccount.ApplyResetCredits(snapshot, usage("{\"at_limit\":false,\"cooldown_until\":null,\"eligible\":false,\"event_props\":{}," +
+                "\"exhausted\":false,\"grants\":[],\"ineligible_reason\":\"surface\",\"next_grant_id\":null,\"weekly_resets_at\":null}"), now);
+            Require(snapshot.ResetCreditCount == 0 && snapshot.ResetCredits.Count == 0 && snapshot.ResetCreditsNote.Contains("설정 → 사용량"),
+                "An empty inventory was not shown as no resets with the claude.ai note.");
+            ClaudeUsageAccount.ApplyResetCredits(snapshot, usage("{\"eligible\":false,\"ineligible_reason\":\"region\",\"grants\":[]}"), now);
+            Require(snapshot.ResetCreditCount == 0 && snapshot.ResetCreditsNote.Contains("(region)"), "Another ineligibility reason was hidden.");
+            foreach (string unknown in new[] { "{}", "{\"cedar_ember\":null}", "{\"cedar_ember\":{\"eligible\":true}}", "{\"cedar_ember\":{\"grants\":{}}}",
+                "{\"cedar_ember\":\"x\"}", "{\"cedar_ember\":{\"grants\":[{\"resets_left\":51}]}}" })
+            {
+                ClaudeUsageAccount.ApplyResetCredits(snapshot, Object(unknown), now);
+                Require(!snapshot.ResetCreditCount.HasValue && snapshot.ResetCredits.Count == 0 && snapshot.ResetCreditsNote == null,
+                    "An absent or unreadable inventory became a count: " + unknown);
+            }
         }
 
         private static void WeeklyPercentStats()

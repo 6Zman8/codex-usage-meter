@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.15.0")]
-[assembly: AssemblyFileVersion("1.9.15.0")]
+[assembly: AssemblyVersion("1.9.16.0")]
+[assembly: AssemblyFileVersion("1.9.16.0")]
 
 namespace CodexUsageMeter
 {
@@ -586,6 +586,8 @@ namespace CodexUsageMeter
         private int _accountCount = 2;
         private int _accountPage;
         private int? _activeCodexAccountNumber;
+        private int? _activeClaudeAccountNumber;
+        private readonly ClaudeCodeSwitcher _claudeCodeSwitcher;
         private bool _customMaximized;
         private bool _handlingNativeMaximize;
         private Rect _restoreBounds;
@@ -609,6 +611,7 @@ namespace CodexUsageMeter
             _accountSwitcher = new AccountSwitcher(defaultCodexHome, _accountsRoot,
                 new CodexDesktopLifecycle(switchJournal), switchJournal,
                 number => _accounts.Any(state => state.Number == number && state.Client.Provider.Id == "codex"));
+            _claudeCodeSwitcher = new ClaudeCodeSwitcher(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), switchJournal);
 
             _account1 = CreateAccountView(1, "계정 1", null);
             _account2 = CreateAccountView(2, "계정 2", null);
@@ -891,9 +894,9 @@ namespace CodexUsageMeter
             foreach (TextBlock link in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
             {
                 link.Cursor = Cursors.Hand; link.Focusable = true; link.TextDecorations = TextDecorations.Underline;
-                link.MouseLeftButtonUp += delegate(object sender, MouseButtonEventArgs e) { e.Handled = true; OpenSubscriptionConnection(view); };
+                link.MouseLeftButtonUp += delegate(object sender, MouseButtonEventArgs e) { e.Handled = true; ConnectWebSubscription(view); };
                 link.KeyDown += delegate(object sender, KeyEventArgs e) {
-                    if (e.Key == Key.Enter || e.Key == Key.Space) { e.Handled = true; OpenSubscriptionConnection(view); }
+                    if (e.Key == Key.Enter || e.Key == Key.Space) { e.Handled = true; ConnectWebSubscription(view); }
                 };
                 System.Windows.Automation.AutomationProperties.SetHelpText(link, "웹 계정에 연결하여 구독 날짜를 자동 확인합니다.");
             }
@@ -1969,12 +1972,15 @@ namespace CodexUsageMeter
                 _accountCountIncreaseButton.IsEnabled = false;
                 SetFooterText("계정 사용량을 확인하는 중…");
                 AccountState[] states = _accounts.ToArray();
+                List<KeyValuePair<int, string>> claudeSlots = ClaudeSlots();
+                ClaudeCodeSwitcher.PollShare share = await Task.Run(delegate { return _claudeCodeSwitcher.BeforePoll(claudeSlots); });
                 Task<AccountSnapshot>[] refreshes = states.Select(delegate(AccountState state)
                 {
                     return AccountProviders.RefreshSafelyAsync(state.Client);
                 }).ToArray();
                 AccountSnapshot[] snapshots = await Task.WhenAll(refreshes);
                 await Task.Run(delegate {
+                    _claudeCodeSwitcher.AfterPoll(share, claudeSlots);
                     foreach (AccountSnapshot snapshot in snapshots)
                     {
                         try { _usageHistory.Record(snapshot); }
@@ -1985,16 +1991,12 @@ namespace CodexUsageMeter
                 });
                 for (int index = 0; index < states.Length; index++)
                 {
-                    ClaudeWebIdentity identity = states[index].Client.Provider.Supports(AccountCapabilities.ClaudeWeb) ? ClaudeWeb.IdentityOf(snapshots[index]) : null;
-                    if (identity != null) ClaudeWebService.QueueRefresh(states[index].Client.ProfileRoot, identity);
-                }
-                for (int index = 0; index < states.Length; index++)
-                {
                     states[index].LastSnapshot = snapshots[index];
                 }
                 UpdateTrayUsage();
                 PublishWindowsWidget(true);
                 _activeCodexAccountNumber = _accountSwitcher.DetectActiveAccountNumber(_accountCount);
+                _activeClaudeAccountNumber = _claudeCodeSwitcher.DetectActiveAccountNumber(ClaudeSlots());
                 BindAccountPage();
                 _layoutView.ReloadHistory();
                 UpdateFooter();
@@ -2018,12 +2020,21 @@ namespace CodexUsageMeter
             }
         }
 
-        // Claude: statistics from this meter's own weekly-limit history and reset credits/subscription from the slot's claude.ai record.
-        // Neither sends an OAuth request.
+        private List<KeyValuePair<int, string>> ClaudeSlots()
+        {
+            return _accounts.Where(state => state.Client is ClaudeUsageAccount)
+                .Select(state => new KeyValuePair<int, string>(state.Number, state.Client.ProfileRoot)).ToList();
+        }
+
+        // Claude: the subscription date the person's Chrome delivered for this slot's verified owner (same bridge as ChatGPT)
+        // and statistics from this meter's own weekly-limit history. Neither sends an OAuth request.
         private void ApplyProviderExtras(AccountSnapshot snapshot, IUsageAccount client)
         {
-            if (snapshot == null || !snapshot.IsAuthenticated || !client.Provider.Supports(AccountCapabilities.ClaudeWeb)) return;
-            ClaudeWeb.Apply(snapshot, client.ProfileRoot, DateTime.UtcNow);
+            if (snapshot == null || !(client is ClaudeUsageAccount)) return;
+            if (!snapshot.IsAuthenticated) { ChromeSubscriptionBridge.RegisterClaude(client.ProfileRoot, null, null, null); return; }
+            ChromeSubscriptionBridge.RegisterClaude(client.ProfileRoot, snapshot.RemoteAccountId, snapshot.RemoteOrganizationId, snapshot.Email);
+            snapshot.Subscription = ClaudeSubscriptionStore.Read(client.ProfileRoot, snapshot.RemoteAccountId, snapshot.RemoteOrganizationId, DateTime.UtcNow) ??
+                AccountSubscription.Unavailable("크롬에서 claude.ai를 열면 구독 날짜가 자동으로 반영됩니다.", DateTime.UtcNow);
             snapshot.UsageUnit = UsageHistoryStats.WeeklyPercentUnit;
             snapshot.DailyUsage = new List<DailyUsageBucket>(); snapshot.Usage = null;
             string key = snapshot.HistoryKey ?? UsageHistoryStore.ProviderAccountKey(snapshot.ProviderId, snapshot.RemoteAccountId, snapshot.RemoteOrganizationId);
@@ -2275,12 +2286,6 @@ namespace CodexUsageMeter
                 reconnect.Click += async delegate { await StartAccountLoginAsync(view, state.Client, state.Label); };
                 menu.Items.Add(reconnect);
             }
-            if (view.Client.Provider.Supports(AccountCapabilities.ClaudeWeb) && view.LastSnapshot != null && view.LastSnapshot.IsAuthenticated)
-            {
-                MenuItem web = new MenuItem { Header = "claude.ai 웹 연결 (초기화권·구독 날짜)" };
-                web.Click += delegate { ConnectClaudeWeb(view); };
-                menu.Items.Add(web);
-            }
             foreach (AccountProvider provider in AccountProviders.Registered)
             {
                 AccountProvider selected = provider;
@@ -2340,10 +2345,16 @@ namespace CodexUsageMeter
                 AccountLoginPrompt login = await targetClient.StartLoginAsync();
                 if (login.Completion != null)
                 {
-                    // Claude: one claude.ai window in this slot's profile signs in, approves and reads the web data.
+                    // Claude: the person's default browser signs in; the meter's loopback address receives the result.
+                    bool opened = false;
+                    try { Process.Start(new ProcessStartInfo(login.VerificationUrl) { UseShellExecute = true }); opened = true; }
+                    catch { }
                     if (Object.ReferenceEquals(view.Client, targetClient))
-                        view.Status.Text = "Claude 연결 창에서 로그인을 마치면 자동으로 갱신됩니다.";
-                    RunClaudeSignIn(view, targetClient, targetLabel, login);
+                        view.Status.Text = opened ? "브라우저에서 인증을 마치면 자동으로 갱신됩니다." : "아래 주소를 사용해 브라우저에서 인증해 주세요.";
+                    ShowModal(targetLabel + " 연결", opened ? login.Message :
+                        "브라우저를 자동으로 열지 못했습니다. 아래 주소를 브라우저에서 열어 로그인해 주세요.\n\n" + login.VerificationUrl,
+                        null, "확인", "로그인 취소", null, login.Cancel);
+                    ObserveExternalLoginAsync(view, targetClient, login.Completion);
                     return;
                 }
                 bool copied = TrySetClipboardText(login.UserCode);
@@ -2389,49 +2400,27 @@ namespace CodexUsageMeter
             }
         }
 
-        private async void RunClaudeSignIn(AccountView view, IUsageAccount client, string label, AccountLoginPrompt login)
+        private async void ObserveExternalLoginAsync(AccountView view, IUsageAccount client, Task completion)
         {
-            string webError = null, failure = null;
-            try
-            {
-                webError = await ClaudeWebService.SignInAsync(_window, client.ProfileRoot, login,
-                    async () => ClaudeWeb.IdentityOf(await AccountProviders.RefreshSafelyAsync(client)));
-            }
-            catch (Exception error) { login.Cancel(); webError = failure = error.Message; }
-            bool signedIn = true;
-            try { await login.Completion; }
+            try { await completion; }
             catch (Exception error)
             {
-                signedIn = false;
+                if (_disposed) return;
                 AccountProviderException safe = error as AccountProviderException;
-                // Closing the window is the person's own cancel and needs no dialog.
-                if (failure == null && (safe == null || safe.Kind != AccountErrorKind.Canceled))
-                    failure = safe == null ? "로그인을 마치지 못했습니다. 다시 연결해 주세요." : safe.Message;
-            }
-            if (_disposed) return;
-            if (!signedIn)
-            {
                 if (Object.ReferenceEquals(view.Client, client))
                 {
-                    view.Status.Text = failure ?? "Claude 로그인을 취소했습니다.";
+                    view.Status.Text = safe == null ? "로그인을 마치지 못했습니다. 다시 연결해 주세요." : safe.Message;
                     view.Status.Visibility = Visibility.Visible;
+                    ShowModal("계정 연결", view.Status.Text, null, "확인", null, null, null);
                 }
-                if (failure != null) ShowModal("계정 연결", failure, null, "확인", null, null, null);
-                await RefreshAccountsAsync();
-                return;
             }
-            await RefreshAccountsAsync();
-            // The OAuth connection stays; only the claude.ai part is retried from the card's subscription line.
-            if (webError != null)
-                ShowModal(label + " · Claude 연결", "Claude 사용량 연결을 마쳤습니다.\n\nclaude.ai의 초기화권·구독 날짜는 확인하지 못했습니다.\n" + webError +
-                    "\n\n사용량 연결은 그대로 유지됩니다. 카드의 ‘구독 날짜 · claude.ai 연결하기’를 눌러 이 부분만 다시 확인할 수 있습니다.",
-                    null, "확인", null, null, null);
+            if (!_disposed) await RefreshAccountsAsync();
         }
 
         private void ConfirmCodexLoginChange(AccountView view)
         {
             if (view == null || view.State == null || _switchingAccount || _updateChecking) return;
-            if (!(view.Client is CodexUsageAccount)) return;
+            if (view.Client == null || !view.Client.Provider.Supports(AccountCapabilities.AppSwitch)) return;
             if (view.LastSnapshot == null || !view.LastSnapshot.IsAuthenticated)
             {
                 ShowModal("계정 전환 불가", "먼저 이 계정을 미터기에 연결해 주세요.", null,
@@ -2441,11 +2430,14 @@ namespace CodexUsageMeter
             BeginCodexLoginChange(view);
         }
 
+        // Codex and Claude cards share this flow; only the app being switched (Codex / Claude Code) differs.
         private async void BeginCodexLoginChange(AccountView view)
         {
             if (view == null || view.State == null || _switchingAccount || _updateChecking) return;
             CodexUsageAccount codex = view.Client as CodexUsageAccount;
-            if (codex == null) return;
+            ClaudeUsageAccount claude = view.Client as ClaudeUsageAccount;
+            if (codex == null && claude == null) return;
+            if (claude != null) { BeginClaudeCodeSwitch(view, claude); return; }
             _switchingAccount = true;
             _accountTimer.Stop();
             SetCodexLoginButtonsEnabled(false);
@@ -2524,6 +2516,57 @@ namespace CodexUsageMeter
             }
         }
 
+        private async void BeginClaudeCodeSwitch(AccountView view, ClaudeUsageAccount claude)
+        {
+            _switchingAccount = true;
+            _accountTimer.Stop();
+            SetCodexLoginButtonsEnabled(false);
+            _refreshButton.IsEnabled = false;
+            _compactRefreshButton.IsEnabled = false;
+            _accountCountDecreaseButton.IsEnabled = false;
+            _accountCountIncreaseButton.IsEnabled = false;
+            int targetNumber = view.State.Number;
+            SetFooterText(view.Label + "의 인증을 확인하는 중…");
+            AccountSwitchResult result;
+            await _accountOperationGate.WaitAsync();
+            try
+            {
+                // Like Codex's preflight: the slot's own sign-in is renewed/verified before Claude Code's store changes.
+                AccountSnapshot check = await AccountProviders.RefreshSafelyAsync(claude);
+                if (!check.IsAuthenticated || String.IsNullOrEmpty(check.RemoteAccountId) ||
+                    (check.ErrorKind != AccountErrorKind.None && check.ErrorKind != AccountErrorKind.RateLimited))
+                    throw new InvalidOperationException("선택 계정의 인증을 갱신·확인하지 못해 Claude Code 로그인을 바꾸지 않았습니다. 연결 상태를 확인해 주세요.");
+                SetFooterText(view.Label + "로 Claude Code 로그인을 바꾸는 중…");
+                List<KeyValuePair<int, string>> slots = ClaudeSlots();
+                result = await Task.Run(delegate { return _claudeCodeSwitcher.SwitchTo(targetNumber, slots); });
+            }
+            catch (InvalidOperationException ex) { result = AccountSwitchResult.Failed(false, ex.Message); }
+            catch
+            {
+                result = AccountSwitchResult.Failed(false, "계정 전환 중 예상하지 못한 오류가 발생했습니다. 인증정보 내용은 표시하지 않았습니다.");
+            }
+            finally { _accountOperationGate.Release(); }
+            try { await RefreshAccountsAsync(true); }
+            finally
+            {
+                _switchingAccount = false;
+                if (!_disposed)
+                {
+                    _accountTimer.Start();
+                    SetCodexLoginButtonsEnabled(true);
+                    _refreshButton.IsEnabled = true;
+                    _compactRefreshButton.IsEnabled = true;
+                    _accountCountDecreaseButton.IsEnabled = _accountCount > 1;
+                    _accountCountIncreaseButton.IsEnabled = _accountCount < 4;
+                    _resumeRefresh.TryRunPending();
+                }
+            }
+            if (_disposed) return;
+            BindAccountPage();
+            SetFooterText(result.Message);
+            if (!result.Success) ShowModal("Claude Code 계정 전환 실패", result.Message, null, "확인", null, null, null);
+        }
+
         private void SetCodexLoginButtonsEnabled(bool enabled)
         {
             foreach (AccountView account in new AccountView[] { _account1, _account2 })
@@ -2537,21 +2580,23 @@ namespace CodexUsageMeter
         private void UpdateCodexLoginButton(AccountView view, bool enabled = true)
         {
             if (view == null || view.State == null) return;
-            if (!view.Client.Provider.Supports(AccountCapabilities.CodexSwitch))
+            if (view.Client == null || !view.Client.Provider.Supports(AccountCapabilities.AppSwitch))
             {
                 view.CodexLoginButton.Visibility = Visibility.Collapsed;
                 view.CompactCodexLoginButton.Visibility = Visibility.Collapsed;
                 return;
             }
-            bool active = _activeCodexAccountNumber.HasValue &&
-                _activeCodexAccountNumber.Value == view.State.Number;
-            view.CodexLoginButton.Content = active ? "Codex 다시 연결" : "Codex로 전환";
+            int? activeNumber = view.Client.Provider.Id == AccountProviders.Claude.Id ? _activeClaudeAccountNumber : _activeCodexAccountNumber;
+            bool active = activeNumber.HasValue && activeNumber.Value == view.State.Number;
+            string app = view.Client.Provider.AppName;
+            view.CodexLoginButton.Content = active ? app + " 다시 연결" : app + "로 전환";
             view.CodexLoginButton.IsEnabled = enabled && !_switchingAccount;
             view.CompactCodexLoginButton.Content = active ? "재연결" : "전환";
             view.CompactCodexLoginButton.IsEnabled = enabled && !_switchingAccount;
-            if (active && !view.Identity.Text.StartsWith("현재 Codex · ", StringComparison.Ordinal))
+            string prefix = "현재 " + app + " · ";
+            if (active && !view.Identity.Text.StartsWith(prefix, StringComparison.Ordinal))
             {
-                view.Identity.Text = "현재 Codex · " + view.Identity.Text;
+                view.Identity.Text = prefix + view.Identity.Text;
             }
         }
 
@@ -2698,7 +2743,7 @@ namespace CodexUsageMeter
                 identity += "  ·  " + PlanName(snapshot.PlanType);
             }
             view.Identity.Text = identity;
-            view.CodexLoginButton.Visibility = provider.Supports(AccountCapabilities.CodexSwitch) ? Visibility.Visible : Visibility.Collapsed;
+            view.CodexLoginButton.Visibility = provider.Supports(AccountCapabilities.AppSwitch) ? Visibility.Visible : Visibility.Collapsed;
             view.CompactCodexLoginButton.Visibility = view.CodexLoginButton.Visibility;
             view.LogoutButton.Visibility = Visibility.Visible;
             UpdateCodexLoginButton(view);
@@ -2791,7 +2836,7 @@ namespace CodexUsageMeter
             ((TextBlock)window.FindName(prefix + "TitleText")).Text = provider.CardTitle(view.Label ?? "계정 " + slot);
             resetValue.Visibility = provider.Supports(AccountCapabilities.UsageExtras) ? Visibility.Visible : Visibility.Collapsed;
             ((Button)window.FindName(prefix + "CodexLoginButton")).Visibility =
-                snapshot != null && snapshot.IsAuthenticated && provider.Supports(AccountCapabilities.CodexSwitch) ? Visibility.Visible : Visibility.Collapsed;
+                snapshot != null && snapshot.IsAuthenticated && provider.Supports(AccountCapabilities.AppSwitch) ? Visibility.Visible : Visibility.Collapsed;
             string primaryLabel = snapshot == null || snapshot.Primary == null ? "5시간" : snapshot.Primary.Name.Replace(" 한도", "");
             string secondaryLabel = snapshot == null || snapshot.Secondary == null ? "주간" : snapshot.Secondary.Name.Replace(" 한도", "");
             ((TextBlock)window.FindName(prefix + "PrimaryName")).Text = primaryLabel;
@@ -2838,7 +2883,7 @@ namespace CodexUsageMeter
             resetValue.ToolTip = snapshot.ResetCreditsNote;
             if (!snapshot.ResetCreditCount.HasValue)
             {
-                resetValue.Text = snapshot.WebConnectionNeeded ? "초기화권 · claude.ai 연결 필요" : "초기화권 정보 없음";
+                resetValue.Text = "초기화권 정보 없음";
             }
             else if (snapshot.ResetCreditCount.Value <= 0)
             {
@@ -2872,39 +2917,26 @@ namespace CodexUsageMeter
         private void ConnectWebSubscription(AccountView view)
         {
             if (_switchingAccount || view.Client == null || view.LastSnapshot == null || !view.LastSnapshot.IsAuthenticated) return;
-            if (!view.Client.Provider.Supports(AccountCapabilities.ChatGptSubscription)) return;
+            if (!view.Client.Provider.Supports(AccountCapabilities.ChromeSubscription)) return;
             IUsageAccount client = view.Client;
+            AccountProvider provider = client.Provider;
             AccountSnapshot snapshot = view.LastSnapshot;
             ShowModal("크롬 구독 연결",
-                "평소 쓰시는 크롬의 로그인과 저장된 비밀번호를 그대로 이용합니다.\n\n처음 한 번 ‘스크립트 설치’를 눌러 탬퍼몽키에 추가하세요. 설치 후 미터기의 구독 날짜를 다시 눌러 ‘크롬 열기’을 선택하면 연결됩니다. 이후에는 크롬의 ChatGPT 구독 페이지를 열면 자동으로 반영됩니다.\n\n확인할 계정: " + view.LastSnapshot.Email,
+                "평소 쓰시는 크롬의 로그인과 저장된 비밀번호를 그대로 이용합니다.\n\n처음 한 번 ‘스크립트 설치’를 눌러 탬퍼몽키에 추가하세요. 설치 후 미터기의 구독 날짜를 다시 눌러 ‘크롬 열기’을 선택하면 연결됩니다. 이후에는 크롬의 " +
+                provider.WebName + " 구독 페이지를 열면 자동으로 반영됩니다.\n\n확인할 계정: " + view.LastSnapshot.Email,
                 null, "크롬 열기", "스크립트 설치",
-                delegate { try { ChromeSubscriptionBridge.Register(client.ProfileRoot, snapshot.Email, snapshot.PlanType); ChromeSubscriptionBridge.OpenConnection(); }
+                delegate {
+                    try
+                    {
+                        // Each card registers its own verified owner; the page data is routed only to a matching slot.
+                        if (client is ClaudeUsageAccount)
+                            ChromeSubscriptionBridge.RegisterClaude(client.ProfileRoot, snapshot.RemoteAccountId, snapshot.RemoteOrganizationId, snapshot.Email);
+                        else ChromeSubscriptionBridge.Register(client.ProfileRoot, snapshot.Email, snapshot.PlanType);
+                        ChromeSubscriptionBridge.OpenConnection(provider.BillingUrl);
+                    }
                     catch (Exception error) { ShowModal("크롬 연결", error.Message, null, "확인", null, null, null); } },
                 delegate { try { ChromeSubscriptionBridge.OpenChrome(ChromeSubscriptionBridge.ScriptUrl); }
                     catch (Exception error) { ShowModal("스크립트 설치", error.Message, null, "확인", null, null, null); } });
-        }
-
-        private void OpenSubscriptionConnection(AccountView view)
-        {
-            if (view.Client != null && view.Client.Provider.Supports(AccountCapabilities.ClaudeWeb)) ConnectClaudeWeb(view);
-            else ConnectWebSubscription(view);
-        }
-
-        // Opens this slot's claude.ai sign-in window; the person signs in once and later reads run hidden.
-        private async void ConnectClaudeWeb(AccountView view)
-        {
-            if (_switchingAccount || view.Client == null || !view.Client.Provider.Supports(AccountCapabilities.ClaudeWeb)) return;
-            ClaudeWebIdentity identity = ClaudeWeb.IdentityOf(view.LastSnapshot);
-            if (identity == null)
-            {
-                ShowModal("claude.ai 연결", "먼저 이 칸의 Claude 계정을 연결하고 사용량이 표시될 때까지 기다려 주세요.", null, "확인", null, null, null);
-                return;
-            }
-            try
-            {
-                if (await ClaudeWebService.ConnectAsync(_window, view.Client.ProfileRoot, identity)) await RefreshAccountsAsync();
-            }
-            catch (Exception error) { ShowModal("claude.ai 연결", error.Message, null, "확인", null, null, null); }
         }
 
         private static void UpdateSubscription(AccountView view, AccountSnapshot snapshot)
@@ -2919,8 +2951,7 @@ namespace CodexUsageMeter
             }
             if (!supported) return;
             AccountSubscriptionInfo subscription = snapshot == null ? null : snapshot.Subscription;
-            string text = snapshot == null || !snapshot.IsAuthenticated ? "구독 날짜 --" :
-                snapshot.WebConnectionNeeded ? "구독 날짜 · claude.ai 연결하기" : AccountSubscription.Format(subscription, DateTime.Today);
+            string text = snapshot == null || !snapshot.IsAuthenticated ? "구독 날짜 --" : AccountSubscription.Format(subscription, DateTime.Today);
             string detail = subscription == null ? "계정의 구독 정보를 확인한 뒤 표시합니다." : subscription.Error;
             if (subscription != null && subscription.Date.HasValue)
                 detail = subscription.Date.Value.ToString("yyyy-MM-dd HH:mm") + " · " + (subscription.Kind == "period" ? "확인된 이용 기간이며 자동 갱신 여부는 미확인입니다." : "계정의 결제 정보에서 확인한 날짜입니다.") +
@@ -2928,9 +2959,7 @@ namespace CodexUsageMeter
             foreach (TextBlock label in new[] { view.SubscriptionValue, view.CompactSubscriptionValue })
             {
                 label.Text = text;
-                label.ToolTip = (detail ?? "") + (provider.Supports(AccountCapabilities.ClaudeWeb)
-                    ? "\n클릭하여 claude.ai 로그인 창 열기 · 초기화권과 구독 날짜를 함께 확인"
-                    : "\n클릭하여 크롬 열기 · 탬퍼몽키 연결 스크립트 최초 1회 설치");
+                label.ToolTip = (detail ?? "") + "\n클릭하여 크롬 열기 · 탬퍼몽키 연결 스크립트 최초 1회 설치";
             }
         }
 
@@ -3188,7 +3217,7 @@ namespace CodexUsageMeter
             view.ResetCreditsDetail.ToolTip = snapshot.ResetCreditsNote;
             if (!snapshot.ResetCreditCount.HasValue)
             {
-                view.ResetCreditsValue.Text = snapshot.WebConnectionNeeded ? "초기화권 · claude.ai 연결 필요" : "초기화권 정보 없음";
+                view.ResetCreditsValue.Text = "초기화권 정보 없음";
                 view.ResetCreditsValue.Foreground = new SolidColorBrush(Color.FromRgb(161, 161, 170));
                 view.ResetCreditsDetail.Text = String.IsNullOrWhiteSpace(snapshot.ResetCreditsNote)
                     ? "현재 계정에서 상세 정보를 제공하지 않습니다." : snapshot.ResetCreditsNote.Split('\n')[0];
@@ -3214,7 +3243,7 @@ namespace CodexUsageMeter
                 }
             }
             view.ResetCreditsDetail.Text = count == 0
-                ? "사용 가능한 리셋권이 없습니다."
+                ? (String.IsNullOrWhiteSpace(snapshot.ResetCreditsNote) ? "사용 가능한 리셋권이 없습니다." : snapshot.ResetCreditsNote.Split('\n')[0])
                 : nearestExpiry.HasValue
                     ? "최근 만료 " + nearestExpiry.Value.ToString("MM'/'dd HH:mm") + " · " + FormatRemaining(nearestExpiry.Value)
                     : "보유 개수만 제공됨 · 만료 상세 없음";

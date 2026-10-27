@@ -30,6 +30,8 @@ namespace CodexUsageMeter
         private volatile bool _stopped;
 
         private sealed class Target { internal string Root, Account, Email, Plan; }
+        private sealed class ClaudeTarget { internal string Root, Account, Organization, Email; }
+        private static readonly Dictionary<string, ClaudeTarget> ClaudeTargets = new Dictionary<string, ClaudeTarget>(StringComparer.OrdinalIgnoreCase);
         internal static void Register(string root, string email, string plan)
         {
             string account = WebSubscriptionStore.AccountId(root, email);
@@ -37,6 +39,16 @@ namespace CodexUsageMeter
             {
                 if (String.IsNullOrWhiteSpace(account)) { Targets.Remove(root); return; }
                 Targets[root] = new Target { Root = root, Account = account, Email = email, Plan = plan };
+            }
+        }
+        // A Claude slot receives claude.ai data only for its verified OAuth owner (account, organization and email).
+        internal static void RegisterClaude(string root, string account, string organization, string email)
+        {
+            lock (Sync)
+            {
+                if (String.IsNullOrWhiteSpace(account) || String.IsNullOrWhiteSpace(organization) || String.IsNullOrWhiteSpace(email))
+                { ClaudeTargets.Remove(root); return; }
+                ClaudeTargets[root] = new ClaudeTarget { Root = root, Account = account, Organization = organization, Email = email };
             }
         }
 
@@ -54,7 +66,7 @@ namespace CodexUsageMeter
                 return _shared;
             }
         }
-        internal static void Stop() { lock (Sync) { if (_shared != null) _shared.Dispose(); _shared = null; Targets.Clear(); } }
+        internal static void Stop() { lock (Sync) { if (_shared != null) _shared.Dispose(); _shared = null; Targets.Clear(); ClaudeTargets.Clear(); } }
         internal static string ReadKey(string directory)
         {
             Directory.CreateDirectory(directory);
@@ -69,12 +81,13 @@ namespace CodexUsageMeter
             if (secret.Length != 32) throw new InvalidDataException("크롬 연결 정보를 읽지 못했습니다.");
             return BitConverter.ToString(secret).Replace("-", "").ToLowerInvariant();
         }
-        internal static void OpenConnection()
+        // billingUrl: the provider's billing page (ChatGPT or claude.ai); the same script and key serve both sites.
+        internal static void OpenConnection(string billingUrl)
         {
             ChromeSubscriptionBridge bridge;
             try { bridge = EnsureStarted(); }
             catch { throw new InvalidOperationException("크롬 연결을 준비하지 못했습니다. 다른 미터기가 실행 중인지 확인한 뒤 다시 시도해 주세요."); }
-            OpenChrome("https://chatgpt.com/settings/billing#codex-meter-connect=" + bridge._key);
+            OpenChrome(billingUrl + "#codex-meter-connect=" + bridge._key);
         }
         internal static void OpenChrome(string url)
         {
@@ -93,12 +106,31 @@ namespace CodexUsageMeter
 
         private static int ReceiveRegistered(string json)
         {
-            List<Target> targets; lock (Sync) targets = new List<Target>(Targets.Values);
-            int count = 0;
-            foreach (Target target in targets)
-                if (Accept(target.Root, target.Account, target.Email, target.Plan, json, DateTime.UtcNow)) count++;
+            int count = Route(json, DateTime.UtcNow);
             if (count > 0) { Action changed = Changed; try { if (changed != null) changed(); } catch (InvalidOperationException) { } }
             return count;
+        }
+        // Payloads with "kind":"claude" (script 1.4.0+) go only to Claude slots; anything else is the original ChatGPT payload.
+        internal static int Route(string json, DateTime now)
+        {
+            int count = 0;
+            if (IsClaudePayload(json))
+            {
+                List<ClaudeTarget> claude; lock (Sync) claude = new List<ClaudeTarget>(ClaudeTargets.Values);
+                foreach (ClaudeTarget target in claude)
+                    if (ClaudeSubscriptionStore.Accept(target.Root, target.Account, target.Organization, target.Email, json, now)) count++;
+                return count;
+            }
+            List<Target> targets; lock (Sync) targets = new List<Target>(Targets.Values);
+            foreach (Target target in targets)
+                if (Accept(target.Root, target.Account, target.Email, target.Plan, json, now)) count++;
+            return count;
+        }
+        private static bool IsClaudePayload(string json)
+        {
+            try { return json != null && json.Length <= 65536 && AccountSubscription.Text(AccountSubscription.ParseJson(json), "kind") == "claude"; }
+            catch (ArgumentException) { return false; }
+            catch (InvalidOperationException) { return false; }
         }
         internal static bool Accept(string root, string account, string email, string plan, string json, DateTime now)
         {

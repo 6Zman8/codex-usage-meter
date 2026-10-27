@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Codex 미터기 · ChatGPT 구독 연결
 // @namespace    https://github.com/6Zman8/codex-usage-meter
-// @version      1.3.0
-// @description  평소 쓰는 Chrome에서 구독 페이지를 열면 Codex 미터기에 구독 날짜를 전달합니다.
+// @version      1.4.0
+// @description  평소 쓰는 Chrome에서 ChatGPT 구독 페이지나 claude.ai를 열면 Codex 미터기에 구독 날짜를 전달합니다.
 // @match        https://chatgpt.com/*
+// @match        https://claude.ai/*
 // @run-at       document-start
 // @grant        unsafeWindow
 // @grant        GM_getValue
@@ -19,6 +20,7 @@
     const endpoint = '/backend-api/accounts/check/v4-2023-04-27';
     const bridge = 'http://127.0.0.1:43129/subscription';
     const page = unsafeWindow;
+    const claude = location.hostname === 'claude.ai';
     let latest = null, sending = false, sent = '', retryAt = 0, notice = null;
     let key = GM_getValue('meterConnectionKey', '');
     const hash = new URLSearchParams(location.hash.slice(1));
@@ -30,7 +32,10 @@
         history.replaceState(history.state, '', location.pathname + location.search + (hash.size ? '#' + hash.toString() : ''));
     }
 
-    function billingPage() { return location.pathname === '/settings/billing' || location.pathname.startsWith('/settings/billing/'); }
+    function billingPage() {
+        if (claude) return /^\/settings\/(billing|usage)(\/|$)/.test(location.pathname);
+        return location.pathname === '/settings/billing' || location.pathname.startsWith('/settings/billing/');
+    }
     function show(text) {
         if (!billingPage() || !document.body) return;
         if (!notice) {
@@ -74,26 +79,84 @@
         try { const value = compact(raw); if (value) { latest = value; sent = ''; retryAt = 0; flush(); } } catch { /* Do not affect ChatGPT. */ }
     }
     function flush() {
-        if (!billingPage() || !latest || !/^[a-f0-9]{64}$/.test(key) || sending || Date.now() < retryAt) return;
+        if ((!claude && !billingPage()) || !latest || !/^[a-f0-9]{64}$/.test(key) || sending || Date.now() < retryAt) return;
         if (Date.now() - Date.parse(latest.observedAt) > 9 * 60 * 1000) {
+            // claude.ai is read again by this script; ChatGPT data only arrives with the page's own request.
+            if (claude) { latest = null; return; }
             show('Codex 미터기: 최신 구독 정보를 받으려면 이 페이지를 새로고침해 주세요.'); return;
         }
         const payload = JSON.stringify(latest);
         if (payload === sent || payload.length > 65536) return;
         sending = true;
-        const done = () => { sending = false; retryAt = Date.now() + 30000; };
+        // claude.ai is read on every claude.ai page, so a closed meter is retried less often there.
+        const done = failed => { sending = false; retryAt = Date.now() + (claude && failed ? 300000 : 30000); };
         try { GM_xmlhttpRequest({ method: 'POST', url: bridge, timeout: 5000, anonymous: true,
             headers: { 'Content-Type': 'application/json', 'X-Codex-Meter-Key': key }, data: payload,
             onload: response => {
-                done();
-                if (response.status === 200) { sent = payload; show('Codex 미터기: 구독 정보를 반영했습니다.'); }
+                done(response.status !== 200);
+                if (response.status === 200) {
+                    sent = payload; show('Codex 미터기: 구독 정보를 반영했습니다.');
+                    if (claude) GM_setValue('claudeDeliveredAt', Date.now());
+                }
                 else if (response.status === 403) show('Codex 미터기: 미터기의 구독 날짜를 눌러 크롬을 다시 연결해 주세요.');
-                else if (response.status === 409) show('Codex 미터기: 웹 계정과 미터기의 연결 계정·플랜이 일치하는지 확인해 주세요.');
+                else if (response.status === 409) show(claude ? 'Codex 미터기: claude.ai 계정·조직이 미터기의 Claude 연결 계정과 일치하는지 확인해 주세요.'
+                    : 'Codex 미터기: 웹 계정과 미터기의 연결 계정·플랜이 일치하는지 확인해 주세요.');
                 else show('Codex 미터기: 연결을 확인하지 못했습니다. 잠시 후 다시 시도합니다.');
             },
-            onerror: () => { done(); show('Codex 미터기를 실행해 주세요. 실행 후 자동으로 다시 연결합니다.'); },
-            ontimeout: () => { done(); show('Codex 미터기 연결이 지연되고 있습니다. 잠시 후 다시 시도합니다.'); }
-        }); } catch { done(); show('Codex 미터기: 탬퍼몽키의 로컬 연결 권한을 확인해 주세요.'); }
+            onerror: () => { done(true); show('Codex 미터기를 실행해 주세요. 실행 후 자동으로 다시 연결합니다.'); },
+            ontimeout: () => { done(true); show('Codex 미터기 연결이 지연되고 있습니다. 잠시 후 다시 시도합니다.'); }
+        }); } catch { done(true); show('Codex 미터기: 탬퍼몽키의 로컬 연결 권한을 확인해 주세요.'); }
+    }
+
+    // claude.ai: the page's own same-origin session reads the account and each organization's billing details.
+    // Only email, organization uuid, status and billing dates leave the page; cookies, tokens and names never do.
+    const pageFetch = page.fetch;
+    let claudeReading = false, claudeReadAt = 0, claudePath = '';
+    function uuid(value) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value : null; }
+    async function readJson(path) {
+        const response = await pageFetch.call(page, path, { credentials: 'same-origin', headers: { accept: 'application/json' } });
+        if (response.status !== 200) return null;
+        const text = await response.text();
+        return text.length <= 524288 ? JSON.parse(text) : null;
+    }
+    async function readClaude() {
+        const account = await readJson('/api/account');
+        const email = account && safeString(account.email_address || account.email, 320);
+        if (!email || !Array.isArray(account.memberships)) return null;
+        const organizations = [];
+        for (const membership of account.memberships.slice(0, 16)) {
+            const id = uuid(membership && membership.organization && membership.organization.uuid);
+            if (!id || organizations.some(organization => organization.uuid === id)) continue;
+            let details = null;
+            try { details = await readJson('/api/organizations/' + id + '/subscription_details'); } catch { details = null; }
+            if (!details || typeof details !== 'object' || Array.isArray(details)) continue;
+            organizations.push({ uuid: id, status: safeString(details.status),
+                next_charge_at: safeString(details.next_charge_at), next_charge_date: safeString(details.next_charge_date),
+                plan_ending_at: safeString(details.plan_ending_at), plan_ending_before: safeString(details.plan_ending_before) });
+        }
+        return organizations.length ? { version: 1, kind: 'claude', observedAt: new Date().toISOString(), email, organizations } : null;
+    }
+    function claudeTick() {
+        const entered = billingPage() && location.pathname !== claudePath;
+        claudePath = location.pathname;
+        if (!/^[a-f0-9]{64}$/.test(key) || claudeReading || Date.now() < retryAt) return;
+        // Every open tab shares one reading per 30 minutes; opening the billing/usage page or connecting reads at once.
+        const now = Date.now(), delivered = Number(GM_getValue('claudeDeliveredAt', 0)) || 0;
+        if (!entered && !(incomingKey && !claudeReadAt) &&
+            (now - claudeReadAt < 30 * 60 * 1000 || now - delivered < 30 * 60 * 1000)) return;
+        claudeReading = true; claudeReadAt = now;
+        readClaude().then(value => {
+            if (value) { latest = value; sent = ''; flush(); }
+            else show('Codex 미터기: claude.ai 로그인 상태를 확인해 주세요. 로그인 후 이 페이지를 새로고침하면 다시 확인합니다.');
+        }).catch(() => { /* Do not affect claude.ai. */ }).finally(() => { claudeReading = false; });
+    }
+    if (claude) {
+        setInterval(() => {
+            if (!billingPage() && notice) { notice.remove(); notice = null; }
+            if (!key) { show('Codex 미터기에서 구독 날짜 → 크롬 열기를 한 번 눌러 연결해 주세요.'); return; }
+            claudeTick(); flush();
+        }, 1500);
+        return;
     }
 
     // Observe only the response body of the normal ChatGPT account request.

@@ -56,6 +56,7 @@ namespace CodexUsageMeter
             }
             report("PASS original switch ordering");
             AccountSwitchRegressionTests.Run(report);
+            ClaudeCodeSwitchTests.Run(report);
         }
 
         private static void WriteAuth(string path, string accountId, string marker)

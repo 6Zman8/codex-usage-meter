@@ -2,10 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net;
-using System.Net.Sockets;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
@@ -144,10 +141,8 @@ namespace CodexUsageMeter
                     Require(afterTimeout != null && !String.IsNullOrWhiteSpace(afterTimeout.LastError) && !WebSubscriptionStore.IsDue(afterTimeout, DateTime.UtcNow) &&
                         File.ReadAllText(Path.Combine(root, "auth.json")) == authBefore, "Timeout did not preserve auth and apply retry cooldown.");
                     report.AppendLine("PASS initialization cancellation and silent timeout preserve auth and retry cooldown");
-                    await RunClaudeBrowser(Path.Combine(evidence, "claude-browser-fixture"));
-                    report.AppendLine("PASS hidden claude.ai window: in-page reads, identity check before storing, mismatch rejection and signed-out timeout");
-                    await RunClaudeSignIn(Path.Combine(evidence, "claude-sign-in-fixture"));
-                    report.AppendLine("PASS Claude one-window sign-in: exact loopback callback only, OAuth saved, web data read in the same session without a second sign-in, web failure keeps OAuth with a no-login retry, window close cancels the login");
+                    await RunUserScript(Path.Combine(evidence, "userscript-fixture"));
+                    report.AppendLine("PASS Tampermonkey script 1.4.0: claude.ai same-origin reads post only email/organization/status/dates and route to the matching Claude slot; ChatGPT payload unchanged");
                     code = 0;
                 }
                 catch (Exception error) { report.AppendLine("FAIL " + error); }
@@ -156,239 +151,103 @@ namespace CodexUsageMeter
             app.Run(); return code;
         }
 
-        // Fixture claude.ai served inside the WebView2 profile; no network or real session is used.
-        private static async Task RunClaudeBrowser(string root)
+        // Runs the repository's userscript (embedded at build) in a hidden WebView2 with fixture claude.ai/chatgpt.com pages.
+        // GM_* are recorded stubs, so nothing is posted to a real meter and no real site is contacted.
+        private static async Task RunUserScript(string root)
         {
             if (Directory.Exists(root)) Directory.Delete(root, true);
             Directory.CreateDirectory(root);
-            const string org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-            ClaudeWebIdentity identity = new ClaudeWebIdentity { AccountId = "11111111-1111-4111-8111-111111111111", OrganizationId = org, Email = "web@example.invalid" };
-            string ends = DateTime.UtcNow.AddDays(5).ToString("yyyy-MM-ddTHH:mm:ssZ"), charge = DateTime.UtcNow.AddDays(12).ToString("yyyy-MM-ddTHH:mm:ssZ");
-            Func<string, int, Action<CoreWebView2Environment, CoreWebView2>> serve = (email, accountStatus) => delegate(CoreWebView2Environment environment, CoreWebView2 web) {
-                web.AddWebResourceRequestedFilter("https://claude.ai/*", CoreWebView2WebResourceContext.All);
-                web.WebResourceRequested += delegate(object sender, CoreWebView2WebResourceRequestedEventArgs request) {
-                    string path = new Uri(request.Request.Uri).PathAndQuery, body = "<!doctype html><meta charset='utf-8'><p>claude fixture</p>", type = "text/html";
-                    int status = 200;
-                    if (path == "/api/account") { type = "application/json"; status = accountStatus;
-                        body = "{\"email_address\":\"" + email + "\",\"memberships\":[{\"organization\":{\"uuid\":\"" + org + "\"}}]}"; }
-                    else if (path == "/api/organizations/" + org + "/usage?cedar_ember=1&skip_spend=1") { type = "application/json";
-                        body = "{\"cedar_ember\":{\"eligible\":true,\"grants\":[{\"id\":\"g\",\"resets_left\":1,\"paused\":false,\"ends_at\":\"" + ends + "\"}]}}"; }
-                    else if (path == "/api/organizations/" + org + "/subscription_details") { type = "application/json";
-                        body = "{\"status\":\"active\",\"next_charge_at\":\"" + charge + "\",\"next_charge_date\":null,\"plan_ending_at\":null,\"plan_ending_before\":null}"; }
-                    request.Response = environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(body)), status, status == 200 ? "OK" : "Error", "Content-Type: " + type);
-                };
-            };
-            using (ClaudeWebWindow mismatch = new ClaudeWebWindow(root, identity, false))
+            string script;
+            using (Stream resource = typeof(WebSubscriptionTests).Assembly.GetManifestResourceStream("CodexUsageMeter.UserScript.js"))
+            using (StreamReader reader = new StreamReader(resource, Encoding.UTF8)) script = reader.ReadToEnd();
+            Require(script.Contains("// @version      1.4.0") && script.Contains("// @match        https://chatgpt.com/*") &&
+                script.Contains("// @match        https://claude.ai/*") && script.Contains("// @updateURL    " + ChromeSubscriptionBridge.ScriptUrl) &&
+                script.Contains("// @downloadURL  " + ChromeSubscriptionBridge.ScriptUrl) && script.Contains("// @name         Codex 미터기 · ChatGPT 구독 연결"),
+                "Userscript header changed in a way Tampermonkey cannot auto-update.");
+            const string org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", apiOrg = "dddddddd-dddd-4ddd-8ddd-dddddddddddd", accountId = "11111111-1111-4111-8111-111111111111";
+            string key = String.Concat(Enumerable.Repeat("0f", 32)), charge = DateTime.UtcNow.AddDays(9).ToString("yyyy-MM-ddTHH:mm:ssZ");
+            string prelude = "window.__posted=[];var unsafeWindow=window;var __store={};" +
+                "function GM_getValue(k,d){return Object.prototype.hasOwnProperty.call(__store,k)?__store[k]:d}function GM_setValue(k,v){__store[k]=v}" +
+                "function GM_xmlhttpRequest(o){window.__posted.push({url:o.url,method:o.method,headers:o.headers,data:o.data,anonymous:o.anonymous});" +
+                "setTimeout(function(){o.onload({status:200})},0)}\n";
+            List<string> requests = new List<string>();
+            Window host = new Window { Width = 320, Height = 240, ShowInTaskbar = false, ShowActivated = false, WindowStyle = WindowStyle.None, Left = -20000, Top = -20000 };
+            IntPtr handle = new System.Windows.Interop.WindowInteropHelper(host).EnsureHandle();
+            try { CoreWebView2Environment.SetLoaderDllFolderPath(WebViewRuntime.LoaderFolder()); } catch (Exception) { /* Already set by an earlier window. */ }
+            CoreWebView2Environment environment = await CoreWebView2Environment.CreateAsync(null, Path.Combine(root, "profile"));
+            CoreWebView2Controller controller = await environment.CreateCoreWebView2ControllerAsync(handle);
+            try
             {
-                mismatch.ConfigureForTest = serve("other@example.invalid", 200);
-                Require(!await mismatch.RunAsync(null) && !File.Exists(ClaudeWeb.PathFor(root)), "A different claude.ai account was stored.");
-            }
-            using (ClaudeWebWindow window = new ClaudeWebWindow(root, identity, false))
-            {
-                window.ConfigureForTest = serve("web@example.invalid", 200);
-                Require(await window.RunAsync(null), "Hidden claude.ai window did not read the verified session.");
-            }
-            AccountSnapshot snapshot = new AccountSnapshot { ProviderId = "claude", IsAuthenticated = true, Email = identity.Email,
-                RemoteAccountId = identity.AccountId, RemoteOrganizationId = org };
-            ClaudeWeb.Apply(snapshot, root, DateTime.UtcNow);
-            Require(snapshot.ResetCreditCount == 1 && snapshot.Subscription.Kind == "renewal" && snapshot.Subscription.Date.HasValue &&
-                Directory.Exists(ClaudeWeb.ProfileFolder(root)), "claude.ai data did not reach the slot record.");
-            using (ClaudeWebWindow signedOut = new ClaudeWebWindow(root, identity, false))
-            {
-                signedOut.ConfigureForTest = serve("web@example.invalid", 401);
-                Require(!await signedOut.RunAsync(null), "Signed-out session completed.");
-            }
-            ClaudeWebRecord record = ClaudeWeb.Load(root);
-            Require(record != null && !String.IsNullOrWhiteSpace(record.LastError) && record.Grants.Count == 1, "Signed-out timeout lost data or cooldown.");
-        }
-
-        // Fixture claude.com/claude.ai and Claude OAuth served locally; the loopback callback is the meter's real listener.
-        private static async Task RunClaudeSignIn(string root)
-        {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
-            Directory.CreateDirectory(root);
-            const string org = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", accountId = "11111111-1111-4111-8111-111111111111";
-            Uri callback = new Uri("http://localhost:43123/callback");
-            Require(ClaudeWebWindow.IsCallback(new Uri("http://localhost:43123/callback?code=a&state=b"), callback) &&
-                !ClaudeWebWindow.IsCallback(new Uri("http://127.0.0.1:43123/callback?code=a"), callback) &&
-                !ClaudeWebWindow.IsCallback(new Uri("http://localhost:43124/callback"), callback) &&
-                !ClaudeWebWindow.IsCallback(new Uri("http://localhost:43123/other"), callback) &&
-                !ClaudeWebWindow.IsCallback(new Uri("http://user@localhost:43123/callback"), callback) &&
-                !ClaudeWebWindow.IsCallback(new Uri("ftp://localhost:43123/callback"), callback) &&
-                !ClaudeWebWindow.IsCallback(new Uri("http://localhost:43123/callback"), null), "A non-callback address was admitted.");
-            List<string> sent = new List<string>();
-            Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> transport = delegate(ClaudeRequest request, CancellationToken cancellation) {
-                lock (sent) sent.Add(request.Url);
-                string body;
-                if (request.Url == ClaudeUsageAccount.TokenEndpoint)
-                    body = "{\"access_token\":\"fixture-access\",\"refresh_token\":\"fixture-refresh\",\"expires_in\":3600,\"token_type\":\"Bearer\"}";
-                else if (request.Url == ClaudeUsageAccount.ProfileEndpoint)
-                    body = "{\"account\":{\"uuid\":\"" + accountId + "\",\"email\":\"web@example.invalid\"},\"organization\":{\"uuid\":\"" + org + "\",\"organization_type\":\"claude_max\"}}";
-                else if (request.Url == ClaudeUsageAccount.UsageEndpoint)
-                    body = "{\"five_hour\":{\"utilization\":25,\"resets_at\":\"2030-01-02T16:00:00Z\"},\"seven_day\":{\"utilization\":40,\"resets_at\":\"2030-01-09T12:00:00Z\"}}";
-                else throw new InvalidOperationException("Unexpected endpoint.");
-                return Task.FromResult(new ClaudeResponse { Status = 200, Body = body });
-            };
-            string ends = DateTime.UtcNow.AddDays(5).ToString("yyyy-MM-ddTHH:mm:ssZ"), charge = DateTime.UtcNow.AddDays(12).ToString("yyyy-MM-ddTHH:mm:ssZ");
-            int signInPages = 0;
-            List<string> navigations = new List<string>();
-            // Forged loopback targets point at this trap; a blocked navigation must never reach it.
-            TcpListener trap = new TcpListener(IPAddress.Loopback, 0);
-            trap.Start();
-            int trapPort = ((IPEndPoint)trap.LocalEndpoint).Port;
-            // approve=false leaves the sign-in page waiting, as when the person has not finished.
-            Func<string, bool, Action<CoreWebView2Environment, CoreWebView2>> serve = (email, approve) => delegate(CoreWebView2Environment environment, CoreWebView2 web) {
-                web.NavigationStarting += delegate(object sender, CoreWebView2NavigationStartingEventArgs e) {
-                    lock (navigations) navigations.Add((e.Cancel ? "blocked " : "allowed ") + e.Uri);
-                };
-                web.NavigationCompleted += delegate(object sender, CoreWebView2NavigationCompletedEventArgs e) {
-                    lock (navigations) navigations.Add("completed " + e.IsSuccess + " " + e.WebErrorStatus + " " + web.Source);
-                };
-                web.AddWebResourceRequestedFilter("https://claude.com/*", CoreWebView2WebResourceContext.All);
-                web.AddWebResourceRequestedFilter("https://claude.ai/*", CoreWebView2WebResourceContext.All);
-                web.WebResourceRequested += async delegate(object sender, CoreWebView2WebResourceRequestedEventArgs request) {
-                    // The window's own http filter raises this event too; the loopback callback must reach the real listener.
-                    Uri uri = new Uri(request.Request.Uri);
-                    if (uri.Scheme != "https" || (uri.Host != "claude.ai" && uri.Host != "claude.com")) return;
-                    CoreWebView2Deferral deferral = request.GetDeferral();
-                    try
+                CoreWebView2 web = controller.CoreWebView2;
+                web.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+                web.WebResourceRequested += delegate(object sender, CoreWebView2WebResourceRequestedEventArgs e) {
+                    Uri uri = new Uri(e.Request.Uri);
+                    lock (requests) requests.Add(uri.Host + uri.AbsolutePath);
+                    string body = "<!doctype html><meta charset='utf-8'><p>fixture</p>", type = "text/html"; int status = 200;
+                    if (uri.Host == "claude.ai" && uri.AbsolutePath == "/api/account")
                     {
-                        string path = uri.PathAndQuery, body = "<!doctype html><meta charset='utf-8'><p>claude fixture</p>", type = "text/html";
-                        int status = 200;
-                        if (uri.Host == "claude.com" && uri.AbsolutePath == "/cai/oauth/authorize")
-                            body = "<!doctype html><script>location.replace('https://claude.ai/oauth/authorize'+location.search)</script>";
-                        else if (uri.AbsolutePath == "/oauth/authorize")
-                        {
-                            // The person's one sign-in: claude.ai keeps its session cookie, then approval returns to the loopback address.
-                            signInPages++;
-                            body = "<!doctype html><meta charset='utf-8'><p>sign in</p><script>document.cookie='fixtureSession=1; path=/; max-age=86400; secure';" +
-                                (approve ? "const q=new URLSearchParams(location.search),r=new URL(q.get('redirect_uri')),tail='?code=fixture-code&state='+encodeURIComponent(q.get('state'));" +
-                                "const forged=['http://127.0.0.1:" + trapPort + "/callback'+tail,'http://localhost:" + trapPort + "/callback'+tail,'http://evil.invalid/callback'+tail];" +
-                                "forged.forEach((u,i)=>setTimeout(()=>{location.href=u;},300*i));" +
-                                "setTimeout(()=>{location.href=q.get('redirect_uri')+tail;},300*forged.length);" : "") + "</script>";
-                        }
-                        else if (path == "/api/account")
-                        {
-                            type = "application/json";
-                            bool session = (await web.CookieManager.GetCookiesAsync("https://claude.ai")).Any(cookie => cookie.Name == "fixtureSession");
-                            status = session ? 200 : 401;
-                            body = "{\"email_address\":\"" + email + "\",\"memberships\":[{\"organization\":{\"uuid\":\"" + org + "\"}}]}";
-                        }
-                        else if (path == "/api/organizations/" + org + "/usage?cedar_ember=1&skip_spend=1") { type = "application/json";
-                            body = "{\"cedar_ember\":{\"eligible\":true,\"grants\":[{\"id\":\"g\",\"resets_left\":1,\"paused\":false,\"ends_at\":\"" + ends + "\"}]}}"; }
-                        else if (path == "/api/organizations/" + org + "/subscription_details") { type = "application/json";
-                            body = "{\"status\":\"active\",\"next_charge_at\":\"" + charge + "\",\"next_charge_date\":null,\"plan_ending_at\":null,\"plan_ending_before\":null}"; }
-                        request.Response = environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(body)), status, status == 200 ? "OK" : "Error", "Content-Type: " + type);
+                        type = "application/json";
+                        body = "{\"uuid\":\"" + accountId + "\",\"email_address\":\"web@example.test\",\"full_name\":\"Private Name\",\"memberships\":[" +
+                            "{\"organization\":{\"uuid\":\"" + org + "\",\"name\":\"Private Org\"}},{\"organization\":{\"uuid\":\"" + apiOrg + "\",\"name\":\"API\"}},{\"organization\":{\"uuid\":\"not-a-uuid\"}}]}";
                     }
-                    finally { deferral.Complete(); }
+                    else if (uri.Host == "claude.ai" && uri.AbsolutePath == "/api/organizations/" + org + "/subscription_details")
+                    {
+                        type = "application/json";
+                        body = "{\"status\":\"active\",\"next_charge_at\":\"" + charge + "\",\"next_charge_date\":null,\"plan_ending_at\":null,\"plan_ending_before\":null," +
+                            "\"billing_email\":\"bill@example.test\",\"payment_method\":{\"last4\":\"4242\"}}";
+                    }
+                    else if (uri.Host == "claude.ai" && uri.AbsolutePath.StartsWith("/api/")) { type = "application/json"; status = 403; body = "{}"; }
+                    else if (uri.Host == "chatgpt.com" && WebSubscriptionWindow.IsAccountResponse(e.Request.Uri))
+                    { type = "application/json"; body = AccountSubscriptionRegressionTests.Body("account-web", "plus", true, DateTime.UtcNow.AddDays(20).ToString("o"), null, null, null); }
+                    else if (uri.Host == "chatgpt.com")
+                        body = "<!doctype html><meta charset='utf-8'><script>setTimeout(()=>fetch('/backend-api/accounts/check/v4-2023-04-27'),300)</script>";
+                    e.Response = environment.CreateWebResourceResponse(new MemoryStream(Encoding.UTF8.GetBytes(body)), status, status == 200 ? "OK" : "Forbidden", "Content-Type: " + type);
                 };
-            };
+                await web.AddScriptToExecuteOnDocumentCreatedAsync(prelude + script);
 
-            // One window: sign-in, exact callback, saved OAuth, then the same session's web data with no second sign-in page.
-            string slot = Path.Combine(root, "single");
-            using (ClaudeUsageAccount account = new ClaudeUsageAccount(slot, transport, () => DateTime.UtcNow))
-            {
-                AccountLoginPrompt login = await account.StartLoginAsync();
-                string error;
-                using (ClaudeWebWindow window = new ClaudeWebWindow(slot, login, async () => ClaudeWeb.IdentityOf(await account.RefreshAsync()), false))
-                {
-                    window.ConfigureForTest = serve("web@example.invalid", true);
-                    error = await window.SignInAsync(null);
-                }
-                Require(error == null, "One-window sign-in did not finish: " + error + " / " + login.Completion.Status + " / " + String.Join(" | ", navigations));
-                await login.Completion;
-                string redirect = login.CallbackUrl;
-                Require(navigations.Any(n => n.StartsWith("blocked http://127.0.0.1:" + trapPort + "/")) &&
-                    navigations.Any(n => n.StartsWith("blocked http://localhost:" + trapPort + "/")) &&
-                    navigations.Any(n => n.StartsWith("blocked http://evil.invalid/")),
-                    "A forged non-https callback was not blocked: " + String.Join(" | ", navigations));
-                string trapped = TrapRequests(trap);
-                Require(trapped.Length == 0, "A blocked navigation still sent its request: " + trapped);
-                Require(navigations.Any(n => n.StartsWith("allowed " + redirect + "?")) && !navigations.Any(n => n.StartsWith("allowed http://") && !n.StartsWith("allowed " + redirect + "?")),
-                    "The exact loopback callback was not the only admitted http address.");
-                Require(signInPages == 1 && sent.SequenceEqual(new[] { ClaudeUsageAccount.TokenEndpoint, ClaudeUsageAccount.ProfileEndpoint, ClaudeUsageAccount.UsageEndpoint }),
-                    "The sign-in needed a second sign-in page or extra OAuth requests: " + String.Join(", ", sent));
-                ClaudeWebIdentity identity = new ClaudeWebIdentity { AccountId = accountId, OrganizationId = org, Email = "web@example.invalid" };
-                AccountSnapshot snapshot = await account.RefreshAsync();
-                ClaudeWeb.Apply(snapshot, slot, DateTime.UtcNow);
-                Require(File.Exists(Path.Combine(slot, ".credentials.json")) && ClaudeWeb.Matches(ClaudeWeb.Load(slot), identity) &&
-                    snapshot.ResetCreditCount == 1 && snapshot.Subscription.Date.HasValue && !snapshot.WebConnectionNeeded &&
-                    Directory.Exists(ClaudeWeb.ProfileFolder(slot)), "OAuth or claude.ai data did not reach the slot.");
-            }
+                Dictionary<string, object> claude = await NextPost(web, "https://claude.ai/settings/billing#codex-meter-connect=" + key);
+                Dictionary<string, object> headers = (Dictionary<string, object>)claude["headers"];
+                Require((string)claude["url"] == "http://127.0.0.1:" + ChromeSubscriptionBridge.Port + "/subscription" && (string)claude["method"] == "POST" &&
+                    Object.Equals(claude["anonymous"], true) && (string)headers["X-Codex-Meter-Key"] == key && headers.Count == 2, "claude.ai post target or headers changed.");
+                string data = (string)claude["data"];
+                Dictionary<string, object> payload = AccountSubscription.ParseJson(data);
+                Dictionary<string, object> entry = (Dictionary<string, object>)JsonValue.AsItems(payload["organizations"]).Single();
+                Require(payload.Keys.OrderBy(k => k, StringComparer.Ordinal).SequenceEqual(new[] { "email", "kind", "observedAt", "organizations", "version" }) && (string)payload["kind"] == "claude" &&
+                    (string)payload["email"] == "web@example.test" && (string)entry["uuid"] == org && (string)entry["status"] == "active" && (string)entry["next_charge_at"] == charge &&
+                    entry.Keys.OrderBy(k => k, StringComparer.Ordinal).SequenceEqual(new[] { "next_charge_at", "next_charge_date", "plan_ending_at", "plan_ending_before", "status", "uuid" }) &&
+                    !data.Contains("Private") && !data.Contains("bill@") && !data.Contains("4242") && !data.Contains(accountId), "claude.ai payload carries more than the needed fields: " + data);
+                Require(new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<string>(await web.ExecuteScriptAsync("location.hash")) == "" &&
+                    requests.Contains("claude.ai/api/account") && requests.Contains("claude.ai/api/organizations/" + apiOrg + "/subscription_details"),
+                    "Connection key stayed in the address or organizations were not read same-origin.");
+                string slot = Path.Combine(root, "claude-slot");
+                Directory.CreateDirectory(slot);
+                ChromeSubscriptionBridge.Stop();
+                ChromeSubscriptionBridge.RegisterClaude(slot, accountId, org, "web@example.test");
+                Require(ChromeSubscriptionBridge.Route(data, DateTime.UtcNow) == 1 && ClaudeSubscriptionStore.Read(slot, accountId, org, DateTime.UtcNow).Kind == "renewal",
+                    "The script's claude.ai payload is not accepted by the meter.");
+                ChromeSubscriptionBridge.Stop();
 
-            // Web failure after OAuth: the OAuth connection stays, nothing web is saved, and the retry needs no new OAuth sign-in.
-            sent.Clear(); signInPages = 0; navigations.Clear();
-            slot = Path.Combine(root, "web-failure");
-            using (ClaudeUsageAccount account = new ClaudeUsageAccount(slot, transport, () => DateTime.UtcNow))
-            {
-                AccountLoginPrompt login = await account.StartLoginAsync();
-                string error;
-                using (ClaudeWebWindow window = new ClaudeWebWindow(slot, login, async () => ClaudeWeb.IdentityOf(await account.RefreshAsync()), false))
-                {
-                    window.ConfigureForTest = serve("other@example.invalid", true);
-                    error = await window.SignInAsync(null);
-                }
-                await login.Completion;
-                AccountSnapshot snapshot = await account.RefreshAsync();
-                ClaudeWebIdentity identity = ClaudeWeb.IdentityOf(snapshot);
-                ClaudeWeb.Apply(snapshot, slot, DateTime.UtcNow);
-                Require(error != null && error.Contains("다릅니다") && snapshot.IdentityVerified && identity != null &&
-                    File.Exists(Path.Combine(slot, ".credentials.json")) && !File.Exists(ClaudeWeb.PathFor(slot)) && snapshot.WebConnectionNeeded,
-                    "A web failure lost the OAuth connection, saved web data or hid the retry: " + error);
-                int oauthRequests = sent.Count;
-                using (ClaudeWebWindow retry = new ClaudeWebWindow(slot, identity, false))
-                {
-                    retry.ConfigureForTest = serve("web@example.invalid", false);
-                    Require(await retry.RunAsync(null), "The web-only retry did not reuse the slot's claude.ai session.");
-                }
-                Require(sent.Count == oauthRequests && signInPages == 1 && ClaudeWeb.Matches(ClaudeWeb.Load(slot), identity),
-                    "The web-only retry asked for a new OAuth sign-in.");
+                Dictionary<string, object> chatGpt = await NextPost(web, "https://chatgpt.com/settings/billing#codex-meter-connect=" + key);
+                Dictionary<string, object> old = AccountSubscription.ParseJson((string)chatGpt["data"]);
+                Require(!old.ContainsKey("kind") && Convert.ToString(old["version"]) == "1" && old.ContainsKey("accounts") &&
+                    (string)((Dictionary<string, object>)((Dictionary<string, object>)((Dictionary<string, object>)old["accounts"])["account-web"])["account"])["plan_type"] == "plus",
+                    "The ChatGPT payload changed shape.");
             }
-
-            // Closing the window while the sign-in page waits cancels the pending login; nothing is saved and the callback stops listening.
-            sent.Clear();
-            slot = Path.Combine(root, "closed");
-            using (ClaudeUsageAccount account = new ClaudeUsageAccount(slot, transport, () => DateTime.UtcNow))
-            {
-                AccountLoginPrompt login = await account.StartLoginAsync();
-                string error;
-                using (ClaudeWebWindow window = new ClaudeWebWindow(slot, login, async () => ClaudeWeb.IdentityOf(await account.RefreshAsync()), false))
-                {
-                    Action<CoreWebView2Environment, CoreWebView2> fixture = serve("web@example.invalid", false);
-                    window.ConfigureForTest = delegate(CoreWebView2Environment environment, CoreWebView2 web) {
-                        fixture(environment, web);
-                        web.NavigationCompleted += delegate { if (web.Source.StartsWith("https://claude.ai/oauth/authorize")) window.FinishProbe(); };
-                    };
-                    error = await window.SignInAsync(null);
-                }
-                bool canceled = false;
-                try { await login.Completion; }
-                catch (AccountProviderException failure) { canceled = failure.Kind == AccountErrorKind.Canceled; }
-                bool listening = true;
-                using (TcpClient probe = new TcpClient())
-                {
-                    try { probe.Connect(IPAddress.Loopback, new Uri(login.CallbackUrl).Port); }
-                    catch (SocketException) { listening = false; }
-                }
-                Require(error != null && canceled && !listening && sent.Count == 0 && !File.Exists(Path.Combine(slot, ".credentials.json")) &&
-                    !File.Exists(ClaudeWeb.PathFor(slot)), "Closing the sign-in window did not cancel the login cleanly.");
-            }
-            trap.Stop();
+            finally { controller.Close(); host.Close(); }
         }
 
-        // Chromium may open an idle speculative connection to a navigation's origin; only request bytes count as a sent request.
-        private static string TrapRequests(TcpListener trap)
+        private static async Task<Dictionary<string, object>> NextPost(CoreWebView2 web, string url)
         {
-            StringBuilder received = new StringBuilder();
-            while (trap.Pending())
-                using (TcpClient client = trap.AcceptTcpClient())
-                {
-                    client.ReceiveTimeout = 1000;
-                    byte[] buffer = new byte[1024];
-                    try { int count = client.GetStream().Read(buffer, 0, buffer.Length); received.Append(Encoding.ASCII.GetString(buffer, 0, count)); }
-                    catch (IOException) { }
-                }
-            return received.ToString();
+            web.Navigate(url);
+            System.Web.Script.Serialization.JavaScriptSerializer json = new System.Web.Script.Serialization.JavaScriptSerializer();
+            for (int attempt = 0; attempt < 80; attempt++)
+            {
+                await Task.Delay(250);
+                string posted = json.Deserialize<string>(await web.ExecuteScriptAsync("JSON.stringify(window.__posted||[])"));
+                object[] items = json.Deserialize<object[]>(posted);
+                if (items != null && items.Length > 0) return (Dictionary<string, object>)items[0];
+            }
+            throw new InvalidOperationException("The userscript posted nothing for " + new Uri(url).Host + ".");
         }
 
         private static void Require(bool value, string message) { if (!value) throw new InvalidOperationException(message); }
