@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.16.0")]
-[assembly: AssemblyFileVersion("1.9.16.0")]
+[assembly: AssemblyVersion("1.9.17.0")]
+[assembly: AssemblyFileVersion("1.9.17.0")]
 
 namespace CodexUsageMeter
 {
@@ -252,7 +252,14 @@ namespace CodexUsageMeter
                 DashboardController controller = new DashboardController(window);
                 if (!uiSmoke) controller.EnableWindowsWidgetPublishing();
                 if (!uiSmoke && (args.Contains("--tray") || args.Contains("--widget-refresh"))) controller.StartInTray = true;
-                if (!uiSmoke) ChromeSubscriptionBridge.StartIfConfigured();
+                if (!uiSmoke)
+                {
+                    ChromeSubscriptionBridge.StartIfConfigured();
+                    // The first attempt fails while a meter being replaced by an update still holds the port; keep retrying.
+                    DispatcherTimer bridgeTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+                    bridgeTimer.Tick += delegate { ChromeSubscriptionBridge.StartIfConfigured(); };
+                    bridgeTimer.Start();
+                }
                 DispatcherTimer smokeTimer = null;
                 if (uiSmoke)
                 {
@@ -2589,10 +2596,15 @@ namespace CodexUsageMeter
             int? activeNumber = view.Client.Provider.Id == AccountProviders.Claude.Id ? _activeClaudeAccountNumber : _activeCodexAccountNumber;
             bool active = activeNumber.HasValue && activeNumber.Value == view.State.Number;
             string app = view.Client.Provider.AppName;
+            // Switching only changes Claude Code's sign-in; without Claude Code there is nothing to switch, and usage never needs it.
+            bool available = view.Client.Provider.Id != AccountProviders.Claude.Id || _claudeCodeSwitcher == null || _claudeCodeSwitcher.IsInstalled;
+            string tip = available ? null : "Claude Code를 쓰는 경우에만 필요한 기능입니다. 사용량·초기화권·구독 날짜 표시에는 Claude Code가 필요 없습니다.";
             view.CodexLoginButton.Content = active ? app + " 다시 연결" : app + "로 전환";
-            view.CodexLoginButton.IsEnabled = enabled && !_switchingAccount;
+            view.CodexLoginButton.IsEnabled = enabled && !_switchingAccount && available;
             view.CompactCodexLoginButton.Content = active ? "재연결" : "전환";
-            view.CompactCodexLoginButton.IsEnabled = enabled && !_switchingAccount;
+            view.CompactCodexLoginButton.IsEnabled = enabled && !_switchingAccount && available;
+            foreach (Button button in new[] { view.CodexLoginButton, view.CompactCodexLoginButton })
+            { button.ToolTip = tip; ToolTipService.SetShowOnDisabled(button, true); }
             string prefix = "현재 " + app + " · ";
             if (active && !view.Identity.Text.StartsWith(prefix, StringComparison.Ordinal))
             {

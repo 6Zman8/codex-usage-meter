@@ -232,7 +232,9 @@ namespace CodexUsageMeter
             string expectedMonth = Path.GetFileNameWithoutExtension(path);
             foreach (UsageHistorySample sample in month.Samples)
             {
-                if (sample == null || sample.FirstUtc <= last || sample.LastUtc < sample.FirstUtc ||
+                // A sample may start exactly where the previous one ended (two meters overlapping during an update restart
+                // recorded the same observation); only time running backwards is damage.
+                if (sample == null || sample.FirstUtc < last || sample.LastUtc < sample.FirstUtc ||
                     sample.FirstUtc.ToString("yyyy-MM") != expectedMonth || sample.LastUtc.ToString("yyyy-MM") != expectedMonth ||
                     !ValidQuota(sample.Primary) || !ValidQuota(sample.Secondary) || (sample.Primary == null && sample.Secondary == null)) throw Damaged();
                 last = sample.LastUtc;

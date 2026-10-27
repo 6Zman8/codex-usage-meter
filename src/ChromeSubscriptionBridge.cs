@@ -56,6 +56,8 @@ namespace CodexUsageMeter
         internal static void StartIfConfigured()
         {
             if (!File.Exists(Path.Combine(SettingsRoot, "connection.bin"))) return;
+            lock (Sync) if (_shared != null) return;
+            // After an update restart the previous meter can still hold the port for a moment; the caller retries.
             try { EnsureStarted(); } catch { /* Usage remains available; the connect action explains the failure. */ }
         }
         private static ChromeSubscriptionBridge EnsureStarted()

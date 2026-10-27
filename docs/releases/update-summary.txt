@@ -1,1 +1,1 @@
-Claude cards now work like Codex cards: browser sign-in, automatic reset credits, Chrome subscription date, reconnect and switch.
+Fix the Chrome subscription bridge not starting after updates and Claude usage history not saving; disable Claude switch without Claude Code.

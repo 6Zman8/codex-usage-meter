@@ -27,6 +27,26 @@ namespace CodexUsageMeter
             Require(saved.Count == 2 && saved[1].LastUtc == time.AddMinutes(2) && saved[1].Primary.RemainingPercent == 37,
                 "persisted history must retain changes and the latest unchanged observation");
             report("PASS history: restart persistence and unchanged samples retain the last observation");
+            {
+                // Two meters overlapping during an update restart can leave a sample that starts exactly where the previous ended.
+                string touchingRoot = Path.Combine(root, "touching");
+                UsageHistoryStore touching = new UsageHistoryStore(touchingRoot);
+                DateTime start = new DateTime(2026, 10, 27, 9, 20, 0, DateTimeKind.Utc), resetAt = start.AddHours(2);
+                touching.Record(Snapshot(key, start, 80, resetAt));
+                touching.Record(Snapshot(key, start.AddMinutes(1), 70, resetAt));
+                string monthPath = Path.Combine(touchingRoot, key, "2026-10.json");
+                var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
+                UsageHistoryMonth month = serializer.Deserialize<UsageHistoryMonth>(File.ReadAllText(monthPath));
+                UsageHistorySample previous = month.Samples.Last();
+                month.Samples.Add(new UsageHistorySample { FirstUtc = previous.LastUtc, LastUtc = previous.LastUtc, Plan = previous.Plan,
+                    Primary = new UsageHistoryQuota { RemainingPercent = 65, DurationMinutes = previous.Primary.DurationMinutes, ResetsAtUtc = previous.Primary.ResetsAtUtc } });
+                File.WriteAllText(monthPath, serializer.Serialize(month));
+                touching.Record(Snapshot(key, start.AddMinutes(3), 60, resetAt));
+                var resumed = new UsageHistoryStore(touchingRoot).Read(key);
+                Require(resumed.Count == 4 && resumed.Last().Primary.RemainingPercent == 60,
+                    "a sample touching the previous one must not block reading or later recording");
+                report("PASS history: a sample starting where the previous ended (update overlap) keeps history readable and writable");
+            }
 
             store.Record(Snapshot(other, time, 12, reset));
             Require(store.Read(other).Single().Primary.RemainingPercent == 12 && store.Read(key).Count == 2,
