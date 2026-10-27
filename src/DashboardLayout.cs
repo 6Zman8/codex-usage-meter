@@ -468,11 +468,12 @@ namespace CodexUsageMeter
             ((FrameworkElement)Find<ProgressBar>(prefix + "SecondaryTimeBar").Parent).Visibility = weekly ? Visibility.Visible : Visibility.Collapsed;
             bool credits = provider.Supports(AccountCapabilities.UsageExtras) && tile.Settings.Shows("credits") && tile.Settings.ShowsItem("credits");
             Find<TextBlock>(prefix + "ResetValue").Visibility = credits ? Visibility.Visible : Visibility.Collapsed;
-            Find<TextBlock>(prefix + "SubscriptionValue").Visibility =
-                provider.Supports(AccountCapabilities.SubscriptionDate) ? Visibility.Visible : Visibility.Collapsed;
+            bool subscription = provider.Supports(AccountCapabilities.SubscriptionDate);
+            Find<TextBlock>(prefix + "SubscriptionValue").Visibility = subscription ? Visibility.Visible : Visibility.Collapsed;
             Grid body = tile.Content;
             body.RowDefinitions[1].Height = hasQuota ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-            tile.MinimumHeight = (85 + (credits ? 23 : 0)) * Math.Max(1, fontScale / 1.5) + (hasQuota ? 132 : 0);
+            // The subscription line sits under the credits line; without its height the default layout clips it.
+            tile.MinimumHeight = (85 + (credits ? 23 : 0) + (subscription ? 16 : 0)) * Math.Max(1, fontScale / 1.5) + (hasQuota ? 132 : 0);
         }
         private void ApplyExpandedPc(LayoutTile tile, double fontScale)
         {

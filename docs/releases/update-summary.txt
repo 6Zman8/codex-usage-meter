@@ -1,1 +1,1 @@
-Fix the Chrome subscription bridge not starting after updates and Claude usage history not saving; disable Claude switch without Claude Code.
+Fix the subscription date line being cut off at the bottom of widget account cards.
