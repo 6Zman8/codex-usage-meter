@@ -125,7 +125,8 @@
           <Border x:Name="Account1Card" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,10,0">
             <Grid>
               <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-              <Grid Grid.Row="0">
+              <Grid Grid.Row="0" Tag="WrapActions">
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel><StackPanel Orientation="Horizontal"><TextBlock x:Name="Account1TitleText" Text="계정 1" FontSize="16" FontWeight="Bold"/>
                   <Border Background="#203B33" CornerRadius="7" Margin="7,1,0,0" Padding="6,1"><TextBlock x:Name="Account1BadgeText" Text="1" Foreground="#8DE0C4" FontSize="9" FontWeight="Bold"/></Border></StackPanel>
@@ -159,7 +160,8 @@
           <Border x:Name="Account2Card" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,10,0">
             <Grid>
               <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-              <Grid Grid.Row="0">
+              <Grid Grid.Row="0" Tag="WrapActions">
+                <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel><StackPanel Orientation="Horizontal"><TextBlock x:Name="Account2TitleText" Text="계정 2" FontSize="16" FontWeight="Bold"/>
                   <Border Background="#342B18" CornerRadius="7" Margin="7,1,0,0" Padding="6,1"><TextBlock x:Name="Account2BadgeText" Text="2" Foreground="#FCD34D" FontSize="9" FontWeight="Bold"/></Border></StackPanel>

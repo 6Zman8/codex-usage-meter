@@ -475,6 +475,24 @@ namespace CodexUsageMeter
                     }
                     }
                 }
+                // Narrow expanded account cards must not draw the account buttons over the title.
+                fixture.Layout(settings, false);
+                Button switchButton = (Button)fixture.Window.FindName("Account1CodexLoginButton");
+                switchButton.Content = "Codex 다시 연결"; switchButton.Visibility = Visibility.Visible;
+                foreach (int width in new[] { 900, 2400 })
+                {
+                    fixture.Render(width, 820);
+                    LayoutTile tile = Descendants<CardLayoutPanel>(fixture.Root).Single(panel => panel.IsVisible).Tiles.Single(t => t.Settings.Id == "account1");
+                    FrameworkElement headline = (FrameworkElement)((FrameworkElement)fixture.Window.FindName("Account1TitleText")).Parent;
+                    Rect titleBounds = headline.TransformToAncestor(tile.Header).TransformBounds(new Rect(headline.RenderSize));
+                    List<Rect> buttons = Descendants<Button>(tile.Header).Where(button => button.IsVisible)
+                        .Select(button => button.TransformToAncestor(tile.Header).TransformBounds(new Rect(button.RenderSize))).ToList();
+                    Require(buttons.Count >= 2 &&buttons.All(button => { Rect overlap = Rect.Intersect(button, titleBounds); return overlap.IsEmpty || overlap.Width < .5 || overlap.Height < .5; }),
+                        "account buttons cover the title: width=" + width + " title=" + titleBounds + " buttons=" + String.Join(" ", buttons));
+                    Require(width == 900 || buttons.All(button => button.Top < titleBounds.Bottom),
+                        "wide account header no longer keeps buttons beside the title: title=" + titleBounds + " buttons=" + String.Join(" ", buttons));
+                }
+                switchButton.Visibility = Visibility.Collapsed;
                 fixture.Layout(settings, true); fixture.Render(613, 947);
                 Canvas actualGuides = (Canvas)fixture.Window.FindName("CompactPcChartGuides");
                 double[] actualTicks = actualGuides.Children.OfType<System.Windows.Shapes.Line>()

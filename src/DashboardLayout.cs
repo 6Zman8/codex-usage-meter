@@ -15,12 +15,45 @@ namespace CodexUsageMeter
     internal sealed class FlexibleHeaderGrid : Grid
     {
         private double _naturalHeight;
+        private bool _wrapped;
+        // Expanded account headers: move the button row under the title when both no longer fit on one line.
+        // Saved item placements keep the single-line shape so saved body items below it stay uncovered.
+        internal bool WrapActions;
+        private bool _savedPlacement;
+        internal bool SavedPlacement
+        {
+            get { return _savedPlacement; }
+            set { if (_savedPlacement != value) { _savedPlacement = value; InvalidateMeasure(); } }
+        }
         internal double NaturalHeight { get { return _naturalHeight; } }
         protected override Size MeasureOverride(Size availableSize)
         {
             Size natural = base.MeasureOverride(new Size(availableSize.Width, Double.PositiveInfinity));
+            if (WrapActions)
+            {
+                Panel title = (Panel)Children[0];
+                bool wrap = !SavedPlacement && !Double.IsInfinity(availableSize.Width) &&
+                    NaturalWidth((Panel)title.Children[0]) + 8 + NaturalWidth((Panel)Children[1]) > availableSize.Width;
+                if (SetWrapped(wrap)) natural = base.MeasureOverride(new Size(availableSize.Width, Double.PositiveInfinity));
+            }
             _naturalHeight = natural.Height;
             return natural;
+        }
+        // Horizontal rows measure their children at infinite width, so the children's sizes are the natural widths.
+        private static double NaturalWidth(Panel row)
+        {
+            return row.Margin.Left + row.Margin.Right + row.Children.OfType<UIElement>().Sum(child => child.DesiredSize.Width);
+        }
+        private bool SetWrapped(bool wrap)
+        {
+            Panel actions = (Panel)Children[1];
+            if (wrap == _wrapped) return false;
+            _wrapped = wrap;
+            Grid.SetRow(actions, wrap ? 1 : 0);
+            Grid.SetColumn(actions, wrap ? 0 : 1);
+            actions.HorizontalAlignment = wrap ? HorizontalAlignment.Right : HorizontalAlignment.Stretch;
+            actions.Margin = new Thickness(0, wrap ? 6 : 0, 0, 0);
+            return true;
         }
         protected override Size ArrangeOverride(Size finalSize)
         {
@@ -85,7 +118,12 @@ namespace CodexUsageMeter
             card.Child = null;
             Grid originalHeader = content.Children.OfType<Grid>().First(child => Grid.GetRow(child) == 0);
             content.Children.Remove(originalHeader);
-            Grid header = new FlexibleHeaderGrid();
+            Grid header = new FlexibleHeaderGrid { WrapActions = "WrapActions".Equals(originalHeader.Tag) };
+            while (originalHeader.RowDefinitions.Count > 0)
+            {
+                RowDefinition row = originalHeader.RowDefinitions[0];
+                originalHeader.RowDefinitions.RemoveAt(0); header.RowDefinitions.Add(row);
+            }
             while (originalHeader.ColumnDefinitions.Count > 0)
             {
                 ColumnDefinition column = originalHeader.ColumnDefinitions[0];
@@ -149,6 +187,7 @@ namespace CodexUsageMeter
                 double verticalInsets = padding.Top + padding.Bottom + border.Top + border.Bottom;
                 double innerWidth = tile.Card.Width - padding.Left - padding.Right - border.Left - border.Right;
                 LayoutItemSettings saved = tile.Settings.ItemLayouts.FirstOrDefault(item => item.Id == "header");
+                ((FlexibleHeaderGrid)tile.Header).SavedPlacement = tile.Settings.ItemLayouts.Count > 0;
                 tile.Header.Width = innerWidth * (saved == null ? 1 : saved.Width);
                 tile.Header.Height = Double.NaN;
                 tile.Header.Measure(new Size(tile.Header.Width, Double.PositiveInfinity));

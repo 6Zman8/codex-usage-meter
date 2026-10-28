@@ -1,1 +1,1 @@
-Fix the subscription date line being cut off at the bottom of widget account cards.
+Move account card buttons below the title when the card is too narrow, so they no longer cover it.
