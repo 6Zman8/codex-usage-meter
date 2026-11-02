@@ -219,7 +219,11 @@ namespace CodexUsageMeter
             Preview(); RefreshInspector();
         }
         private IEnumerable<LayoutCardSettings> Choices()
-        { return Mode.Cards.Where(card => !card.Id.StartsWith("account") || Int32.Parse(card.Id.Substring(7)) <= _accountCount); }
+        {
+            return Mode.Cards.Where(card => !card.Id.StartsWith("account") || (ShownAccounts != null
+                ? ShownAccounts.Contains(Int32.Parse(card.Id.Substring(7))) : Int32.Parse(card.Id.Substring(7)) <= _accountCount));
+        }
+        internal int[] ShownAccounts;
         internal Func<int, string> AccountLabel;
         private string CardName(string id)
         { return id == "pc" ? "PC 상태" : AccountLabel != null ? AccountLabel(Int32.Parse(id.Substring(7))) : "계정 " + id.Substring(7); }

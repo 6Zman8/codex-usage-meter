@@ -59,10 +59,12 @@ namespace CodexUsageMeter
 
         public LayoutModeSettings() { Columns = 1; HideUnavailable = true; Cards = new List<LayoutCardSettings>(); PreviousPcItemLayouts = new List<LayoutItemSettings>(); }
         public LayoutCardSettings Card(string id) { return Cards.First(card => card.Id == id); }
-        public int[] VisibleAccounts(int count)
+        public int[] VisibleAccounts(int count) { return VisibleAccounts(Enumerable.Range(1, count)); }
+        public int[] VisibleAccounts(IEnumerable<int> shown)
         {
+            HashSet<int> slots = new HashSet<int>(shown);
             return Cards.Where(card => card.Visible && card.Id.StartsWith("account"))
-                .Select(card => Int32.Parse(card.Id.Substring(7))).Where(number => number <= count).ToArray();
+                .Select(card => Int32.Parse(card.Id.Substring(7))).Where(slots.Contains).ToArray();
         }
         public void Move(string id, string targetId)
         {
@@ -108,17 +110,16 @@ namespace CodexUsageMeter
             return order.ToArray();
         }
         internal static string Format(int[] order) { return String.Join(",", order); }
-        internal static int Position(int[] order, int slot, int count)
+        internal static int Position(int[] order, int slot) { return Array.IndexOf(order, slot) + 1; }
+        // The account count shows the top entries of the order, whichever slots they are.
+        internal static int[] Shown(int[] order, int count) { return order.Take(Math.Max(1, Math.Min(4, count))).ToArray(); }
+        internal static int[] Move(int[] order, int slot, int offset)
         {
-            return order.Where(number => number <= count).ToList().IndexOf(slot) + 1;
-        }
-        internal static int[] Move(int[] order, int slot, int offset, int count)
-        {
-            List<int> shown = order.Where(number => number <= count).ToList();
-            int from = shown.IndexOf(slot), to = from + offset;
-            if (from < 0 || to < 0 || to >= shown.Count) return order;
-            shown.RemoveAt(from); shown.Insert(to, slot);
-            return shown.Concat(order.Where(number => number > count)).ToArray();
+            List<int> moved = order.ToList();
+            int from = moved.IndexOf(slot), to = from + offset;
+            if (from < 0 || to < 0 || to >= moved.Count) return order;
+            moved.RemoveAt(from); moved.Insert(to, slot);
+            return moved.ToArray();
         }
     }
 

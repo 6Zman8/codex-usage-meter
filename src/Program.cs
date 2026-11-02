@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -24,8 +25,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.20.0")]
-[assembly: AssemblyFileVersion("1.9.20.0")]
+[assembly: AssemblyVersion("1.9.21.0")]
+[assembly: AssemblyFileVersion("1.9.21.0")]
 
 namespace CodexUsageMeter
 {
@@ -251,6 +252,7 @@ namespace CodexUsageMeter
                 window.ShowActivated = false;
                 DashboardController controller = new DashboardController(window);
                 if (!uiSmoke) controller.EnableWindowsWidgetPublishing();
+                if (!uiSmoke) controller.EnableWindowBoundsMemory();
                 if (!uiSmoke && (args.Contains("--tray") || args.Contains("--widget-refresh"))) controller.StartInTray = true;
                 if (!uiSmoke)
                 {
@@ -589,6 +591,8 @@ namespace CodexUsageMeter
         private double _compactHeight = 780.0;
         private double _expandedWidth;
         private double _expandedHeight;
+        private Rect? _compactBounds, _expandedBounds;
+        private DispatcherTimer _boundsSaveTimer;
         private double _fontScale = 1.5;
         private string _performanceSignature;
         private int _accountCount = 2;
@@ -1009,6 +1013,7 @@ namespace CodexUsageMeter
                     _expandedWidth = _window.ActualWidth > 0.0 ? _window.ActualWidth : _window.Width;
                     _expandedHeight = _window.ActualHeight > 0.0 ? _window.ActualHeight : _window.Height;
                 }
+                SaveWindowBounds();
             }
 
             _compactMode = compact;
@@ -1041,6 +1046,15 @@ namespace CodexUsageMeter
                 _window.Height = Math.Max(1.0, _expandedHeight > 0.0 ? _expandedHeight : defaultHeight);
                 _window.Left = workArea.Left + Math.Max(0.0, (workArea.Width - _window.Width) / 2.0);
                 _window.Top = workArea.Top + Math.Max(0.0, (workArea.Height - _window.Height) / 2.0);
+            }
+            Rect? saved = compact ? _compactBounds : _expandedBounds;
+            // A saved spot on a monitor that is no longer attached falls back to the default placement.
+            Rect screens = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
+                SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
+            if (saved.HasValue && screens.IntersectsWith(new Rect(saved.Value.Left + 40.0, saved.Value.Top, Math.Max(1.0, saved.Value.Width - 80.0), 30.0)))
+            {
+                _window.Left = saved.Value.Left;
+                _window.Top = saved.Value.Top;
             }
             _window.UpdateLayout();
             if (restoreMaximized)
@@ -1242,6 +1256,35 @@ namespace CodexUsageMeter
             _window.UpdateLayout();
         }
 
+        internal void EnableWindowBoundsMemory()
+        {
+            _compactBounds = UserSettings.LoadWindowBounds(true);
+            _expandedBounds = UserSettings.LoadWindowBounds(false);
+            if (_compactBounds.HasValue) { _compactWidth = _compactBounds.Value.Width; _compactHeight = _compactBounds.Value.Height; }
+            if (_expandedBounds.HasValue) { _expandedWidth = _expandedBounds.Value.Width; _expandedHeight = _expandedBounds.Value.Height; }
+            _boundsSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+            _boundsSaveTimer.Tick += delegate { _boundsSaveTimer.Stop(); SaveWindowBounds(); };
+            _window.LocationChanged += delegate { ScheduleWindowBoundsSave(); };
+            _window.SizeChanged += delegate { ScheduleWindowBoundsSave(); };
+        }
+
+        private void ScheduleWindowBoundsSave()
+        {
+            if (_boundsSaveTimer == null) return;
+            _boundsSaveTimer.Stop();
+            _boundsSaveTimer.Start();
+        }
+
+        private void SaveWindowBounds()
+        {
+            if (_boundsSaveTimer == null || !_displayModeInitialized || _customMaximized || _editingLayout ||
+                _window.WindowState != WindowState.Normal || _window.ActualWidth <= 0.0 || _window.ActualHeight <= 0.0) return;
+            Rect bounds = new Rect(_window.Left, _window.Top, _window.ActualWidth, _window.ActualHeight);
+            if (_compactMode) _compactBounds = bounds; else _expandedBounds = bounds;
+            try { UserSettings.SaveWindowBounds(_compactMode, bounds); }
+            catch (Exception) { }
+        }
+
         private void WindowClosing(object sender, CancelEventArgs e)
         {
             if (_switchingAccount)
@@ -1250,6 +1293,7 @@ namespace CodexUsageMeter
                 SetFooterText("계정 전환을 마친 뒤 미터기를 닫을 수 있습니다.");
                 return;
             }
+            SaveWindowBounds();
             _systemTimer.Stop();
             _accountTimer.Stop();
             _trayIcon.Visible = false;
@@ -1523,7 +1567,7 @@ namespace CodexUsageMeter
         private void RefreshTrayAccounts()
         {
             _settingTrayUsage = true;
-            _trayUsageSettings.AccountNumber = Math.Min(_trayUsageSettings.AccountNumber, _accountCount);
+            if (StateOf(_trayUsageSettings.AccountNumber) == null) _trayUsageSettings.AccountNumber = OrderedAccounts()[0].Number;
             _trayAccountComboBox.Items.Clear();
             AccountState[] ordered = OrderedAccounts();
             foreach (AccountState account in ordered) _trayAccountComboBox.Items.Add(account.Label);
@@ -1656,7 +1700,7 @@ namespace CodexUsageMeter
                     SaveVisibleCalendarOffsets(); _layouts = draft; _compactMode = compact;
                     if (selected != null && selected.StartsWith("account"))
                     {
-                        int index = Array.IndexOf(draft.Mode(compact).VisibleAccounts(_accountCount), Int32.Parse(selected.Substring(7)));
+                        int index = Array.IndexOf(draft.Mode(compact).VisibleAccounts(_accounts.Select(state => state.Number)), Int32.Parse(selected.Substring(7)));
                         if (index >= 0) _accountPage = index / 2;
                     }
                     _compactLayout.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
@@ -1664,7 +1708,8 @@ namespace CodexUsageMeter
                     BindAccountPage();
                 },
                 delegate(LayoutSettings saved) { LayoutSettingsStore.Save(saved); _layouts = saved; });
-                editor.AccountLabel = slot => slot <= _accounts.Count ? _accounts[slot - 1].Label : "계정 " + slot;
+                editor.AccountLabel = slot => "계정 " + AccountOrder.Position(_accountOrder, slot);
+                editor.ShownAccounts = _accounts.Select(state => state.Number).ToArray();
                 editor.Owner = _window; editor.ShowDialog();
             }
             catch (Exception ex) { SetFooterText("배치 편집을 열지 못했습니다: " + ex.Message); }
@@ -1683,7 +1728,8 @@ namespace CodexUsageMeter
 
         private int[] VisibleLayoutAccounts()
         {
-            return _layouts == null ? Enumerable.Range(1, _accountCount).ToArray() : _layouts.Mode(_compactMode).VisibleAccounts(_accountCount);
+            int[] shown = OrderedAccounts().Select(state => state.Number).ToArray();
+            return _layouts == null ? shown : _layouts.Mode(_compactMode).VisibleAccounts(shown);
         }
 
         private void ApplyLayout()
@@ -1817,23 +1863,23 @@ namespace CodexUsageMeter
         private void ApplyAccountCount(int requestedCount, bool persist)
         {
             int count = Math.Max(1, Math.Min(4, requestedCount));
-            while (_accounts.Count < count)
+            if (_accountOrder == null) _accountOrder = AccountOrder.Parse(null);
+            int[] shown = AccountOrder.Shown(_accountOrder, count);
+            foreach (AccountState state in _accounts.Where(state => !shown.Contains(state.Number)).ToArray())
             {
-                int number = _accounts.Count + 1;
+                state.Client.AccountChanged -= AccountClientChanged;
+                state.Client.Dispose();
+                _accounts.Remove(state);
+            }
+            foreach (int number in shown.Where(number => !_accounts.Any(state => state.Number == number)))
+            {
                 AccountState state = new AccountState();
                 state.Number = number;
-                state.Label = "계정 " + number.ToString();
                 state.Client = AccountProviders.Create(UserSettings.LoadAccountProvider(number), _accountsRoot, number);
                 state.Client.AccountChanged += AccountClientChanged;
                 _accounts.Add(state);
             }
-            while (_accounts.Count > count)
-            {
-                AccountState state = _accounts[_accounts.Count - 1];
-                state.Client.AccountChanged -= AccountClientChanged;
-                state.Client.Dispose();
-                _accounts.RemoveAt(_accounts.Count - 1);
-            }
+            _accounts.Sort((left, right) => Array.IndexOf(_accountOrder, left.Number).CompareTo(Array.IndexOf(_accountOrder, right.Number)));
             _accountCount = count;
             ApplyAccountPositions();
             int pageCount = Math.Max(1, (_accountCount + 1) / 2);
@@ -1853,10 +1899,9 @@ namespace CodexUsageMeter
 
         private void ApplyAccountPositions()
         {
-            if (_accountOrder == null) _accountOrder = AccountOrder.Parse(null);
             foreach (AccountState state in _accounts)
             {
-                state.Position = AccountOrder.Position(_accountOrder, state.Number, _accountCount);
+                state.Position = AccountOrder.Position(_accountOrder, state.Number);
                 state.Label = "계정 " + state.Position.ToString();
             }
             RefreshAccountOrderList();
@@ -1864,30 +1909,51 @@ namespace CodexUsageMeter
 
         private AccountState[] OrderedAccounts()
         {
-            return _accounts.Where(account => account.Number <= _accountCount).OrderBy(account => account.Position).ToArray();
+            return _accounts.OrderBy(account => account.Position).ToArray();
+        }
+
+        private AccountState StateOf(int slot)
+        {
+            return _accounts.FirstOrDefault(state => state.Number == slot);
+        }
+
+        // Slots beyond the account count have no live client; only the saved Codex sign-in names them.
+        private string SavedEmail(int slot)
+        {
+            try
+            {
+                if (UserSettings.LoadAccountProvider(slot) != "codex") return null;
+                string path = Path.Combine(_accountsRoot, "account-" + slot, "auth.json");
+                if (!File.Exists(path)) return null;
+                Dictionary<string, object> tokens = AccountSubscription.Map(AccountSubscription.Get(AccountSubscription.ParseJson(File.ReadAllText(path)), "tokens"));
+                return AccountSubscription.Text(AccountSubscription.TokenPayload(AccountSubscription.Text(tokens, "id_token")), "email");
+            }
+            catch (Exception) { return null; }
         }
 
         private void RefreshAccountOrderList()
         {
-            if (_accountOrderList == null) return;
+            if (_accountOrderList == null || _accountOrder == null) return;
             _accountOrderList.Children.Clear();
-            AccountState[] ordered = OrderedAccounts();
-            for (int i = 0; i < ordered.Length; i++)
+            for (int i = 0; i < _accountOrder.Length; i++)
             {
-                AccountState state = ordered[i];
-                string email = state.LastSnapshot == null ? null : state.LastSnapshot.Email;
+                int slot = _accountOrder[i];
+                AccountState state = StateOf(slot);
+                string email = state == null ? SavedEmail(slot) : state.LastSnapshot == null ? null : state.LastSnapshot.Email;
+                string providerId = state == null ? UserSettings.LoadAccountProvider(slot) : state.Client.Provider.Id;
+                AccountProvider provider = AccountProviders.Registered.FirstOrDefault(value => value.Id == providerId) ?? AccountProviders.Codex;
                 Grid row = new Grid { Margin = new Thickness(0, i == 0 ? 0 : 6, 0, 0) };
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                TextBlock text = new TextBlock { Text = state.Label + " · " + state.Client.Provider.DisplayName +
-                    (String.IsNullOrWhiteSpace(email) ? " · 미연결" : " · " + email),
-                    VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 8, 0) };
+                TextBlock text = new TextBlock { Text = "계정 " + (i + 1) + " · " + provider.DisplayName +
+                    (String.IsNullOrWhiteSpace(email) ? (state == null ? "" : " · 미연결") : " · " + email) + (state == null ? " · 표시 안 함" : ""),
+                    VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 8, 0),
+                    Opacity = state == null ? 0.6 : 1 };
                 row.Children.Add(text);
-                int slot = state.Number;
                 Button up = new Button { Content = "▲", Width = 34, Height = 30, Padding = new Thickness(0), IsEnabled = i > 0, ToolTip = "위로 이동" };
-                Button down = new Button { Content = "▼", Width = 34, Height = 30, Padding = new Thickness(0), IsEnabled = i < ordered.Length - 1, ToolTip = "아래로 이동" };
+                Button down = new Button { Content = "▼", Width = 34, Height = 30, Padding = new Thickness(0), IsEnabled = i < _accountOrder.Length - 1, ToolTip = "아래로 이동" };
                 up.Click += delegate { MoveAccount(slot, -1); };
                 down.Click += delegate { MoveAccount(slot, 1); };
                 Grid.SetColumn(up, 1); Grid.SetColumn(down, 3);
@@ -1896,10 +1962,16 @@ namespace CodexUsageMeter
             }
         }
 
-        internal void MoveAccount(int slot, int offset)
+        internal async void MoveAccount(int slot, int offset)
         {
-            int[] next = AccountOrder.Move(_accountOrder, slot, offset, _accountCount);
+            int[] next = AccountOrder.Move(_accountOrder, slot, offset);
             if (next.SequenceEqual(_accountOrder)) return;
+            bool shownChanged = !AccountOrder.Shown(next, _accountCount).OrderBy(n => n).SequenceEqual(AccountOrder.Shown(_accountOrder, _accountCount).OrderBy(n => n));
+            if (shownChanged && (_refreshing || _switchingAccount))
+            {
+                SetFooterText("계정 확인·전환이 끝난 뒤 다시 옮겨 주세요.");
+                return;
+            }
             _accountOrder = next;
             try { UserSettings.SaveAccountOrder(AccountOrder.Format(next)); }
             catch (Exception ex) { SetFooterText("계정 순서 저장 실패: " + ex.Message); }
@@ -1911,10 +1983,9 @@ namespace CodexUsageMeter
                 catch (Exception ex) { SetFooterText("계정 순서 배치 저장 실패: " + ex.Message); }
             }
             SaveVisibleCalendarOffsets();
-            ApplyAccountPositions();
-            BindAccountPage();
-            RefreshTrayAccounts();
+            ApplyAccountCount(_accountCount, false);
             PublishWindowsWidget(true);
+            if (shownChanged) await RefreshAccountsAsync();
         }
 
         private void SetAccountPage(int page)
@@ -1937,10 +2008,10 @@ namespace CodexUsageMeter
             int pageCount = Math.Max(1, (visible.Length + 1) / 2);
             _accountPage = Math.Max(0, Math.Min(pageCount - 1, _accountPage));
             int start = _accountPage * 2;
-            BindAccountView(_account1, start < visible.Length ? visible[start] - 1 : -1);
-            BindAccountView(_account2, start + 1 < visible.Length ? visible[start + 1] - 1 : -1);
-            string pageText = visible.Length == 0 ? "계정 숨김" : "계정 " + _accounts[visible[start] - 1].Position.ToString() +
-                (start + 1 < visible.Length ? ", " + _accounts[visible[start + 1] - 1].Position.ToString() : String.Empty) + " · " + (_accountPage + 1) + "/" + pageCount;
+            BindAccountView(_account1, start < visible.Length ? StateOf(visible[start]) : null);
+            BindAccountView(_account2, start + 1 < visible.Length ? StateOf(visible[start + 1]) : null);
+            string pageText = visible.Length == 0 ? "계정 숨김" : "계정 " + StateOf(visible[start]).Position.ToString() +
+                (start + 1 < visible.Length ? ", " + StateOf(visible[start + 1]).Position.ToString() : String.Empty) + " · " + (_accountPage + 1) + "/" + pageCount;
             _accountPageText.Text = pageText;
             _compactAccountPageButton.Content = pageText.Replace("계정 ", String.Empty);
             _accountPagePreviousButton.IsEnabled = _accountPage > 0;
@@ -1952,9 +2023,8 @@ namespace CodexUsageMeter
             ApplyLayout();
         }
 
-        private void BindAccountView(AccountView view, int stateIndex)
+        private void BindAccountView(AccountView view, AccountState state)
         {
-            AccountState state = stateIndex >= 0 && stateIndex < _accounts.Count ? _accounts[stateIndex] : null;
             if (!Object.ReferenceEquals(view.State, state)) HideUsageHistory(view);
             view.State = state;
             view.Client = state == null ? null : state.Client;
@@ -2080,7 +2150,7 @@ namespace CodexUsageMeter
                 }
                 UpdateTrayUsage();
                 PublishWindowsWidget(true);
-                _activeCodexAccountNumber = _accountSwitcher.DetectActiveAccountNumber(_accountCount);
+                _activeCodexAccountNumber = _accountSwitcher.DetectActiveAccountNumber(4);
                 _activeClaudeAccountNumber = _claudeCodeSwitcher.DetectActiveAccountNumber(ClaudeSlots());
                 BindAccountPage();
                 _layoutView.ReloadHistory();
@@ -2546,7 +2616,7 @@ namespace CodexUsageMeter
                 await Task.Run(delegate
                 {
                     foreach (CodexUsageAccount client in states.Select(state => state.Client).OfType<CodexUsageAccount>()) client.Rpc.Suspend();
-                    _accountSwitcher.SynchronizeCurrentCredentials(_accountCount);
+                    _accountSwitcher.SynchronizeCurrentCredentials(4);
                 });
                 await Task.Run(delegate
                 {
@@ -4119,6 +4189,32 @@ namespace CodexUsageMeter
                 int percent = (int)Math.Round(Math.Max(1.0, Math.Min(2.0, scale)) * 100.0);
                 key.SetValue(FontScaleValue, percent, RegistryValueKind.DWord);
             }
+        }
+
+        internal static Rect? LoadWindowBounds(bool compact)
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey, false))
+                return key == null ? null : ParseWindowBounds(Convert.ToString(key.GetValue(compact ? "WindowCompactBounds" : "WindowExpandedBounds")));
+        }
+
+        internal static Rect? ParseWindowBounds(string text)
+        {
+            {
+                string[] parts = (text ?? String.Empty).Split(',');
+                double[] values = new double[4];
+                if (parts.Length != 4) return null;
+                for (int i = 0; i < 4; i++)
+                    if (!Double.TryParse(parts[i], NumberStyles.Float, CultureInfo.InvariantCulture, out values[i]) || Double.IsNaN(values[i]) || Double.IsInfinity(values[i])) return null;
+                if (values[2] < 80.0 || values[3] < 60.0 || values[2] > 20000.0 || values[3] > 20000.0) return null;
+                return new Rect(values[0], values[1], values[2], values[3]);
+            }
+        }
+
+        internal static void SaveWindowBounds(bool compact, Rect bounds)
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                key.SetValue(compact ? "WindowCompactBounds" : "WindowExpandedBounds", String.Join(",",
+                    new[] { bounds.Left, bounds.Top, bounds.Width, bounds.Height }.Select(value => Math.Round(value, 1).ToString(CultureInfo.InvariantCulture))), RegistryValueKind.String);
         }
 
         internal static string LoadAccountOrder()

@@ -1,1 +1,1 @@
-Reorder signed-in accounts from Settings; the top account becomes Account 1 everywhere.
+Account order now covers all four slots and the count shows the top ones; window size and position are remembered.

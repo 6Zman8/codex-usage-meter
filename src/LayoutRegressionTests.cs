@@ -78,15 +78,23 @@ namespace CodexUsageMeter
                 Require(child.WaitForExit(10000) && child.ExitCode == 0, "Saved layout failed to reload in a fresh process.");
             report("PASS persisted layout reloads with identical selections in a fresh executable process");
             Require(LayoutSettings.Parse("broken").Widget.VisibleAccounts(4).Length == 4, "Damaged storage did not fall back safely.");
-            int[] accountOrder = AccountOrder.Move(AccountOrder.Parse("2,9,2,x"), 3, -2, 3);
-            Require(accountOrder.SequenceEqual(new[] { 3, 2, 1, 4 }) && AccountOrder.Position(accountOrder, 3, 3) == 1 &&
-                AccountOrder.Move(accountOrder, 3, -1, 3).SequenceEqual(accountOrder), "Account order did not normalize or move within shown slots.");
+            int[] accountOrder = AccountOrder.Move(AccountOrder.Parse("2,9,2,x"), 3, -2);
+            Require(accountOrder.SequenceEqual(new[] { 3, 2, 1, 4 }) && AccountOrder.Position(accountOrder, 3) == 1 &&
+                AccountOrder.Move(accountOrder, 3, -1).SequenceEqual(accountOrder) &&
+                AccountOrder.Shown(AccountOrder.Move(accountOrder, 4, -3), 2).SequenceEqual(new[] { 4, 3 }),
+                "Account order did not normalize, move across every slot or show the top accounts.");
             LayoutModeSettings ordered = LayoutSettings.DefaultMode(false);
             ordered.Move("pc", "account2"); ordered.Card("account4").Visible = false;
             ordered.ArrangeAccounts(accountOrder);
             Require(ordered.Cards.Select(card => card.Id).SequenceEqual(new[] { "account3", "pc", "account2", "account1", "account4" }) &&
-                ordered.VisibleAccounts(4).SequenceEqual(new[] { 3, 2, 1 }), "Account order did not rearrange cards while keeping the PC card and hidden cards.");
+                ordered.VisibleAccounts(4).SequenceEqual(new[] { 3, 2, 1 }) &&
+                ordered.VisibleAccounts(AccountOrder.Shown(accountOrder, 2)).SequenceEqual(new[] { 3, 2 }), "Account order did not rearrange cards while keeping the PC card and hidden cards.");
             report("PASS account order normalizes, moves and rearranges account cards");
+            Rect? savedBounds = UserSettings.ParseWindowBounds("-1500.5,20,460,780");
+            Require(savedBounds.HasValue && savedBounds.Value == new Rect(-1500.5, 20, 460, 780) && !UserSettings.ParseWindowBounds("1,2,3") .HasValue &&
+                !UserSettings.ParseWindowBounds("0,0,NaN,500").HasValue && !UserSettings.ParseWindowBounds("0,0,10,10").HasValue && !UserSettings.ParseWindowBounds(null).HasValue,
+                "Saved window bounds were not read safely.");
+            report("PASS saved window bounds parse, including other-monitor positions, and reject damaged values");
             LayoutSettings broken = LayoutSettings.Parse("{\"Version\":1,\"Widget\":{\"Columns\":-7,\"Cards\":[null,{\"Id\":\"account1\",\"Visible\":true,\"Span\":99,\"Size\":-4,\"Sections\":[\"weekly\",\"bad\"]},{\"Id\":\"account1\"},{\"Id\":\"bad\"}]}}");
             Require(broken.Widget.Columns == 1 && broken.Widget.Cards.Count == 5 && broken.Widget.Card("account1").Span == 3 && broken.Widget.Card("account1").Size == 0 && broken.Widget.Card("account1").Sections.SequenceEqual(new[] { "weekly" }), "Invalid or duplicate settings were not normalized.");
             LayoutSettings reminders = LayoutSettings.Defaults();
