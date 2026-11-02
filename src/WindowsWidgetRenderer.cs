@@ -155,9 +155,9 @@ namespace CodexUsageMeter
             _views[slot - 1].LastSnapshot = display;
             DashboardController.RenderCompactAccount(Window, _views[slot - 1], display, slot);
             string prefix = "CompactAccount" + slot;
-            Find<TextBlock>(prefix + "TitleText").Text = AccountProviders.For(display).CardTitle("계정 " + state.Number);
+            Find<TextBlock>(prefix + "TitleText").Text = AccountProviders.For(display).CardTitle("계정 " + WindowsWidgetBridge.Shown(state));
             Find<Button>(prefix + "CodexLoginButton").Visibility = Visibility.Collapsed;
-            Find<TextBlock>(prefix + "BadgeText").Text = state.Number.ToString();
+            Find<TextBlock>(prefix + "BadgeText").Text = WindowsWidgetBridge.Shown(state).ToString();
             string plan = original == null ? "" : (original.PlanType ?? "").ToLowerInvariant();
             string[] known = { "free", "plus", "pro", "prolite", "business", "team", "enterprise", "edu", "max" };
             plan = !known.Contains(plan) ? "" : plan == "prolite" ? "Pro Lite" : Char.ToUpperInvariant(plan[0]) + plan.Substring(1);

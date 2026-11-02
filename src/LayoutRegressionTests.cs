@@ -78,6 +78,15 @@ namespace CodexUsageMeter
                 Require(child.WaitForExit(10000) && child.ExitCode == 0, "Saved layout failed to reload in a fresh process.");
             report("PASS persisted layout reloads with identical selections in a fresh executable process");
             Require(LayoutSettings.Parse("broken").Widget.VisibleAccounts(4).Length == 4, "Damaged storage did not fall back safely.");
+            int[] accountOrder = AccountOrder.Move(AccountOrder.Parse("2,9,2,x"), 3, -2, 3);
+            Require(accountOrder.SequenceEqual(new[] { 3, 2, 1, 4 }) && AccountOrder.Position(accountOrder, 3, 3) == 1 &&
+                AccountOrder.Move(accountOrder, 3, -1, 3).SequenceEqual(accountOrder), "Account order did not normalize or move within shown slots.");
+            LayoutModeSettings ordered = LayoutSettings.DefaultMode(false);
+            ordered.Move("pc", "account2"); ordered.Card("account4").Visible = false;
+            ordered.ArrangeAccounts(accountOrder);
+            Require(ordered.Cards.Select(card => card.Id).SequenceEqual(new[] { "account3", "pc", "account2", "account1", "account4" }) &&
+                ordered.VisibleAccounts(4).SequenceEqual(new[] { 3, 2, 1 }), "Account order did not rearrange cards while keeping the PC card and hidden cards.");
+            report("PASS account order normalizes, moves and rearranges account cards");
             LayoutSettings broken = LayoutSettings.Parse("{\"Version\":1,\"Widget\":{\"Columns\":-7,\"Cards\":[null,{\"Id\":\"account1\",\"Visible\":true,\"Span\":99,\"Size\":-4,\"Sections\":[\"weekly\",\"bad\"]},{\"Id\":\"account1\"},{\"Id\":\"bad\"}]}}");
             Require(broken.Widget.Columns == 1 && broken.Widget.Cards.Count == 5 && broken.Widget.Card("account1").Span == 3 && broken.Widget.Card("account1").Size == 0 && broken.Widget.Card("account1").Sections.SequenceEqual(new[] { "weekly" }), "Invalid or duplicate settings were not normalized.");
             LayoutSettings reminders = LayoutSettings.Defaults();

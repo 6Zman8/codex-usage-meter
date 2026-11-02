@@ -413,6 +413,13 @@
             <Button x:Name="AccountCountIncreaseButton" Grid.Column="5" Content="+" Style="{StaticResource AccentButton}" Width="34" Height="30" Padding="0" VerticalAlignment="Center"/>
           </Grid>
         </Border>
+        <Border Style="{StaticResource SubCard}" Margin="0,8,0,0">
+          <StackPanel>
+            <TextBlock Text="계정 순서" FontWeight="SemiBold"/>
+            <TextBlock Text="▲▼로 옮기면 맨 위 계정이 계정 1이 됩니다. 로그인 정보는 그대로 유지됩니다." Style="{StaticResource Muted}" Margin="0,3,0,6" TextWrapping="Wrap"/>
+            <StackPanel x:Name="AccountOrderList"/>
+          </StackPanel>
+        </Border>
         <Border Grid.Row="3" Style="{StaticResource SubCard}" Margin="0,8,0,0">
           <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="글자 크기" FontWeight="SemiBold"/><TextBlock Text="기본 150% · 100~200% · 10% 단위" Style="{StaticResource Muted}" Margin="0,3,12,0"/></StackPanel><TextBlock x:Name="FontScaleValue" Grid.Column="1" Text="150%" Foreground="#8DE0C4" FontWeight="Bold" VerticalAlignment="Center"/></Grid>

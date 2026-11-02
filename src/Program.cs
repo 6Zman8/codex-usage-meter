@@ -24,8 +24,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.19.0")]
-[assembly: AssemblyFileVersion("1.9.19.0")]
+[assembly: AssemblyVersion("1.9.20.0")]
+[assembly: AssemblyFileVersion("1.9.20.0")]
 
 namespace CodexUsageMeter
 {
@@ -367,6 +367,7 @@ namespace CodexUsageMeter
     internal sealed class AccountState
     {
         public int Number;
+        public int Position;
         public string Label;
         public IUsageAccount Client;
         public AccountSnapshot LastSnapshot;
@@ -602,6 +603,8 @@ namespace CodexUsageMeter
         private Action _modalPrimaryAction;
         private Action _modalSecondaryAction;
         private LayoutSettings _layouts;
+        private int[] _accountOrder;
+        private StackPanel _accountOrderList;
         private DashboardLayoutView _layoutView;
         private readonly UsageHistoryStore _usageHistory;
 
@@ -693,6 +696,7 @@ namespace CodexUsageMeter
             _accountCountDecreaseButton = Find<Button>("AccountCountDecreaseButton");
             _accountCountIncreaseButton = Find<Button>("AccountCountIncreaseButton");
             _accountCountValue = Find<TextBlock>("AccountCountValue");
+            _accountOrderList = Find<StackPanel>("AccountOrderList");
             _accountPagePreviousButton = Find<Button>("AccountPagePreviousButton");
             _accountPageNextButton = Find<Button>("AccountPageNextButton");
             _accountPageText = Find<TextBlock>("AccountPageText");
@@ -784,6 +788,7 @@ namespace CodexUsageMeter
             _trayUsageCheckBox.IsChecked = _trayUsageSettings.Enabled;
             _trayLimitComboBox.SelectedIndex = _trayUsageSettings.Secondary ? 1 : 0;
             _trayUsageOptions.IsEnabled = _trayUsageSettings.Enabled;
+            _accountOrder = AccountOrder.Parse(UserSettings.LoadAccountOrder());
             ApplyAccountCount(UserSettings.LoadAccountCount(), false);
 
             _trayIcon = CreateTrayIcon();
@@ -1213,6 +1218,7 @@ namespace CodexUsageMeter
         {
             ApplyFontScale(1.5, false);
             _appVersionValue.Text = "v" + UpdateClient.CurrentVersionText;
+            RefreshAccountOrderList();
             _updateStatusText.Text = "수동 확인 대기 중";
             _settingsOverlay.Visibility = Visibility.Visible;
             _window.UpdateLayout();
@@ -1504,7 +1510,9 @@ namespace CodexUsageMeter
         {
             if (_settingTrayUsage) return;
             _trayUsageSettings.Enabled = _trayUsageCheckBox.IsChecked == true;
-            _trayUsageSettings.AccountNumber = _trayAccountComboBox.SelectedIndex + 1;
+            AccountState[] ordered = OrderedAccounts();
+            if (_trayAccountComboBox.SelectedIndex >= 0 && _trayAccountComboBox.SelectedIndex < ordered.Length)
+                _trayUsageSettings.AccountNumber = ordered[_trayAccountComboBox.SelectedIndex].Number;
             _trayUsageSettings.Secondary = _trayLimitComboBox.SelectedIndex == 1;
             _trayUsageOptions.IsEnabled = _trayUsageSettings.Enabled;
             UpdateTrayUsage();
@@ -1517,8 +1525,9 @@ namespace CodexUsageMeter
             _settingTrayUsage = true;
             _trayUsageSettings.AccountNumber = Math.Min(_trayUsageSettings.AccountNumber, _accountCount);
             _trayAccountComboBox.Items.Clear();
-            foreach (AccountState account in _accounts) _trayAccountComboBox.Items.Add("계정 " + account.Number);
-            _trayAccountComboBox.SelectedIndex = _trayUsageSettings.AccountNumber - 1;
+            AccountState[] ordered = OrderedAccounts();
+            foreach (AccountState account in ordered) _trayAccountComboBox.Items.Add(account.Label);
+            _trayAccountComboBox.SelectedIndex = Array.FindIndex(ordered, account => account.Number == _trayUsageSettings.AccountNumber);
             _settingTrayUsage = false;
             UpdateTrayUsage();
         }
@@ -1568,7 +1577,7 @@ namespace CodexUsageMeter
             if (_windowsWidgetBridge == null || _editingLayout) return;
             try
             {
-                AccountState[] accounts = _accounts.Where(account => account.Number <= _accountCount).ToArray();
+                AccountState[] accounts = OrderedAccounts();
                 if (running)
                 {
                     if (_windowsWidgetRenderer == null) _windowsWidgetRenderer = new WindowsWidgetRenderer();
@@ -1618,6 +1627,7 @@ namespace CodexUsageMeter
             _settingsOverlay.Visibility = Visibility.Visible;
             _fontScaleValue.Text = Math.Round(_fontScale * 100.0).ToString("0") + "%";
             _appVersionValue.Text = "v" + UpdateClient.CurrentVersionText;
+            RefreshAccountOrderList();
             if (!_updateChecking)
             {
                 _updateStatusText.Text = "수동 확인 대기 중";
@@ -1654,6 +1664,7 @@ namespace CodexUsageMeter
                     BindAccountPage();
                 },
                 delegate(LayoutSettings saved) { LayoutSettingsStore.Save(saved); _layouts = saved; });
+                editor.AccountLabel = slot => slot <= _accounts.Count ? _accounts[slot - 1].Label : "계정 " + slot;
                 editor.Owner = _window; editor.ShowDialog();
             }
             catch (Exception ex) { SetFooterText("배치 편집을 열지 못했습니다: " + ex.Message); }
@@ -1824,6 +1835,7 @@ namespace CodexUsageMeter
                 _accounts.RemoveAt(_accounts.Count - 1);
             }
             _accountCount = count;
+            ApplyAccountPositions();
             int pageCount = Math.Max(1, (_accountCount + 1) / 2);
             _accountPage = Math.Max(0, Math.Min(pageCount - 1, _accountPage));
             BindAccountPage();
@@ -1837,6 +1849,72 @@ namespace CodexUsageMeter
                 try { UserSettings.SaveAccountCount(_accountCount); UserSettings.SaveTrayUsage(_trayUsageSettings); }
                 catch (Exception ex) { SetFooterText("계정 칸 수 저장 실패: " + ex.Message); }
             }
+        }
+
+        private void ApplyAccountPositions()
+        {
+            if (_accountOrder == null) _accountOrder = AccountOrder.Parse(null);
+            foreach (AccountState state in _accounts)
+            {
+                state.Position = AccountOrder.Position(_accountOrder, state.Number, _accountCount);
+                state.Label = "계정 " + state.Position.ToString();
+            }
+            RefreshAccountOrderList();
+        }
+
+        private AccountState[] OrderedAccounts()
+        {
+            return _accounts.Where(account => account.Number <= _accountCount).OrderBy(account => account.Position).ToArray();
+        }
+
+        private void RefreshAccountOrderList()
+        {
+            if (_accountOrderList == null) return;
+            _accountOrderList.Children.Clear();
+            AccountState[] ordered = OrderedAccounts();
+            for (int i = 0; i < ordered.Length; i++)
+            {
+                AccountState state = ordered[i];
+                string email = state.LastSnapshot == null ? null : state.LastSnapshot.Email;
+                Grid row = new Grid { Margin = new Thickness(0, i == 0 ? 0 : 6, 0, 0) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(6) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                TextBlock text = new TextBlock { Text = state.Label + " · " + state.Client.Provider.DisplayName +
+                    (String.IsNullOrWhiteSpace(email) ? " · 미연결" : " · " + email),
+                    VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 8, 0) };
+                row.Children.Add(text);
+                int slot = state.Number;
+                Button up = new Button { Content = "▲", Width = 34, Height = 30, Padding = new Thickness(0), IsEnabled = i > 0, ToolTip = "위로 이동" };
+                Button down = new Button { Content = "▼", Width = 34, Height = 30, Padding = new Thickness(0), IsEnabled = i < ordered.Length - 1, ToolTip = "아래로 이동" };
+                up.Click += delegate { MoveAccount(slot, -1); };
+                down.Click += delegate { MoveAccount(slot, 1); };
+                Grid.SetColumn(up, 1); Grid.SetColumn(down, 3);
+                row.Children.Add(up); row.Children.Add(down);
+                _accountOrderList.Children.Add(row);
+            }
+        }
+
+        internal void MoveAccount(int slot, int offset)
+        {
+            int[] next = AccountOrder.Move(_accountOrder, slot, offset, _accountCount);
+            if (next.SequenceEqual(_accountOrder)) return;
+            _accountOrder = next;
+            try { UserSettings.SaveAccountOrder(AccountOrder.Format(next)); }
+            catch (Exception ex) { SetFooterText("계정 순서 저장 실패: " + ex.Message); }
+            if (_layouts != null)
+            {
+                _layouts.Expanded.ArrangeAccounts(next);
+                _layouts.Widget.ArrangeAccounts(next);
+                try { LayoutSettingsStore.Save(_layouts); }
+                catch (Exception ex) { SetFooterText("계정 순서 배치 저장 실패: " + ex.Message); }
+            }
+            SaveVisibleCalendarOffsets();
+            ApplyAccountPositions();
+            BindAccountPage();
+            RefreshTrayAccounts();
+            PublishWindowsWidget(true);
         }
 
         private void SetAccountPage(int page)
@@ -1861,8 +1939,8 @@ namespace CodexUsageMeter
             int start = _accountPage * 2;
             BindAccountView(_account1, start < visible.Length ? visible[start] - 1 : -1);
             BindAccountView(_account2, start + 1 < visible.Length ? visible[start + 1] - 1 : -1);
-            string pageText = visible.Length == 0 ? "계정 숨김" : "계정 " + visible[start].ToString() +
-                (start + 1 < visible.Length ? ", " + visible[start + 1].ToString() : String.Empty) + " · " + (_accountPage + 1) + "/" + pageCount;
+            string pageText = visible.Length == 0 ? "계정 숨김" : "계정 " + _accounts[visible[start] - 1].Position.ToString() +
+                (start + 1 < visible.Length ? ", " + _accounts[visible[start + 1] - 1].Position.ToString() : String.Empty) + " · " + (_accountPage + 1) + "/" + pageCount;
             _accountPageText.Text = pageText;
             _compactAccountPageButton.Content = pageText.Replace("계정 ", String.Empty);
             _accountPagePreviousButton.IsEnabled = _accountPage > 0;
@@ -1890,8 +1968,8 @@ namespace CodexUsageMeter
             view.Label = state.Label;
             view.TitleText.Text = state.Client.Provider.CardTitle(state.Label);
             view.CompactTitleText.Text = state.Client.Provider.CardTitle(state.Label);
-            view.BadgeText.Text = state.Number.ToString();
-            view.CompactBadgeText.Text = state.Number.ToString();
+            view.BadgeText.Text = state.Position.ToString();
+            view.CompactBadgeText.Text = state.Position.ToString();
             view.CalendarMonthOffset = state.CalendarMonthOffset;
             AccountSnapshot snapshot = state.LastSnapshot;
             if (snapshot == null)
@@ -4041,6 +4119,18 @@ namespace CodexUsageMeter
                 int percent = (int)Math.Round(Math.Max(1.0, Math.Min(2.0, scale)) * 100.0);
                 key.SetValue(FontScaleValue, percent, RegistryValueKind.DWord);
             }
+        }
+
+        internal static string LoadAccountOrder()
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey, false))
+                return key == null ? null : Convert.ToString(key.GetValue("AccountOrder"));
+        }
+
+        internal static void SaveAccountOrder(string order)
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                key.SetValue("AccountOrder", order, RegistryValueKind.String);
         }
 
         public static int LoadAccountCount()

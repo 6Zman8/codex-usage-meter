@@ -220,8 +220,9 @@ namespace CodexUsageMeter
         }
         private IEnumerable<LayoutCardSettings> Choices()
         { return Mode.Cards.Where(card => !card.Id.StartsWith("account") || Int32.Parse(card.Id.Substring(7)) <= _accountCount); }
-        private static string CardName(string id)
-        { return id == "pc" ? "PC 상태" : "계정 " + id.Substring(7); }
+        internal Func<int, string> AccountLabel;
+        private string CardName(string id)
+        { return id == "pc" ? "PC 상태" : AccountLabel != null ? AccountLabel(Int32.Parse(id.Substring(7))) : "계정 " + id.Substring(7); }
         private void SetViewport(int preset)
         {
             bool actual = preset == 0 && _compact == _originalCompact && _actualPreviewSize.Width > 0 && _actualPreviewSize.Height > 0;

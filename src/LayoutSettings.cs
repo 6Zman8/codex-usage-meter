@@ -72,6 +72,14 @@ namespace CodexUsageMeter
             Cards.RemoveAt(from);
             Cards.Insert(to, moved);
         }
+        public void ArrangeAccounts(int[] order)
+        {
+            int[] places = Enumerable.Range(0, Cards.Count).Where(index => Cards[index].Id.StartsWith("account")).ToArray();
+            LayoutCardSettings[] ordered = order.Select(number => Cards.FirstOrDefault(card => card.Id == "account" + number))
+                .Where(card => card != null).ToArray();
+            if (ordered.Length != places.Length) return;
+            for (int i = 0; i < places.Length; i++) Cards[places[i]] = ordered[i];
+        }
         public void UseSingleAccount(int number, bool compact)
         {
             Columns = compact ? 1 : 2;
@@ -82,6 +90,35 @@ namespace CodexUsageMeter
                 card.Span = 1;
                 card.Size = 1;
             }
+        }
+    }
+
+    // Display order of account slots; slots keep their profile folders, only positions change.
+    internal static class AccountOrder
+    {
+        internal static int[] Parse(string text)
+        {
+            List<int> order = new List<int>();
+            foreach (string part in (text ?? String.Empty).Split(','))
+            {
+                int number;
+                if (Int32.TryParse(part.Trim(), out number) && number >= 1 && number <= 4 && !order.Contains(number)) order.Add(number);
+            }
+            for (int number = 1; number <= 4; number++) if (!order.Contains(number)) order.Add(number);
+            return order.ToArray();
+        }
+        internal static string Format(int[] order) { return String.Join(",", order); }
+        internal static int Position(int[] order, int slot, int count)
+        {
+            return order.Where(number => number <= count).ToList().IndexOf(slot) + 1;
+        }
+        internal static int[] Move(int[] order, int slot, int offset, int count)
+        {
+            List<int> shown = order.Where(number => number <= count).ToList();
+            int from = shown.IndexOf(slot), to = from + offset;
+            if (from < 0 || to < 0 || to >= shown.Count) return order;
+            shown.RemoveAt(from); shown.Insert(to, slot);
+            return shown.Concat(order.Where(number => number > count)).ToArray();
         }
     }
 

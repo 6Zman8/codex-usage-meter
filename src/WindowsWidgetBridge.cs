@@ -26,7 +26,7 @@ namespace CodexUsageMeter
                 AccountSnapshot snapshot = account.LastSnapshot;
                 string status = Status(snapshot);
                 items.Add(new Dictionary<string, object> {
-                    { "number", account.Number }, { "label", "계정 " + account.Number },
+                    { "number", Shown(account) }, { "label", "계정 " + Shown(account) },
                     { "plan", snapshot == null ? String.Empty : snapshot.PlanType ?? String.Empty },
                     { "status", status },
                     { "observedAtUtc", status == "ok" ? Utc(snapshot.RateLimitsObservedAtUtc) : null },
@@ -40,6 +40,9 @@ namespace CodexUsageMeter
             if (widgetPages != null) result.Add("widgetPages", widgetPages);
             return new JavaScriptSerializer().Serialize(result);
         }
+
+        // Labels never leave the app; the widget only receives the displayed position.
+        internal static int Shown(AccountState account) { return account.Position > 0 ? account.Position : account.Number; }
 
         private static object Limit(RateWindow window)
         {

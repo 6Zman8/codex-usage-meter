@@ -1,1 +1,1 @@
-Move account card buttons below the title when the card is too narrow, so they no longer cover it.
+Reorder signed-in accounts from Settings; the top account becomes Account 1 everywhere.
