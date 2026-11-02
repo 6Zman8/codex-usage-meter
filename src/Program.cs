@@ -25,8 +25,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.21.0")]
-[assembly: AssemblyFileVersion("1.9.21.0")]
+[assembly: AssemblyVersion("1.9.22.0")]
+[assembly: AssemblyFileVersion("1.9.22.0")]
 
 namespace CodexUsageMeter
 {
@@ -1175,7 +1175,15 @@ namespace CodexUsageMeter
             bool cornerTop = y >= 0.0 && y <= cornerSize;
             bool cornerBottom = y <= height && y >= height - cornerSize;
             if (cornerLeft && cornerTop) return 13;
-            if (cornerRight && cornerTop) return 14;
+            // The close button sits in the top-right corner, so only a thin rim there resizes.
+            if (cornerRight && cornerTop)
+            {
+                bool rimRight = x >= width - 4.0, rimTop = y <= 4.0;
+                if (x >= width - 6.0 && y <= 6.0) return 14;
+                if (rimTop) return 12;
+                if (rimRight) return 11;
+                return 1;
+            }
             if (cornerLeft && cornerBottom) return 16;
             if (cornerRight && cornerBottom) return 17;
 
@@ -4402,7 +4410,10 @@ namespace CodexUsageMeter
                     DashboardController.GetResizeHitTest(775.0, 575.0, 800.0, 600.0, 12.0, 30.0) != 17 ||
                     DashboardController.GetResizeHitTest(6.0, 300.0, 800.0, 600.0, 12.0, 30.0) != 10 ||
                     DashboardController.GetResizeHitTest(20.0, 300.0, 800.0, 600.0, 12.0, 30.0) != 1 ||
-                    DashboardController.GetResizeHitTest(400.0, 300.0, 800.0, 600.0, 12.0, 30.0) != 1)
+                    DashboardController.GetResizeHitTest(400.0, 300.0, 800.0, 600.0, 12.0, 30.0) != 1 ||
+                    DashboardController.GetResizeHitTest(780.0, 10.0, 800.0, 600.0, 12.0, 30.0) != 1 ||
+                    DashboardController.GetResizeHitTest(797.0, 3.0, 800.0, 600.0, 12.0, 30.0) != 14 ||
+                    DashboardController.GetResizeHitTest(798.0, 20.0, 800.0, 600.0, 12.0, 30.0) != 11)
                 {
                     throw new InvalidOperationException("창 크기 조절 히트 테스트가 올바르지 않습니다.");
                 }

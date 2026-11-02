@@ -1,1 +1,1 @@
-Account order now covers all four slots and the count shows the top ones; window size and position are remembered.
+Shrink the top-right resize area so the close button stays clickable on small windows.
