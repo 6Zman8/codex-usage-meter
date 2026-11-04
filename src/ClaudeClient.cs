@@ -215,6 +215,9 @@ namespace CodexUsageMeter
             internal bool Same(Identity other) { return other != null && Account == other.Account && Organization == other.Organization; }
         }
 
+        // A manual refresh reads usage again even inside the poll interval; a Retry-After wait still applies.
+        internal void ExpireCachedReading() { _nextPoll = default(DateTime); }
+
         private string CredentialPath { get { return Path.Combine(ProfileRoot, ".credentials.json"); } }
         private string BindingPath { get { return Path.Combine(ProfileRoot, "meter-identity.json"); } }
 

@@ -279,6 +279,8 @@ namespace CodexUsageMeter
                 Require(account.RefreshAsync().GetAwaiter().GetResult().RetryAfterUtc == busy.Now.AddMinutes(10), "Repeated throttling did not back off.");
                 busy.Status = 200; busy.Now = Initial.AddMinutes(20);
                 Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == busy.Now, "Throttled account never recovered.");
+                busy.Now = Initial.AddMinutes(20).AddSeconds(10); account.ExpireCachedReading();
+                Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == busy.Now, "A manual refresh reused the cached Claude reading.");
             }
             Fixture timed = new Fixture(Path.Combine(root, "timeout")); timed.Save("token", Initial.AddHours(2));
             using (ClaudeUsageAccount account = timed.Create((request, cancellation) => { throw new TimeoutException("secret"); }))

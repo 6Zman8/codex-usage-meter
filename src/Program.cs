@@ -25,8 +25,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.22.0")]
-[assembly: AssemblyFileVersion("1.9.22.0")]
+[assembly: AssemblyVersion("1.9.23.0")]
+[assembly: AssemblyFileVersion("1.9.23.0")]
 
 namespace CodexUsageMeter
 {
@@ -1444,6 +1444,11 @@ namespace CodexUsageMeter
 
         private async void RefreshButtonClick(object sender, RoutedEventArgs e)
         {
+            foreach (AccountState state in _accounts)
+            {
+                ClaudeUsageAccount claude = state.Client as ClaudeUsageAccount;
+                if (claude != null) claude.ExpireCachedReading();
+            }
             await RefreshAccountsAsync();
         }
 
@@ -3036,6 +3041,10 @@ namespace CodexUsageMeter
             }
             identity.Text = accountName;
             identity.ToolTip = String.IsNullOrEmpty(snapshot.Error) ? accountName : snapshot.Error;
+            if (snapshot.ErrorKind == AccountErrorKind.RateLimited)
+                identity.Text = snapshot.RetryAfterUtc.HasValue
+                    ? "요청 제한 대기 · " + snapshot.RetryAfterUtc.Value.ToLocalTime().ToString("HH:mm") + " 이후 재확인"
+                    : "요청 제한 대기 중";
             UpdateCompactWindow(primaryValue, view.CompactPrimaryRing, view.CompactPrimaryTimeBar,
                 view.CompactPrimaryTimeValue, view.CompactPrimaryRecommendationRing,
                 snapshot.Primary, 35.0, new Point(48.0, 48.0), false);

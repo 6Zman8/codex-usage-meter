@@ -1,1 +1,1 @@
-Shrink the top-right resize area so the close button stays clickable on small windows.
+Refresh now re-reads Claude usage immediately, and the compact card shows when Claude is rate-limited.
