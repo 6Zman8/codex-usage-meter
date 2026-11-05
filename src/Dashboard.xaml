@@ -109,7 +109,10 @@
               </StackPanel>
               <TextBlock x:Name="AccountSummaryText" Text="계정 2개 한도 · 사용 기록 · 시스템 텔레메트리" Style="{StaticResource Muted}" Margin="17,2,0,0"/>
             </StackPanel></Viewbox>
-            <Button x:Name="CompactModeButton" Grid.Column="1" Content="위젯" Margin="0,0,8,0" VerticalAlignment="Center"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+              <Button x:Name="UpdateAvailableButton" Content="⬆ 업데이트" Style="{StaticResource AccentButton}" Visibility="Collapsed" Margin="0,0,8,0" VerticalAlignment="Center"/>
+              <Button x:Name="CompactModeButton" Content="위젯" Margin="0,0,8,0" VerticalAlignment="Center"/>
+            </StackPanel>
             <Button x:Name="RefreshButton" Grid.Column="2" Content="↻  갱신" Style="{StaticResource AccentButton}" Margin="0,0,8,0" VerticalAlignment="Center"/>
             <Button x:Name="TopmostButton" Grid.Column="3" Content="TOP" ToolTip="항상 위 켜기" Style="{StaticResource IconButton}" FontSize="8" Margin="0,0,6,0" VerticalAlignment="Center"/>
             <Button x:Name="SettingsButton" Grid.Column="4" Content="⚙" ToolTip="설정" Style="{StaticResource IconButton}" Margin="0,0,6,0" VerticalAlignment="Center"/>
@@ -232,7 +235,10 @@
               </StackPanel>
               <TextBlock x:Name="CompactAccountSummaryText" Text="계정 2개 · PC 상태" Style="{StaticResource Muted}" FontSize="9" Margin="15,1,0,0"/>
             </StackPanel></Viewbox>
-            <Button x:Name="ExpandedModeButton" Grid.Column="1" Content="전체" Padding="7,5" Margin="0,0,3,0" VerticalAlignment="Center"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+              <Button x:Name="CompactUpdateAvailableButton" Content="⬆" Style="{StaticResource AccentButton}" Visibility="Collapsed" Width="26" Height="28" Padding="0" Margin="0,0,3,0" VerticalAlignment="Center"/>
+              <Button x:Name="ExpandedModeButton" Content="전체" Padding="7,5" Margin="0,0,3,0" VerticalAlignment="Center"/>
+            </StackPanel>
             <Button x:Name="CompactTopmostButton" Grid.Column="2" Content="TOP" ToolTip="항상 위 켜기" Style="{StaticResource IconButton}" FontSize="7" Width="26" Height="28" Margin="0,0,3,0" VerticalAlignment="Center"/>
             <Button x:Name="CompactSettingsButton" Grid.Column="3" Content="⚙" ToolTip="설정" Style="{StaticResource IconButton}" Width="26" Height="28" Margin="0,0,3,0" VerticalAlignment="Center"/>
             <Button x:Name="CompactRefreshButton" Grid.Column="4" Content="↻" Style="{StaticResource IconButton}" Width="26" Height="28" Margin="0,0,3,0" VerticalAlignment="Center"/>
@@ -428,8 +434,8 @@
         </Border>
         <Border Grid.Row="4" Style="{StaticResource SubCard}" Margin="0,8,0,0">
           <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="프로그램 업데이트" FontWeight="SemiBold"/><TextBlock Text="자동 확인 없이 버튼을 누를 때만 GitHub를 확인합니다." Style="{StaticResource Muted}" Margin="0,3,12,0" TextWrapping="Wrap"/></StackPanel><TextBlock x:Name="AppVersionValue" Grid.Column="1" Text="v1.0.0" Foreground="#8DE0C4" FontWeight="Bold" VerticalAlignment="Center"/></Grid>
-            <Grid Grid.Row="1" Margin="0,10,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="UpdateStatusText" Text="수동 확인 대기 중" Style="{StaticResource Muted}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0"/><Button x:Name="UpdateCheckButton" Grid.Column="1" Content="업데이트 확인" Style="{StaticResource AccentButton}"/></Grid>
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="프로그램 업데이트" FontWeight="SemiBold"/><TextBlock Text="시작할 때와 6시간마다 GitHub를 자동으로 확인합니다. 새 버전이 있으면 위쪽 전체/위젯 버튼 옆에 업데이트 버튼이 나타납니다." Style="{StaticResource Muted}" Margin="0,3,12,0" TextWrapping="Wrap"/></StackPanel><TextBlock x:Name="AppVersionValue" Grid.Column="1" Text="v1.0.0" Foreground="#8DE0C4" FontWeight="Bold" VerticalAlignment="Center"/></Grid>
+            <Grid Grid.Row="1" Margin="0,10,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="UpdateStatusText" Text="자동 확인 대기 중" Style="{StaticResource Muted}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,10,0"/><Button x:Name="UpdateCheckButton" Grid.Column="1" Content="업데이트 확인" Style="{StaticResource AccentButton}"/></Grid>
           </Grid>
         </Border>
         </StackPanel></ScrollViewer>

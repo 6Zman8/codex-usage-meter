@@ -1,1 +1,1 @@
-Claude usage reuses a matching Mixdog reading, backs off less, and stays visible during rate limits.
+Checks for updates automatically and shows an update button next to the Full/Widget toggle only when a new version exists.

@@ -27,6 +27,9 @@ namespace CodexUsageMeter
             CheckLayout(640, 360, 1.5, notes, previewDirectory);
             CheckLayout(320, 260, 1.0, notes, previewDirectory);
             report("PASS update modal actions stay inside the window at 100-200% font scale and compact sizes");
+            CheckTitleUpdateButton(false, 430);
+            CheckTitleUpdateButton(true, 320);
+            report("PASS title-bar update button appears only with a newer release and stays clickable in full and compact modes");
             CheckUtf8Response();
             report("PASS Korean release notes decode correctly from a UTF-8 HTTP response without charset");
         }
@@ -134,6 +137,55 @@ namespace CodexUsageMeter
             }
             surface.RootVisual = null;
             }
+        }
+
+        private static void CheckTitleUpdateButton(bool compact, int width)
+        {
+            Window window = DashboardController.LoadWindow();
+            Grid root = (Grid)window.Content;
+            Button full = (Button)window.FindName("UpdateAvailableButton");
+            Button small = (Button)window.FindName("CompactUpdateAvailableButton");
+            Button mode = (Button)window.FindName(compact ? "ExpandedModeButton" : "CompactModeButton");
+            FrameworkElement shellElement = (FrameworkElement)window.FindName(compact ? "CompactShell" : "ExpandedShell");
+            DashboardController controller = (DashboardController)FormatterServices.GetUninitializedObject(typeof(DashboardController));
+            foreach (var field in new[] { Tuple.Create("_updateAvailableButton", (object)full), Tuple.Create("_compactUpdateAvailableButton", (object)small),
+                Tuple.Create("_updateStatusText", window.FindName("UpdateStatusText")) })
+                typeof(DashboardController).GetField(field.Item1, BindingFlags.NonPublic | BindingFlags.Instance).SetValue(controller, field.Item2);
+            MethodInfo set = typeof(DashboardController).GetMethod("SetAvailableUpdate", BindingFlags.NonPublic | BindingFlags.Instance);
+            Require(full.Visibility == Visibility.Collapsed && small.Visibility == Visibility.Collapsed, "Update button shown without an update.");
+            set.Invoke(controller, new object[] { new UpdateCheckResult { UpdateAvailable = true, CurrentVersionText = "1.0.0", LatestVersionText = "9.9.9" } });
+            Require(full.Visibility == Visibility.Visible && small.Visibility == Visibility.Visible, "Update button hidden with an update.");
+
+            foreach (UIElement child in root.Children) child.Visibility = Visibility.Collapsed;
+            for (FrameworkElement shell = shellElement;
+                shell != null && !Object.ReferenceEquals(shell, root); shell = VisualTreeHelper.GetParent(shell) as FrameworkElement ?? shell.Parent as FrameworkElement)
+                shell.Visibility = Visibility.Visible;
+            window.Content = null;
+            root.Resources.MergedDictionaries.Add(window.Resources);
+            root.SetValue(Control.FontFamilyProperty, window.FontFamily);
+            root.SetValue(Control.FontSizeProperty, window.FontSize);
+            HwndSourceParameters parameters = new HwndSourceParameters("CodexUsageMeter.UpdateButtonTest");
+            parameters.Width = width; parameters.Height = 600;
+            parameters.WindowStyle = unchecked((int)0x80000000);
+            parameters.ExtendedWindowStyle = 0x08000080;
+            using (HwndSource surface = new HwndSource(parameters))
+            {
+                surface.RootVisual = root;
+                root.Measure(new Size(width, 600)); root.Arrange(new Rect(0, 0, width, 600)); root.UpdateLayout();
+                Button button = compact ? small : full;
+                foreach (Button target in new[] { button, mode })
+                {
+                    Rect bounds = target.TransformToAncestor(root).TransformBounds(new Rect(target.RenderSize));
+                    Require(bounds.Width > 0 && bounds.Left >= 0 && bounds.Right <= width + 0.5, "Title button clipped at " + width + ": " + bounds);
+                    DependencyObject hit = root.InputHitTest(target.TransformToAncestor(root).Transform(
+                        new Point(target.ActualWidth / 2, target.ActualHeight / 2))) as DependencyObject;
+                    while (hit != null && !Object.ReferenceEquals(hit, target)) hit = VisualTreeHelper.GetParent(hit);
+                    Require(hit != null, "Title button is not clickable at " + width + ".");
+                }
+                surface.RootVisual = null;
+            }
+            set.Invoke(controller, new object[] { null });
+            Require(full.Visibility == Visibility.Collapsed && small.Visibility == Visibility.Collapsed, "Update button stayed after the update was gone.");
         }
 
         private static void ScaleFonts(DependencyObject element, double scale)

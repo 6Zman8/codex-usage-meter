@@ -25,8 +25,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.24.0")]
-[assembly: AssemblyFileVersion("1.9.24.0")]
+[assembly: AssemblyVersion("1.9.25.0")]
+[assembly: AssemblyFileVersion("1.9.25.0")]
 
 namespace CodexUsageMeter
 {
@@ -252,6 +252,7 @@ namespace CodexUsageMeter
                 window.ShowActivated = false;
                 DashboardController controller = new DashboardController(window);
                 if (!uiSmoke) controller.EnableWindowsWidgetPublishing();
+                if (!uiSmoke) controller.EnableAutomaticUpdateCheck();
                 if (!uiSmoke) controller.EnableWindowBoundsMemory();
                 if (!uiSmoke && (args.Contains("--tray") || args.Contains("--widget-refresh"))) controller.StartInTray = true;
                 if (!uiSmoke)
@@ -582,6 +583,10 @@ namespace CodexUsageMeter
         private readonly SemaphoreSlim _accountOperationGate = new SemaphoreSlim(1, 1);
         private bool _settingAutostart;
         private bool _updateChecking;
+        private Button _updateAvailableButton, _compactUpdateAvailableButton;
+        private DispatcherTimer _updateTimer;
+        private bool _automaticUpdateCheck;
+        private string _updateIdleStatus = "자동 확인 대기 중";
         private bool _notificationRefreshPending;
         private bool _switchingAccount;
         private bool _disposed;
@@ -695,6 +700,8 @@ namespace CodexUsageMeter
             _fontIncreaseButton = Find<Button>("FontIncreaseButton");
             _fontScaleValue = Find<TextBlock>("FontScaleValue");
             _updateCheckButton = Find<Button>("UpdateCheckButton");
+            _updateAvailableButton = Find<Button>("UpdateAvailableButton");
+            _compactUpdateAvailableButton = Find<Button>("CompactUpdateAvailableButton");
             _updateStatusText = Find<TextBlock>("UpdateStatusText");
             _appVersionValue = Find<TextBlock>("AppVersionValue");
             _accountCountDecreaseButton = Find<Button>("AccountCountDecreaseButton");
@@ -751,6 +758,8 @@ namespace CodexUsageMeter
             _fontResetButton.Click += FontResetButtonClick;
             _fontIncreaseButton.Click += FontIncreaseButtonClick;
             _updateCheckButton.Click += UpdateCheckButtonClick;
+            _updateAvailableButton.Click += UpdateCheckButtonClick;
+            _compactUpdateAvailableButton.Click += UpdateCheckButtonClick;
             Find<Button>("WindowsWidgetInstallButton").Click += WindowsWidgetInstallClick;
             _accountCountDecreaseButton.Click += AccountCountDecreaseButtonClick;
             _accountCountIncreaseButton.Click += AccountCountIncreaseButtonClick;
@@ -985,6 +994,13 @@ namespace CodexUsageMeter
             SetDisplayMode(true);
             _systemTimer.Start();
             _accountTimer.Start();
+            if (_automaticUpdateCheck)
+            {
+                _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(6) };
+                _updateTimer.Tick += delegate { AutomaticUpdateCheckAsync(); };
+                _updateTimer.Start();
+                AutomaticUpdateCheckAsync();
+            }
             await RefreshSystemAsync();
             await RefreshAccountsAsync();
         }
@@ -1241,7 +1257,7 @@ namespace CodexUsageMeter
             ApplyFontScale(1.5, false);
             _appVersionValue.Text = "v" + UpdateClient.CurrentVersionText;
             RefreshAccountOrderList();
-            _updateStatusText.Text = "수동 확인 대기 중";
+            _updateStatusText.Text = _updateIdleStatus;
             _settingsOverlay.Visibility = Visibility.Visible;
             _window.UpdateLayout();
         }
@@ -1304,6 +1320,7 @@ namespace CodexUsageMeter
             SaveWindowBounds();
             _systemTimer.Stop();
             _accountTimer.Stop();
+            if (_updateTimer != null) _updateTimer.Stop();
             _trayIcon.Visible = false;
         }
 
@@ -1595,6 +1612,9 @@ namespace CodexUsageMeter
             _trayUsageIcon.Update(TrayUsageDisplay.Build(_accounts, _trayUsageSettings, DateTime.UtcNow), _trayUsageSettings.Enabled);
         }
 
+        // Only the real app checks GitHub on its own; test and smoke surfaces stay offline.
+        internal void EnableAutomaticUpdateCheck() { _automaticUpdateCheck = true; }
+
         internal void EnableWindowsWidgetPublishing()
         {
             _windowsWidgetBridge = new WindowsWidgetBridge(WindowsWidgetBridge.DefaultRoot);
@@ -1687,7 +1707,7 @@ namespace CodexUsageMeter
             RefreshAccountOrderList();
             if (!_updateChecking)
             {
-                _updateStatusText.Text = "수동 확인 대기 중";
+                _updateStatusText.Text = _updateIdleStatus;
             }
         }
 
@@ -1775,15 +1795,16 @@ namespace CodexUsageMeter
             try
             {
                 UpdateCheckResult result = await UpdateClient.CheckLatestAsync();
+                SetAvailableUpdate(result.UpdateAvailable ? result : null);
                 if (!result.UpdateAvailable)
                 {
-                    _updateStatusText.Text = "최신 버전 v" + result.CurrentVersionText;
+                    _updateIdleStatus = _updateStatusText.Text = "최신 버전 v" + result.CurrentVersionText;
                     ShowModal("업데이트 확인", "현재 v" + result.CurrentVersionText + "이 최신 버전입니다.",
                         null, "확인", null, null, null);
                     return;
                 }
 
-                _updateStatusText.Text = "새 버전 v" + result.LatestVersionText + " 사용 가능";
+                _updateIdleStatus = _updateStatusText.Text = "새 버전 v" + result.LatestVersionText + " 사용 가능";
                 string notes = CompactReleaseNotes(result.Release == null ? null : result.Release.Notes);
                 string message = "현재 v" + result.CurrentVersionText + " → 최신 v" + result.LatestVersionText +
                     "\n\n다운로드 후 프로그램을 종료하고 새 버전으로 다시 시작합니다." +
@@ -1802,6 +1823,44 @@ namespace CodexUsageMeter
                 _updateCheckButton.IsEnabled = true;
                 _updateCheckButton.Content = "업데이트 확인";
             }
+        }
+
+        // Background check: the title-bar update button appears only while a newer release exists.
+        private async void AutomaticUpdateCheckAsync()
+        {
+            if (_updateChecking || _disposed) return;
+            try
+            {
+                UpdateCheckResult result = await UpdateClient.CheckLatestAsync();
+                if (_updateChecking || _disposed) return;
+                SetAvailableUpdate(result.UpdateAvailable ? result : null);
+                if (!result.UpdateAvailable)
+                    SetUpdateIdleStatus("최신 버전 v" + result.CurrentVersionText + " · " + DateTime.Now.ToString("HH:mm") + " 자동 확인");
+            }
+            catch (Exception)
+            {
+                // A failed background check keeps the last known state, including a known update; the next check tries again.
+                if (!_disposed && _updateAvailableButton.Visibility != Visibility.Visible)
+                    SetUpdateIdleStatus("자동 확인 실패 · " + DateTime.Now.ToString("HH:mm") + " · 다음 확인 때 다시 시도");
+            }
+        }
+
+        private void SetAvailableUpdate(UpdateCheckResult result)
+        {
+            Visibility shown = result == null ? Visibility.Collapsed : Visibility.Visible;
+            _updateAvailableButton.Visibility = shown;
+            _compactUpdateAvailableButton.Visibility = shown;
+            if (result == null) return;
+            string tip = "새 버전 v" + result.LatestVersionText + " 업데이트";
+            _updateAvailableButton.ToolTip = tip;
+            _compactUpdateAvailableButton.ToolTip = tip;
+            SetUpdateIdleStatus("새 버전 v" + result.LatestVersionText + " 사용 가능");
+        }
+
+        private void SetUpdateIdleStatus(string text)
+        {
+            _updateIdleStatus = text;
+            if (!_updateChecking) _updateStatusText.Text = text;
         }
 
         private async void DownloadAndInstallUpdateAsync(UpdateReleaseInfo release)
@@ -3682,6 +3741,7 @@ namespace CodexUsageMeter
             }
             _systemTimer.Stop();
             _accountTimer.Stop();
+            if (_updateTimer != null) _updateTimer.Stop();
             _trayIcon.Visible = false;
             _window.Close();
             Application.Current.Shutdown();
@@ -3845,6 +3905,7 @@ namespace CodexUsageMeter
             if (_windowsWidgetRenderer != null) _windowsWidgetRenderer.Dispose();
             _systemTimer.Stop();
             _accountTimer.Stop();
+            if (_updateTimer != null) _updateTimer.Stop();
             foreach (AccountState state in _accounts)
             {
                 state.Client.AccountChanged -= AccountClientChanged;
