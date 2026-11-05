@@ -1,1 +1,1 @@
-Refresh now re-reads Claude usage immediately, and the compact card shows when Claude is rate-limited.
+Claude usage reuses a matching Mixdog reading, backs off less, and stays visible during rate limits.

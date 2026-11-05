@@ -14,8 +14,21 @@ namespace CodexUsageMeter
 
         internal static string Status(AccountSnapshot snapshot)
         {
-            return snapshot == null ? "waiting" : !String.IsNullOrEmpty(snapshot.Error) ? "error" :
+            // A rate-limit wait still carries the last verified reading, which stays visible.
+            bool keptReading = snapshot != null && snapshot.ErrorKind == AccountErrorKind.RateLimited &&
+                snapshot.IsAuthenticated && snapshot.RateLimitsObservedAtUtc != default(DateTime);
+            return snapshot == null ? "waiting" : !String.IsNullOrEmpty(snapshot.Error) && !keptReading ? "error" :
                 !snapshot.IsAuthenticated ? "unlinked" : snapshot.RateLimitsObservedAtUtc == default(DateTime) ? "waiting" : "ok";
+        }
+
+        // A reading older than three minutes is stale, except during a server-requested wait, which keeps the last
+        // reading until the poll after the wait.
+        internal static bool Stale(AccountSnapshot snapshot, DateTime now)
+        {
+            DateTime limit = snapshot.RateLimitsObservedAtUtc + TimeSpan.FromMinutes(3);
+            if (snapshot.ErrorKind == AccountErrorKind.RateLimited && snapshot.RetryAfterUtc.HasValue &&
+                snapshot.RetryAfterUtc.Value + TimeSpan.FromMinutes(2) > limit) limit = snapshot.RetryAfterUtc.Value + TimeSpan.FromMinutes(2);
+            return now > limit || snapshot.RateLimitsObservedAtUtc - now > TimeSpan.FromMinutes(1);
         }
 
         internal static string BuildJson(IEnumerable<AccountState> accounts, bool running, DateTime writtenAtUtc, object widgetPages = null)

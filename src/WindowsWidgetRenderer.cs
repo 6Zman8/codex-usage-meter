@@ -141,8 +141,8 @@ namespace CodexUsageMeter
             string status = WindowsWidgetBridge.Status(original);
             bool expired = status == "ok" && new[] { original.Primary, original.Secondary }
                 .Any(limit => limit != null && limit.ResetsAt.HasValue && limit.ResetsAt.Value.ToUniversalTime() <= now);
-            bool stale = status == "ok" && (now - original.RateLimitsObservedAtUtc > TimeSpan.FromMinutes(3) ||
-                original.RateLimitsObservedAtUtc - now > TimeSpan.FromMinutes(1));
+            bool stale = status == "ok" && WindowsWidgetBridge.Stale(original, now);
+            bool limited = status == "ok" && original.ErrorKind == AccountErrorKind.RateLimited;
             // Only display fields enter the isolated surface; identity and raw errors never do.
             var display = new AccountSnapshot {
                 ProviderId = state.Client == null ? (original == null ? null : original.ProviderId) : state.Client.Provider.Id,
@@ -161,7 +161,7 @@ namespace CodexUsageMeter
             string plan = original == null ? "" : (original.PlanType ?? "").ToLowerInvariant();
             string[] known = { "free", "plus", "pro", "prolite", "business", "team", "enterprise", "edu", "max" };
             plan = !known.Contains(plan) ? "" : plan == "prolite" ? "Pro Lite" : Char.ToUpperInvariant(plan[0]) + plan.Substring(1);
-            string notice = expired ? "초기화됨 · 갱신 대기" : stale ? "오래됨 · 마지막 기록" :
+            string notice = expired ? "초기화됨 · 갱신 대기" : stale ? "오래됨 · 마지막 기록" : limited ? "요청 제한 대기" :
                 status == "error" ? "조회 실패" : status == "unlinked" ? "연결 안 됨" : status == "waiting" ? "조회 중" : "";
             Find<TextBlock>(prefix + "Identity").Text = String.Join(" · ", new[] { plan, notice }.Where(text => text.Length > 0));
         }

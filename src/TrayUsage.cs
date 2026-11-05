@@ -57,13 +57,13 @@ namespace CodexUsageMeter
                 limit == null ? "미제공" :
                 Double.IsNaN(limit.RemainingPercent) || Double.IsInfinity(limit.RemainingPercent) ? "정보 없음" :
                 (limit.ResetsAt.HasValue && limit.ResetsAt.Value.ToUniversalTime() <= now) ||
-                now - snapshot.RateLimitsObservedAtUtc > TimeSpan.FromMinutes(3) ||
-                snapshot.RateLimitsObservedAtUtc - now > TimeSpan.FromMinutes(1) ? "갱신 대기" : null;
+                WindowsWidgetBridge.Stale(snapshot, now) ? "갱신 대기" : null;
             string text = notice == null
                 ? Math.Round(Math.Max(0, Math.Min(100, limit.RemainingPercent))).ToString("0", CultureInfo.InvariantCulture)
                 : "--";
             AccountProvider provider = account != null && account.Client != null ? account.Client.Provider : AccountProviders.For(snapshot);
-            string tooltip = provider.DisplayName + " · " + (account != null && account.Label != null ? account.Label : "계정 " + settings.AccountNumber) + " · " + name + " · " + (notice ?? "잔여 " + text + "%");
+            string tooltip = provider.DisplayName + " · " + (account != null && account.Label != null ? account.Label : "계정 " + settings.AccountNumber) + " · " + name + " · " + (notice ?? "잔여 " + text + "%" +
+                (snapshot.ErrorKind == AccountErrorKind.RateLimited ? " · 요청 제한 대기" : ""));
             return new TrayUsageDisplay { Text = text, ToolTip = tooltip.Length > 63 ? tooltip.Substring(0, 63) : tooltip };
         }
     }

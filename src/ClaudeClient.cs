@@ -176,8 +176,26 @@ namespace CodexUsageMeter
         private const int MaximumBytes = 1024 * 1024;
         // One usage request per minute tick; under the 60-second timer so tick jitter never skips a poll.
         internal static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(50);
-        // The usage endpoint throttles per account with 429 and Retry-After: 0.
-        private static readonly TimeSpan FirstBackoff = TimeSpan.FromMinutes(5), MaximumBackoff = TimeSpan.FromMinutes(60);
+        // The usage endpoint throttles per account with 429 and Retry-After: 0. The budget is shared with every
+        // client of the same account (Mixdog polls it while in use), so after a 429 the meter polls less often.
+        private static readonly TimeSpan FirstBackoff = TimeSpan.FromMinutes(2), MaximumBackoff = TimeSpan.FromMinutes(10);
+        // Under three 60-second ticks, so the tray/widget 3-minute staleness never trips between busy polls.
+        internal static readonly TimeSpan BusyPollInterval = TimeSpan.FromSeconds(170), BusyPeriod = TimeSpan.FromMinutes(30);
+        // A shared reading older than this is not used; the meter's own poll is then due anyway.
+        private static readonly TimeSpan SharedMaximumAge = TimeSpan.FromMinutes(10);
+        // Shared readings replace own polls for at most this long, so identity, plan and extras are read again.
+        internal static readonly TimeSpan OwnRefreshInterval = TimeSpan.FromMinutes(10);
+        // Reset instants identify an account only approximately (weekly resets are hour-aligned, with jitter).
+        private static readonly TimeSpan ResetTolerance = TimeSpan.FromMinutes(2), AgreementWindow = TimeSpan.FromMinutes(2);
+        private static readonly TimeSpan FiveHours = TimeSpan.FromHours(5);
+        // Latest own verified reading per profile, so a shared reading that fits two meter slots is refused.
+        private static readonly Dictionary<string, AccountSnapshot> Verified = new Dictionary<string, AccountSnapshot>(StringComparer.OrdinalIgnoreCase);
+        private readonly string _sharedPath;
+        private bool _manual;
+        private DateTime _busyUntil;
+        // _ownGood is the meter's own last verified reading; _sharedAccount is the Mixdog account bound to it.
+        private AccountSnapshot _ownGood;
+        private string _sharedAccount;
         private static readonly DateTime Epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         private readonly Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> _transport;
         private readonly Func<DateTime> _now;
@@ -198,9 +216,11 @@ namespace CodexUsageMeter
         public string ProfileRoot { get; private set; }
         public event EventHandler AccountChanged;
 
-        internal ClaudeUsageAccount(string profileRoot) : this(profileRoot, SendAsync, () => DateTime.UtcNow) { }
+        internal ClaudeUsageAccount(string profileRoot) : this(profileRoot, SendAsync, () => DateTime.UtcNow, MixdogUsageShare.DefaultPath) { }
         internal ClaudeUsageAccount(string profileRoot, Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> transport, Func<DateTime> now)
-        { ProfileRoot = Path.GetFullPath(profileRoot); _transport = transport; _now = now; }
+            : this(profileRoot, transport, now, null) { }
+        internal ClaudeUsageAccount(string profileRoot, Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> transport, Func<DateTime> now, string sharedPath)
+        { ProfileRoot = Path.GetFullPath(profileRoot); _transport = transport; _now = now; _sharedPath = sharedPath; }
 
         private sealed class Credentials
         {
@@ -216,7 +236,110 @@ namespace CodexUsageMeter
         }
 
         // A manual refresh reads usage again even inside the poll interval; a Retry-After wait still applies.
-        internal void ExpireCachedReading() { _nextPoll = default(DateTime); }
+        internal void ExpireCachedReading() { _nextPoll = default(DateTime); _manual = true; }
+
+        private static bool Near(DateTime? a, DateTime? b)
+        { return a.HasValue && b.HasValue && (a.Value.ToUniversalTime() - b.Value.ToUniversalTime()).Duration() <= ResetTolerance; }
+
+        // Whether a Mixdog reading can belong to this login (the cache carries no identity): the same weekly reset, the
+        // same 5-hour reset while this login's window still runs, and otherwise a window that started after it.
+        private static bool Plausible(AccountSnapshot own, SharedClaudeReading reading)
+        {
+            if (own == null || own.Secondary == null || !Near(own.Secondary.ResetsAt, reading.WeekReset)) return false;
+            DateTime? ownFive = own.Primary == null ? null : own.Primary.ResetsAt;
+            if (ownFive.HasValue && ownFive.Value.ToUniversalTime() > reading.ObservedUtc) return Near(ownFive, reading.FiveReset);
+            if (!reading.FiveReset.HasValue) return true;
+            DateTime started = ownFive.HasValue ? ownFive.Value.ToUniversalTime() : own.RateLimitsObservedAtUtc;
+            return reading.FiveReset.Value.ToUniversalTime() >= started + FiveHours - ResetTolerance;
+        }
+
+        // A Mixdog reading taken within two minutes of this login's own reading that shows the same windows.
+        private static bool Agrees(AccountSnapshot own, SharedClaudeReading reading)
+        {
+            if (own == null || own.Secondary == null || (reading.ObservedUtc - own.RateLimitsObservedAtUtc).Duration() > AgreementWindow ||
+                !Near(own.Secondary.ResetsAt, reading.WeekReset) || Math.Abs(own.Secondary.UsedPercent - reading.WeekUsed) > 1) return false;
+            if (own.Primary == null) return !reading.FiveUsed.HasValue;
+            if (!reading.FiveUsed.HasValue || Math.Abs(own.Primary.UsedPercent - reading.FiveUsed.Value) > 2) return false;
+            return own.Primary.ResetsAt.HasValue ? Near(own.Primary.ResetsAt, reading.FiveReset) : !reading.FiveReset.HasValue;
+        }
+
+        // Binds this login to the one Mixdog account that agrees with its own reading; refused while another Mixdog
+        // account, or another meter account, could be the same.
+        private void Bind(List<SharedClaudeReading> readings)
+        {
+            List<SharedClaudeReading> agreeing = readings.Where(reading => Agrees(_ownGood, reading)).ToList();
+            if (agreeing.Count != 1 || readings.Count(reading => Plausible(_ownGood, reading)) != 1) return;
+            lock (Verified)
+                if (Verified.Any(other => !String.Equals(other.Key, ProfileRoot, StringComparison.OrdinalIgnoreCase) &&
+                    other.Value.HistoryKey != _ownGood.HistoryKey && Plausible(other.Value, agreeing[0]))) return;
+            _sharedAccount = agreeing[0].Account;
+        }
+
+        // The bound Mixdog account's reading when it is newer than the one shown and still fits this login.
+        private SharedClaudeReading SharedReading()
+        {
+            if (_sharedPath == null || _ownGood == null || _lastGood == null) return null;
+            List<SharedClaudeReading> readings = MixdogUsageShare.Read(_sharedPath);
+            if (_sharedAccount == null) Bind(readings);
+            if (_sharedAccount == null) return null;
+            SharedClaudeReading reading = readings.FirstOrDefault(value => value.Account == _sharedAccount);
+            DateTime now = _now();
+            if (reading == null || reading.ObservedUtc <= _lastGood.RateLimitsObservedAtUtc || reading.ObservedUtc > now.AddMinutes(1) ||
+                now - reading.ObservedUtc > SharedMaximumAge) return null;
+            // A newer reading that no longer fits means Mixdog's account changed; binding starts over.
+            if (!Plausible(_ownGood, reading) || reading.WeekUsed < _ownGood.Secondary.UsedPercent - 1) { _sharedAccount = null; return null; }
+            return reading;
+        }
+
+        private AccountSnapshot FromShared(SharedClaudeReading reading)
+        {
+            AccountSnapshot own = _ownGood;
+            return new AccountSnapshot {
+                ProviderId = Provider.Id, UpdatedAt = _now().ToLocalTime(), IsAuthenticated = true, IdentityVerified = true,
+                Email = own.Email, PlanType = own.PlanType, RemoteAccountId = own.RemoteAccountId,
+                RemoteOrganizationId = own.RemoteOrganizationId, HistoryKey = own.HistoryKey, ModelShares = own.ModelShares,
+                ResetCredits = own.ResetCredits, ResetCreditCount = own.ResetCreditCount, ResetCreditsNote = own.ResetCreditsNote,
+                RateLimitsObservedAtUtc = reading.ObservedUtc,
+                Primary = reading.FiveUsed.HasValue ? new RateWindow { Name = "5시간 한도", UsedPercent = reading.FiveUsed.Value,
+                    RemainingPercent = 100 - reading.FiveUsed.Value, DurationMinutes = 300, ResetsAt = reading.FiveReset } : null,
+                Secondary = new RateWindow { Name = "주간 한도", UsedPercent = reading.WeekUsed, RemainingPercent = 100 - reading.WeekUsed,
+                    DurationMinutes = 10080, ResetsAt = reading.WeekReset }
+            };
+        }
+
+        // Mixdog's reading replaces own polls until a poll interval after it, never past the own refresh deadline.
+        private AccountSnapshot Adopt(SharedClaudeReading reading)
+        {
+            _lastGood = FromShared(reading);
+            DateTime next = reading.ObservedUtc + PollInterval, deadline = _ownGood.RateLimitsObservedAtUtc + OwnRefreshInterval;
+            if (next > deadline) next = deadline;
+            if (next > _nextPoll) _nextPoll = next;
+            if (_now() >= _retryAt) return _lastGood;
+            // During a server-requested wait the reading is shown together with the wait.
+            AccountSnapshot waiting = FromShared(reading);
+            waiting.ErrorKind = AccountErrorKind.RateLimited; waiting.RetryAfterUtc = _retryAt;
+            waiting.Error = "Claude 요청 제한으로 " + _retryAt.ToLocalTime().ToString("HH:mm") + " 이후 다시 확인합니다. Mixdog이 " +
+                reading.ObservedUtc.ToLocalTime().ToString("HH:mm") + "에 받은 값을 표시합니다.";
+            return waiting;
+        }
+
+        private void RememberOwn(AccountSnapshot snapshot)
+        {
+            if (_ownGood == null || _ownGood.HistoryKey != snapshot.HistoryKey) _sharedAccount = null;
+            _ownGood = snapshot; _lastGood = snapshot;
+            lock (Verified) Verified[ProfileRoot] = snapshot;
+            if (_sharedAccount == null || _sharedPath == null) return;
+            // A Mixdog reading taken around this own reading must still agree with it.
+            SharedClaudeReading bound = MixdogUsageShare.Read(_sharedPath).FirstOrDefault(reading => reading.Account == _sharedAccount);
+            if (bound != null && (bound.ObservedUtc - snapshot.RateLimitsObservedAtUtc).Duration() <= AgreementWindow && !Agrees(snapshot, bound))
+                _sharedAccount = null;
+        }
+
+        private void Forget()
+        {
+            _lastGood = null; _ownGood = null; _sharedAccount = null;
+            lock (Verified) Verified.Remove(ProfileRoot);
+        }
 
         private string CredentialPath { get { return Path.Combine(ProfileRoot, ".credentials.json"); } }
         private string BindingPath { get { return Path.Combine(ProfileRoot, "meter-identity.json"); } }
@@ -224,20 +347,29 @@ namespace CodexUsageMeter
         public async Task<AccountSnapshot> RefreshAsync()
         {
             AccountSnapshot snapshot = new AccountSnapshot { ProviderId = Provider.Id, UpdatedAt = _now().ToLocalTime() };
-            bool entered = false;
+            bool entered = false, manual = false;
             string raw = null;
             try
             {
                 await _gate.WaitAsync(_lifetime.Token).ConfigureAwait(false); entered = true;
+                manual = _manual; _manual = false;
                 if (_login != null && !_login.IsCompleted)
                     throw Fault(AccountErrorKind.LoginRequired, "브라우저에서 Claude 로그인을 마쳐 주세요. 다른 계정은 계속 갱신됩니다.");
                 raw = ReadOptional(CredentialPath);
                 if (raw == null)
                     throw Fault(AccountErrorKind.LoginRequired, "연결에서 Claude 구독 계정으로 로그인해 주세요.");
                 if (raw == _terminalCredentials && _terminalError != null) throw _terminalError;
-                if (_now() < _retryAt) throw Fault(AccountErrorKind.RateLimited, "Claude 요청이 많아 잠시 대기합니다. " + _retryAt.ToLocalTime().ToString("HH:mm") + " 이후 자동으로 다시 확인합니다.");
+                bool sameLogin = _ownGood != null && raw == _lastGoodCredentials, waiting = _now() < _retryAt;
+                // Mixdog's reading of this login costs no request and replaces own polls up to the own refresh deadline;
+                // a manual refresh asks the server itself unless the server told the meter to wait.
+                if (sameLogin && (waiting || (!manual && _now() < _ownGood.RateLimitsObservedAtUtc + OwnRefreshInterval)))
+                {
+                    SharedClaudeReading shared = SharedReading();
+                    if (shared != null) return Adopt(shared);
+                }
+                if (waiting) throw Fault(AccountErrorKind.RateLimited, "Claude 요청이 많아 잠시 대기합니다. " + _retryAt.ToLocalTime().ToString("HH:mm") + " 이후 자동으로 다시 확인합니다.");
                 // Between polls the last verified reading is reused; a changed sign-in is read at once.
-                if (_lastGood != null && raw == _lastGoodCredentials && _now() < _nextPoll) return _lastGood;
+                if (sameLogin && _now() < _nextPoll) return _lastGood;
                 Credentials credentials = ParseCredentials(raw);
                 snapshot.IsAuthenticated = true;
                 if (credentials.Expires <= _now().AddMinutes(1))
@@ -265,7 +397,8 @@ namespace CodexUsageMeter
                 snapshot.RateLimitsObservedAtUtc = observed;
                 if (snapshot.Primary == null && snapshot.Secondary == null)
                     snapshot.UsageError = "Claude가 유효한 단기·주간 한도를 제공하지 않았습니다.";
-                _lastGood = snapshot; _lastGoodCredentials = raw; _nextPoll = observed + PollInterval; _rateLimitStreak = 0;
+                RememberOwn(snapshot); _lastGoodCredentials = raw; _rateLimitStreak = 0;
+                _nextPoll = observed + (observed < _busyUntil ? BusyPollInterval : PollInterval);
             }
             catch (Exception error)
             {
@@ -279,7 +412,12 @@ namespace CodexUsageMeter
                     safe.Kind == AccountErrorKind.RenewalBlocked || safe.Kind == AccountErrorKind.IdentityMismatch))
                 { _terminalCredentials = raw; _terminalError = safe; }
                 snapshot.RetryAfterUtc = _retryAt > _now() ? (DateTime?)_retryAt : null;
-                if (safe.Kind != AccountErrorKind.RateLimited || raw != _lastGoodCredentials) _lastGood = null;
+                if (safe.Kind == AccountErrorKind.RateLimited && raw == _lastGoodCredentials && _ownGood != null)
+                {
+                    SharedClaudeReading shared = SharedReading();
+                    if (shared != null) return Adopt(shared);
+                }
+                if (safe.Kind != AccountErrorKind.RateLimited || raw != _lastGoodCredentials) Forget();
                 else if (_lastGood != null)
                 {
                     // Throttling does not make the last verified reading wrong; keep showing it with its own time.
@@ -599,11 +737,12 @@ namespace CodexUsageMeter
                 if (!Double.TryParse(response.RetryAfter, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds) || !Finite(seconds))
                     seconds = DateTimeOffset.TryParse(response.RetryAfter, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out date)
                         ? (date.UtcDateTime - _now()).TotalSeconds : 0;
-                // Retry-After: 0 or none is not a usable wait here; back off 5, 10, 20... up to 60 minutes.
+                // Retry-After: 0 or none is not a usable wait here; back off 2, 4, 8, then 10 minutes.
                 if (seconds <= 0)
                     seconds = Math.Min(MaximumBackoff.TotalSeconds, FirstBackoff.TotalSeconds * Math.Pow(2, Math.Min(_rateLimitStreak, 10)));
                 _rateLimitStreak++;
                 _retryAt = _now().AddSeconds(Math.Max(1, Math.Min(86400, seconds)));
+                _busyUntil = _now() + BusyPeriod;
                 throw Fault(AccountErrorKind.RateLimited, "Claude 요청이 많아 잠시 대기합니다. 잠시 후 자동으로 다시 확인합니다.");
             }
             if (response.Status != 200)
@@ -732,6 +871,77 @@ namespace CodexUsageMeter
         {
             if (_disposed) return;
             _disposed = true; _lifetime.Cancel();
+            lock (Verified) Verified.Remove(ProfileRoot);
+        }
+    }
+
+    internal sealed class SharedClaudeReading
+    {
+        internal string Account;
+        internal DateTime ObservedUtc;
+        internal double? FiveUsed;
+        internal DateTime? FiveReset, WeekReset;
+        internal double WeekUsed;
+    }
+
+    // Mixdog keeps its latest Claude usage readings in this cache; reading it costs no usage request.
+    internal static class MixdogUsageShare
+    {
+        private const long MaximumBytes = 4 * 1024 * 1024;
+        private static readonly DateTime Epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        internal static string DefaultPath
+        {
+            get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".mixdog", "data", "gateway-oauth-usage-cache.json"); }
+        }
+
+        // An absent, unreadable or reshaped cache yields no readings, and the meter polls on its own.
+        internal static List<SharedClaudeReading> Read(string path)
+        {
+            try
+            {
+                FileInfo file = new FileInfo(path);
+                if (!file.Exists || file.Length > MaximumBytes) return new List<SharedClaudeReading>();
+                using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8)) return Parse(reader.ReadToEnd());
+            }
+            catch (Exception) { return new List<SharedClaudeReading>(); }
+        }
+
+        internal static List<SharedClaudeReading> Parse(string text)
+        {
+            Dictionary<string, object> root = new JavaScriptSerializer { MaxJsonLength = (int)MaximumBytes }.DeserializeObject(text) as Dictionary<string, object>;
+            Dictionary<string, object> routes = JsonValue.AsObject(JsonValue.Get(root, "routes"));
+            Dictionary<string, SharedClaudeReading> newest = new Dictionary<string, SharedClaudeReading>();
+            if (routes == null) return new List<SharedClaudeReading>();
+            foreach (KeyValuePair<string, object> entry in routes)
+            {
+                Dictionary<string, object> route = JsonValue.AsObject(entry.Value);
+                if (JsonValue.AsString(JsonValue.Get(route, "provider")) != "anthropic-oauth") continue;
+                double cachedAt = JsonValue.AsDouble(JsonValue.Get(route, "cachedAt"), Double.NaN);
+                object[] windows = JsonValue.Get(route, "quotaWindows") as object[];
+                if (Double.IsNaN(cachedAt) || Double.IsInfinity(cachedAt) || cachedAt <= 0 || windows == null) continue;
+                SharedClaudeReading reading = new SharedClaudeReading { ObservedUtc = Epoch.AddMilliseconds(cachedAt), WeekUsed = Double.NaN };
+                foreach (object item in windows)
+                {
+                    Dictionary<string, object> window = JsonValue.AsObject(item);
+                    string label = JsonValue.AsString(JsonValue.Get(window, "label"));
+                    double used = JsonValue.AsDouble(JsonValue.Get(window, "usedPct"), Double.NaN);
+                    if (Double.IsNaN(used) || Double.IsInfinity(used) || used < 0 || used > 100) continue;
+                    double resetMs = JsonValue.AsDouble(JsonValue.Get(window, "resetAt"), Double.NaN);
+                    DateTime? reset = Double.IsNaN(resetMs) || Double.IsInfinity(resetMs) || resetMs <= 0 ? (DateTime?)null :
+                        Epoch.AddMilliseconds(resetMs).ToLocalTime();
+                    if (label == "5H") { reading.FiveUsed = used; reading.FiveReset = reset; }
+                    else if (label == "7D") { reading.WeekUsed = used; reading.WeekReset = reset; }
+                }
+                if (Double.IsNaN(reading.WeekUsed) || !reading.WeekReset.HasValue) continue;
+                // Routes without an account id stay separate, so they can never stand in for one another.
+                string account = JsonValue.AsString(JsonValue.Get(route, "accountId"));
+                reading.Account = String.IsNullOrEmpty(account) ? "route:" + entry.Key : account;
+                SharedClaudeReading known;
+                if (!newest.TryGetValue(reading.Account, out known) || known.ObservedUtc < reading.ObservedUtc) newest[reading.Account] = reading;
+            }
+            return newest.Values.ToList();
         }
     }
 }

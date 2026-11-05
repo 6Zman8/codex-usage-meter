@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -271,17 +272,97 @@ namespace CodexUsageMeter
                     busy.Requests.Count == 2, "Claude was polled again before the poll interval.");
                 busy.Now = Initial.AddMinutes(5); busy.Status = 429; busy.RetryAfter = "0";
                 AccountSnapshot limited = account.RefreshAsync().GetAwaiter().GetResult();
-                Require(limited.ErrorKind == AccountErrorKind.RateLimited && limited.RetryAfterUtc == busy.Now.AddMinutes(5) &&
+                Require(limited.ErrorKind == AccountErrorKind.RateLimited && limited.RetryAfterUtc == busy.Now.AddMinutes(2) &&
                     limited.Primary.RemainingPercent == 75 && limited.RateLimitsObservedAtUtc == Initial && limited.HistoryKey == null &&
                     limited.ResetCreditCount == 1 && limited.ResetCreditsNote == good.ResetCreditsNote,
                     "Throttling hid the last reading, recorded it again or ignored Retry-After: 0.");
                 busy.Now = Initial.AddMinutes(10);
-                Require(account.RefreshAsync().GetAwaiter().GetResult().RetryAfterUtc == busy.Now.AddMinutes(10), "Repeated throttling did not back off.");
+                Require(account.RefreshAsync().GetAwaiter().GetResult().RetryAfterUtc == busy.Now.AddMinutes(4), "Repeated throttling did not back off.");
                 busy.Status = 200; busy.Now = Initial.AddMinutes(20);
                 Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == busy.Now, "Throttled account never recovered.");
-                busy.Now = Initial.AddMinutes(20).AddSeconds(10); account.ExpireCachedReading();
+                int polls = busy.Requests.Count;
+                busy.Now = Initial.AddMinutes(21);
+                account.RefreshAsync().GetAwaiter().GetResult();
+                Require(busy.Requests.Count == polls, "After throttling the meter kept polling every minute.");
+                busy.Now = Initial.AddMinutes(21).AddSeconds(10); account.ExpireCachedReading();
                 Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == busy.Now, "A manual refresh reused the cached Claude reading.");
             }
+            // Mixdog's cached reading stands in for own polls only once it agrees with an own reading of the same login.
+            Fixture mixdog = new Fixture(Path.Combine(root, "mixdog-share")); mixdog.Save("token", Initial.AddHours(2)); mixdog.RetryAfter = "0";
+            mixdog.Usage = "{\"five_hour\":{\"utilization\":25,\"resets_at\":\"2030-01-02T15:30:00Z\"},\"seven_day\":{\"utilization\":40,\"resets_at\":\"2030-01-09T09:00:00Z\"}}";
+            string cache = Path.Combine(mixdog.Root, "mixdog-cache.json");
+            using (ClaudeUsageAccount account = mixdog.Create(null, cache))
+            {
+                AccountSnapshot own = account.RefreshAsync().GetAwaiter().GetResult();
+                int polls = mixdog.Requests.Count;
+                WriteMixdog(cache, MixdogRoute("x", Initial.AddSeconds(30), 25, "2030-01-02T15:30:20Z", 40, "2030-01-09T09:00:10Z"));
+                mixdog.Now = Initial.AddMinutes(1);
+                AccountSnapshot bound = account.RefreshAsync().GetAwaiter().GetResult();
+                Require(own.IdentityVerified && mixdog.Requests.Count == polls && bound.RateLimitsObservedAtUtc == Initial.AddSeconds(30) &&
+                    bound.HistoryKey == own.HistoryKey && String.IsNullOrEmpty(bound.Error), "An agreeing Mixdog reading did not replace the own poll.");
+                WriteMixdog(cache, MixdogRoute("x", Initial.AddSeconds(100), 30, "2030-01-02T15:30:20Z", 41, "2030-01-09T09:00:10Z"));
+                mixdog.Now = Initial.AddMinutes(2);
+                AccountSnapshot borrowed = account.RefreshAsync().GetAwaiter().GetResult();
+                Require(mixdog.Requests.Count == polls && borrowed.Primary.RemainingPercent == 70 && borrowed.Secondary.RemainingPercent == 59,
+                    "A newer Mixdog reading was not shown.");
+                WriteMixdog(cache, MixdogRoute("x", Initial.AddMinutes(4).AddSeconds(-5), 35, "2030-01-02T15:30:20Z", 42, "2030-01-09T09:00:10Z"));
+                mixdog.Now = Initial.AddMinutes(4); mixdog.Status = 429; account.ExpireCachedReading();
+                AccountSnapshot throttled = account.RefreshAsync().GetAwaiter().GetResult();
+                Require(mixdog.Requests.Count == polls + 1 && throttled.ErrorKind == AccountErrorKind.RateLimited &&
+                    throttled.RetryAfterUtc == mixdog.Now.AddMinutes(2) && throttled.Primary.RemainingPercent == 65 && throttled.Error.Contains("Mixdog"),
+                    "A manual refresh skipped its own request or a throttled poll ignored Mixdog's reading.");
+                WriteMixdog(cache, MixdogRoute("x", Initial.AddMinutes(5).AddSeconds(-5), 36, "2030-01-02T15:30:20Z", 42, "2030-01-09T09:00:10Z"));
+                mixdog.Now = Initial.AddMinutes(5);
+                AccountSnapshot waiting = account.RefreshAsync().GetAwaiter().GetResult();
+                Require(mixdog.Requests.Count == polls + 1 && waiting.ErrorKind == AccountErrorKind.RateLimited && waiting.Primary.RemainingPercent == 64,
+                    "Mixdog's reading was not shown during the wait.");
+                // Without the running 5-hour window the reading belongs to another account.
+                WriteMixdog(cache, MixdogRoute("x", Initial.AddMinutes(5).AddSeconds(30), null, null, 43, "2030-01-09T09:00:10Z"));
+                mixdog.Now = Initial.AddMinutes(5).AddSeconds(40);
+                AccountSnapshot missing = account.RefreshAsync().GetAwaiter().GetResult();
+                Require(mixdog.Requests.Count == polls + 1 && missing.Primary != null && missing.Primary.RemainingPercent == 64,
+                    "A reading without the running 5-hour window was shown.");
+                mixdog.Status = 200; mixdog.Now = Initial.AddMinutes(6).AddSeconds(10);
+                Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == mixdog.Now && mixdog.Requests.Count == polls + 2,
+                    "An unbound login did not read itself after the wait.");
+                WriteMixdog(cache, MixdogRoute("x", Initial.AddMinutes(6).AddSeconds(20), 25, "2030-01-02T15:30:20Z", 40, "2030-01-09T09:00:10Z"));
+                mixdog.Now = Initial.AddMinutes(6).AddSeconds(30);
+                Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == Initial.AddMinutes(6).AddSeconds(20) &&
+                    mixdog.Requests.Count == polls + 2, "Binding did not resume after an agreeing reading.");
+                // A reading of another week is another account: not shown, and binding starts over.
+                WriteMixdog(cache, MixdogRoute("x", Initial.AddMinutes(7), 50, "2030-01-02T15:30:20Z", 43, "2030-01-16T09:00:10Z"));
+                mixdog.Now = Initial.AddMinutes(7).AddSeconds(10);
+                Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == Initial.AddMinutes(6).AddSeconds(20) &&
+                    mixdog.Requests.Count == polls + 2, "A Mixdog reading of another week was shown.");
+            }
+            // Two Mixdog accounts that could both be this login: neither is used. Fresh readings never pass the own refresh deadline.
+            Fixture twin = new Fixture(Path.Combine(root, "mixdog-twin")); twin.Save("token", Initial.AddHours(2));
+            twin.Usage = "{\"five_hour\":{\"utilization\":25,\"resets_at\":\"2030-01-02T14:10:00Z\"},\"seven_day\":{\"utilization\":40,\"resets_at\":\"2030-01-09T06:00:00Z\"}}";
+            string twinCache = Path.Combine(twin.Root, "mixdog-cache.json");
+            using (ClaudeUsageAccount account = twin.Create(null, twinCache))
+            {
+                account.RefreshAsync().GetAwaiter().GetResult();
+                int polls = twin.Requests.Count;
+                WriteMixdog(twinCache, MixdogRoute("x", Initial.AddSeconds(30), 25, "2030-01-02T14:10:20Z", 40, "2030-01-09T06:00:10Z"),
+                    MixdogRoute("y", Initial.AddMinutes(-20), 20, "2030-01-02T14:11:00Z", 38, "2030-01-09T06:00:00Z"));
+                twin.Now = Initial.AddMinutes(1);
+                Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == twin.Now && twin.Requests.Count == polls + 1,
+                    "An ambiguous Mixdog reading replaced the own poll.");
+                WriteMixdog(twinCache, MixdogRoute("x", Initial.AddMinutes(1).AddSeconds(20), 25, "2030-01-02T14:10:20Z", 40, "2030-01-09T06:00:10Z"));
+                twin.Now = Initial.AddMinutes(2);
+                Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == Initial.AddMinutes(1).AddSeconds(20) &&
+                    twin.Requests.Count == polls + 1, "An agreeing Mixdog reading was not used.");
+                WriteMixdog(twinCache, MixdogRoute("x", Initial.AddMinutes(11).AddSeconds(5), 26, "2030-01-02T14:10:20Z", 40, "2030-01-09T06:00:10Z"));
+                twin.Now = Initial.AddMinutes(11).AddSeconds(10);
+                Require(account.RefreshAsync().GetAwaiter().GetResult().RateLimitsObservedAtUtc == twin.Now && twin.Requests.Count == polls + 2,
+                    "Mixdog's readings postponed the own refresh past its deadline.");
+            }
+            Require(MixdogUsageShare.Read(Path.Combine(root, "absent-mixdog.json")).Count == 0, "A missing Mixdog cache produced readings.");
+            File.WriteAllText(Path.Combine(root, "broken-mixdog.json"), "{not json");
+            Require(MixdogUsageShare.Read(Path.Combine(root, "broken-mixdog.json")).Count == 0, "A damaged Mixdog cache produced readings.");
+            Require(MixdogUsageShare.Parse("{\"routes\":{\"a\":{\"provider\":\"anthropic-oauth\",\"cachedAt\":1,\"quotaWindows\":[{\"label\":\"7D\",\"usedPct\":1,\"resetAt\":2}]}," +
+                "\"b\":{\"provider\":\"anthropic-oauth\",\"cachedAt\":1,\"quotaWindows\":[{\"label\":\"7D\",\"usedPct\":1,\"resetAt\":2}]}}}").Count == 2,
+                "Mixdog routes without an account id were merged.");
             Fixture timed = new Fixture(Path.Combine(root, "timeout")); timed.Save("token", Initial.AddHours(2));
             using (ClaudeUsageAccount account = timed.Create((request, cancellation) => { throw new TimeoutException("secret"); }))
                 Require(account.RefreshAsync().GetAwaiter().GetResult().ErrorKind == AccountErrorKind.Timeout, "Timeout became auth denial.");
@@ -858,6 +939,25 @@ namespace CodexUsageMeter
             public void Dispose() { }
         }
 
+        private static string Millis(DateTime utc)
+        { return (utc - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds.ToString(CultureInfo.InvariantCulture); }
+
+        private static string Millis(string utc)
+        { return Millis(DateTime.Parse(utc, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal)); }
+
+        // One route of Mixdog's usage cache; a null five leaves the 5-hour window out.
+        private static string MixdogRoute(string account, DateTime at, double? five, string fiveReset, double week, string weekReset)
+        {
+            string fiveWindow = five.HasValue ? "{\"label\":\"5H\",\"usedPct\":" + five.Value.ToString(CultureInfo.InvariantCulture) +
+                (fiveReset == null ? "" : ",\"resetAt\":" + Millis(fiveReset)) + "}," : "";
+            return "\"anthropic-oauth\\u0002" + account + "\":{\"provider\":\"anthropic-oauth\",\"accountId\":\"" + account + "\",\"cachedAt\":" +
+                Millis(at) + ",\"quotaWindows\":[" + fiveWindow + "{\"label\":\"7D\",\"usedPct\":" + week.ToString(CultureInfo.InvariantCulture) +
+                ",\"resetAt\":" + Millis(weekReset) + "}]}";
+        }
+
+        private static void WriteMixdog(string path, params string[] routes)
+        { File.WriteAllText(path, "{\"routes\":{" + String.Join(",", routes) + "}}"); }
+
         private sealed class Fixture
         {
             internal readonly string Root;
@@ -877,9 +977,9 @@ namespace CodexUsageMeter
                         { "expiresAt", (expires - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds },
                         { "scopes", scopes ?? new[] { "user:profile", "user:inference" } } } } }));
             }
-            internal ClaudeUsageAccount Create(Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> transport = null)
+            internal ClaudeUsageAccount Create(Func<ClaudeRequest, CancellationToken, Task<ClaudeResponse>> transport = null, string mixdogCache = null)
             {
-                return new ClaudeUsageAccount(Root, transport ?? Send, () => Now);
+                return new ClaudeUsageAccount(Root, transport ?? Send, () => Now, mixdogCache);
             }
             private Task<ClaudeResponse> Send(ClaudeRequest request, CancellationToken cancellation)
             {

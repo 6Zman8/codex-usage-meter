@@ -63,6 +63,14 @@ namespace CodexUsageMeter
             display = TrayUsageDisplay.Build(accounts, settings, now);
             Require(display.Text == "--" && display.ToolTip.EndsWith("조회 실패") &&
                 !display.ToolTip.Contains("secret") && !display.ToolTip.Contains("private"), "Failure/privacy");
+            // A rate-limit wait keeps the last verified reading visible until the poll after the wait.
+            snapshot.ErrorKind = AccountErrorKind.RateLimited; snapshot.RetryAfterUtc = now.AddMinutes(5);
+            snapshot.RateLimitsObservedAtUtc = now.AddMinutes(-8);
+            display = TrayUsageDisplay.Build(accounts, settings, now);
+            Require(display.Text == "15" && display.ToolTip.EndsWith("요청 제한 대기") && WindowsWidgetBridge.Status(snapshot) == "ok",
+                "A rate-limit wait hid the last verified reading");
+            Require(TrayUsageDisplay.Build(accounts, settings, now.AddMinutes(8)).Text == "--", "A reading long after the wait was shown as current");
+            snapshot.ErrorKind = AccountErrorKind.None; snapshot.RetryAfterUtc = null; snapshot.RateLimitsObservedAtUtc = now;
             snapshot.Error = null; snapshot.IsAuthenticated = false;
             Require(TrayUsageDisplay.Build(accounts, settings, now).ToolTip.EndsWith("연결 안 됨"), "Unlinked quota");
             snapshot.IsAuthenticated = true; snapshot.RateLimitsObservedAtUtc = default(DateTime);
