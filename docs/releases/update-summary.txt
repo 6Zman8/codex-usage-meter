@@ -1,1 +1,1 @@
-Checks for updates automatically and shows an update button next to the Full/Widget toggle only when a new version exists.
+The running meter can install a new release on request without dialogs and restarts where it was.

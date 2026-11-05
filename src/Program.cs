@@ -25,8 +25,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.25.0")]
-[assembly: AssemblyFileVersion("1.9.25.0")]
+[assembly: AssemblyVersion("1.9.26.0")]
+[assembly: AssemblyFileVersion("1.9.26.0")]
 
 namespace CodexUsageMeter
 {
@@ -77,6 +77,10 @@ namespace CodexUsageMeter
             }
             if (args.Length == 2 && args[0] == "--activation-test-send") return SingleInstanceRegressionTests.Send(args[1], false);
             if (args.Length == 2 && args[0] == "--activation-test-refresh") return SingleInstanceRegressionTests.Send(args[1], true);
+            if (args.Length == 2 && args[0] == "--activation-test-install") return SingleInstanceActivation.RequestInstallUpdate(args[1], 4000) ? 0 : 1;
+            // Release route: the running meter installs the latest release itself and restarts where it was.
+            if (args.Length == 1 && args[0] == "--install-update")
+                return SingleInstanceActivation.RequestInstallUpdate(SingleInstanceActivation.DefaultScope, 6000) ? 0 : 1;
             if (args.Length == 2 && args[0] == "--single-instance-self-test")
             {
                 StringBuilder report = new StringBuilder();
@@ -226,7 +230,8 @@ namespace CodexUsageMeter
                     if (IndependentProcess.NeedsIsolation && !args.Contains("--standalone"))
                     {
                         using (Process independent = IndependentProcess.Start(Assembly.GetExecutingAssembly().Location,
-                            "--standalone" + (args.Contains("--tray") || args.Contains("--widget-refresh") ? " --tray" : String.Empty)))
+                            "--standalone" + (args.Contains("--tray") || args.Contains("--widget-refresh") ? " --tray" : String.Empty) +
+                            String.Concat(new[] { "--minimized", "--maximized", "--full" }.Where(args.Contains).Select(arg => " " + arg))))
                         {
                             // Older updaters observe this bootstrap PID for five seconds.
                             if (independent.WaitForExit(6500) && independent.ExitCode != 0)
@@ -255,6 +260,9 @@ namespace CodexUsageMeter
                 if (!uiSmoke) controller.EnableAutomaticUpdateCheck();
                 if (!uiSmoke) controller.EnableWindowBoundsMemory();
                 if (!uiSmoke && (args.Contains("--tray") || args.Contains("--widget-refresh"))) controller.StartInTray = true;
+                // Restart state from a quiet update: minimized, custom-maximized and full mode come back as they were.
+                if (!uiSmoke && args.Contains("--minimized")) window.WindowState = WindowState.Minimized;
+                if (!uiSmoke) { controller.StartMaximized = args.Contains("--maximized"); controller.StartFull = args.Contains("--full"); }
                 if (!uiSmoke)
                 {
                     ChromeSubscriptionBridge.StartIfConfigured();
@@ -319,7 +327,8 @@ namespace CodexUsageMeter
                     smokeTimer.Start();
                 }
                 using (SingleInstanceActivation activation = uiSmoke ? null :
-                    new SingleInstanceActivation(SingleInstanceActivation.DefaultScope, controller.ShowWindow, controller.RefreshFromWindowsWidget))
+                    new SingleInstanceActivation(SingleInstanceActivation.DefaultScope, controller.ShowWindow, controller.RefreshFromWindowsWidget,
+                        controller.InstallUpdateQuietly))
                 {
                     RunMainWindow(application, window, controller.StartInTray, controller.InitializeInTray);
                 }
@@ -523,7 +532,7 @@ namespace CodexUsageMeter
         private SystemSnapshot _lastSystemSnapshot;
         private DateTime _lastWidgetPublishUtc;
         private bool _editingLayout;
-        internal bool StartInTray;
+        internal bool StartInTray, StartMaximized, StartFull;
         private bool _windowInitialized;
         private readonly TextBlock _footerStatus;
         private readonly UniformGrid _performanceItemsPanel;
@@ -991,7 +1000,8 @@ namespace CodexUsageMeter
                 _settingAutostart = false;
             }
             ApplyTopmostState(UserSettings.LoadTopmost(), false);
-            SetDisplayMode(true);
+            SetDisplayMode(!StartFull);
+            if (StartMaximized && _window.WindowState != WindowState.Minimized) ApplyCustomMaximize();
             _systemTimer.Start();
             _accountTimer.Start();
             if (_automaticUpdateCheck)
@@ -1845,6 +1855,40 @@ namespace CodexUsageMeter
             }
         }
 
+        // Requested through `--install-update`: installs a newer release without dialogs and restarts where it was,
+        // in the tray when the window was hidden. Busy states skip the request.
+        internal async void InstallUpdateQuietly()
+        {
+            if (_disposed || _updateChecking || _switchingAccount || _editingLayout) return;
+            _updateChecking = true;
+            try
+            {
+                UpdateCheckResult result = await UpdateClient.CheckLatestAsync();
+                SetAvailableUpdate(result.UpdateAvailable ? result : null);
+                if (!result.UpdateAvailable || _disposed || _switchingAccount || _editingLayout) return;
+                _updateStatusText.Text = "v" + result.LatestVersionText + " 자동 설치 중…";
+                string stagedPath = await UpdateClient.DownloadAndVerifyAsync(result.Release);
+                if (_disposed || _switchingAccount) return;
+                List<string> restart = new List<string>();
+                if (!_window.IsVisible) restart.Add("--tray");
+                else if (_window.WindowState == WindowState.Minimized) restart.Add("--minimized");
+                else if (_customMaximized) restart.Add("--maximized");
+                if (!_compactMode) restart.Add("--full");
+                UpdateClient.StartUpdater(stagedPath, result.Release, String.Join(" ", restart), true);
+                ExitApplication();
+            }
+            catch (Exception ex)
+            {
+                _updateIdleStatus = "자동 설치 실패 · " + DateTime.Now.ToString("HH:mm");
+                SetFooterText("업데이트를 자동으로 설치하지 못했습니다: " + ex.Message);
+            }
+            finally
+            {
+                _updateChecking = false;
+                if (!_disposed) _updateStatusText.Text = _updateIdleStatus;
+            }
+        }
+
         private void SetAvailableUpdate(UpdateCheckResult result)
         {
             Visibility shown = result == null ? Visibility.Collapsed : Visibility.Visible;
@@ -1873,6 +1917,11 @@ namespace CodexUsageMeter
             if (release == null)
             {
                 ShowModal("업데이트 실패", "새 버전 정보를 찾지 못했습니다.", null, "확인", null, null, null);
+                return;
+            }
+            if (_updateChecking)
+            {
+                SetFooterText("다른 업데이트 작업이 진행 중입니다. 끝난 뒤 다시 시도해 주세요.");
                 return;
             }
             _updateChecking = true;

@@ -21,14 +21,14 @@ namespace CodexUsageMeter
         {
             string scope = "test-" + Guid.NewGuid().ToString("N");
             int opened = 0;
-            int refreshed = 0;
+            int refreshed = 0, installs = 0;
             Window window = new Window { Width = 100, Height = 100, Left = -30000, Top = -30000,
                 Opacity = 0, ShowInTaskbar = false, ShowActivated = false, WindowStyle = WindowStyle.None };
             try
             {
                 using (SingleInstanceActivation endpoint = new SingleInstanceActivation(scope, delegate {
                     opened++; SingleInstanceActivation.Restore(window, false);
-                }, delegate { refreshed++; }))
+                }, delegate { refreshed++; }, delegate { installs++; }))
                 {
                     window.Show(); window.Hide();
                     RequestFromChild(scope, delegate { return opened == 1; });
@@ -44,6 +44,11 @@ namespace CodexUsageMeter
                     using (Process child = StartChild(scope, true)) WaitForChild(child, delegate { return refreshed == 1; });
                     if (window.IsVisible || opened != 3) throw new InvalidOperationException("Widget refresh opened the app window");
                     report("PASS Windows widget refresh reaches the running app without showing its window");
+                    using (Process child = Process.Start(new ProcessStartInfo(Assembly.GetExecutingAssembly().Location, "--activation-test-install " + scope)
+                        { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden }))
+                        WaitForChild(child, delegate { return installs == 1; });
+                    if (window.IsVisible || opened != 3 || refreshed != 1) throw new InvalidOperationException("Install request opened the window or refreshed");
+                    report("PASS install-update request reaches the running app without showing its window");
                     if (SingleInstanceActivation.Request(scope + "-other", 50))
                         throw new InvalidOperationException("An unrelated instance received the request");
                     report("PASS isolated endpoint cannot activate the user's live meter");

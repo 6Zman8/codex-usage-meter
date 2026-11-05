@@ -186,7 +186,7 @@ namespace CodexUsageMeter
             }
         }
 
-        public static void StartUpdater(string stagedPath, UpdateReleaseInfo release)
+        public static void StartUpdater(string stagedPath, UpdateReleaseInfo release, string restartArguments = "", bool quiet = false)
         {
             if (release == null) throw new ArgumentNullException("release");
             string targetPath = Assembly.GetExecutingAssembly().Location;
@@ -202,7 +202,9 @@ namespace CodexUsageMeter
             start.CreateNoWindow = true;
             start.WorkingDirectory = Path.GetDirectoryName(targetPath);
             start.Arguments = Process.GetCurrentProcess().Id.ToString() + " " + Quote(stagedPath) + " " +
-                Quote(targetPath) + " " + Quote(release.Sha256);
+                Quote(targetPath) + " " + Quote(release.Sha256) +
+                (String.IsNullOrEmpty(restartArguments) ? String.Empty : " " + Quote("--restart-args=" + restartArguments)) +
+                (quiet ? " --quiet" : String.Empty);
             Process process = Process.Start(start);
             if (process == null)
             {
@@ -227,7 +229,7 @@ namespace CodexUsageMeter
                 start.FileName = helper;
                 start.UseShellExecute = false;
                 start.CreateNoWindow = true;
-                start.Arguments = "0 " + Quote(staged) + " " + Quote(target) + " " + Quote(hash) + " --no-restart";
+                start.Arguments = "0 " + Quote(staged) + " " + Quote(target) + " " + Quote(hash) + " " + Quote("--restart-args=--tray") + " --no-restart";
                 using (Process process = Process.Start(start))
                 {
                     if (process == null || !process.WaitForExit(15000) || process.ExitCode != 0)
@@ -239,6 +241,18 @@ namespace CodexUsageMeter
                 {
                     throw new InvalidOperationException("업데이트 교체 결과가 올바르지 않습니다.");
                 }
+                // A quiet update that fails (wrong hash) ends without a dialog and leaves the installed file as it was.
+                File.WriteAllText(staged, "newer", Encoding.UTF8);
+                start.Arguments = "0 " + Quote(staged) + " " + Quote(target) + " " + Quote(hash) + " --quiet";
+                using (Process process = Process.Start(start))
+                {
+                    bool exited = process != null && process.WaitForExit(15000);
+                    if (process != null && !exited) { process.Kill(); process.WaitForExit(2000); }
+                    if (!exited || process.ExitCode != 1)
+                        throw new InvalidOperationException("조용한 업데이트 실패가 안내창 없이 끝나지 않았습니다.");
+                }
+                if (File.ReadAllText(target, Encoding.UTF8) != "new")
+                    throw new InvalidOperationException("실패한 업데이트가 설치 파일을 바꿨습니다.");
             }
             finally
             {

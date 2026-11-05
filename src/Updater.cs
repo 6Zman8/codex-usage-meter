@@ -22,9 +22,18 @@ namespace CodexUsageMeterUpdater
             string stagedPath = Path.GetFullPath(args[1]);
             string targetPath = Path.GetFullPath(args[2]);
             string expectedHash = args[3];
-            bool noRestart = args.Length > 4 && String.Equals(args[4], "--no-restart", StringComparison.OrdinalIgnoreCase);
+            bool noRestart = false, quiet = false;
+            string restartArguments = String.Empty;
+            for (int index = 4; index < args.Length; index++)
+            {
+                if (String.Equals(args[index], "--no-restart", StringComparison.OrdinalIgnoreCase)) noRestart = true;
+                else if (String.Equals(args[index], "--quiet", StringComparison.OrdinalIgnoreCase)) quiet = true;
+                else if (args[index].StartsWith("--restart-args=", StringComparison.OrdinalIgnoreCase))
+                    restartArguments = args[index].Substring("--restart-args=".Length);
+            }
             string newPath = targetPath + ".new";
             string backupPath = targetPath + ".old";
+            Process updated = null;
 
             try
             {
@@ -47,7 +56,7 @@ namespace CodexUsageMeterUpdater
                     return 0;
                 }
 
-                Process updated = CodexUsageMeter.IndependentProcess.Start(targetPath, String.Empty);
+                updated = CodexUsageMeter.IndependentProcess.Start(targetPath, restartArguments);
                 if (updated == null) throw new InvalidOperationException("새 버전을 시작하지 못했습니다.");
                 Thread.Sleep(5000);
                 updated.Refresh();
@@ -63,17 +72,24 @@ namespace CodexUsageMeterUpdater
             }
             catch (Exception ex)
             {
+                bool newRunning = false;
+                try { newRunning = updated != null && !updated.HasExited; } catch { }
                 try
                 {
-                    if (File.Exists(backupPath))
+                    if (!newRunning && File.Exists(backupPath))
                     {
                         if (File.Exists(targetPath)) File.Delete(targetPath);
                         File.Move(backupPath, targetPath);
-                        if (!noRestart) CodexUsageMeter.IndependentProcess.Start(targetPath, String.Empty);
                     }
                 }
                 catch { }
-                if (!noRestart)
+                // A failed update never leaves the user without a meter: once the old process is gone, the unchanged
+                // or restored version starts again in the state it had.
+                if (!noRestart && !newRunning && WaitForExitQuietly(oldProcessId))
+                {
+                    try { CodexUsageMeter.IndependentProcess.Start(targetPath, restartArguments); } catch { }
+                }
+                if (!noRestart && !quiet)
                 {
                     MessageBox.Show("업데이트를 적용하지 못했습니다. 기존 실행 파일은 복구했습니다.\n\n" + ex.Message,
                         "Codex Meter 업데이트", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -97,6 +113,17 @@ namespace CodexUsageMeterUpdater
                 }
             }
             catch (ArgumentException) { }
+        }
+
+        private static bool WaitForExitQuietly(int processId)
+        {
+            if (processId <= 0) return true;
+            try
+            {
+                using (Process process = Process.GetProcessById(processId)) return process.WaitForExit(60000);
+            }
+            catch (ArgumentException) { return true; }
+            catch (Exception) { return false; }
         }
 
         private static string ComputeSha256(string path)
