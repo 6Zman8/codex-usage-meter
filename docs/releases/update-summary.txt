@@ -1,1 +1,1 @@
-The running meter can install a new release on request without dialogs and restarts where it was.
+Large hold-to-confirm Screen off and Sleep buttons: full view on the right, widget view at the bottom.

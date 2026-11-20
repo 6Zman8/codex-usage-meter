@@ -40,7 +40,9 @@ namespace CodexUsageMeter
             Grid shell = (Grid)Find<Border>("CompactShell").Child;
             foreach (FrameworkElement child in shell.Children)
                 if (Grid.GetRow(child) != 1) child.Visibility = Visibility.Collapsed;
-            shell.RowDefinitions[0].Height = shell.RowDefinitions[2].Height = new GridLength(0);
+            // Only the card body is drawn; the title bar, power strip and footer rows collapse.
+            for (int row = 0; row < shell.RowDefinitions.Count; row++)
+                if (row != 1) shell.RowDefinitions[row].Height = new GridLength(0);
             ((FrameworkElement)shell.Children.Cast<FrameworkElement>().Single(child => Grid.GetRow(child) == 1)).Margin = new Thickness(0);
             for (int slot = 1; slot <= 2; slot++)
             {

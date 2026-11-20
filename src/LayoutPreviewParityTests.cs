@@ -67,7 +67,7 @@ namespace CodexUsageMeter
                         if (!editor.TrySave()) throw new InvalidOperationException("Parity fixture save failed.");
                         saved = LayoutSettings.Parse(editor.Draft.ToJson());
                         if (saved.ToJson() != originalSettings)
-                            throw new InvalidOperationException("Opening/saving preview changed the saved layout.");
+                            throw new InvalidOperationException("Opening/saving preview changed the saved layout. before=" + originalSettings + " after=" + saved.ToJson());
                     });
                 }
                 finally { editor.RestoreDashboard(); }

@@ -64,6 +64,22 @@
       <Setter Property="Width" Value="34"/><Setter Property="Height" Value="30"/><Setter Property="Padding" Value="0"/>
       <Setter Property="Background" Value="#232323"/><Setter Property="BorderBrush" Value="#424242"/><Setter Property="FontSize" Value="15"/>
     </Style>
+    <Style x:Key="PowerButton" TargetType="Button">
+      <Setter Property="Foreground" Value="#F4F4F5"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Stylus.IsPressAndHoldEnabled" Value="False"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Frame" Background="#1B1B1B" BorderBrush="#343434" BorderThickness="1" CornerRadius="16">
+              <Grid x:Name="Surface">
+                <Border x:Name="Fill" Visibility="Hidden"/>
+                <Viewbox Stretch="Uniform" StretchDirection="DownOnly" Margin="10"><ContentPresenter/></Viewbox>
+              </Grid>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style x:Key="QuotaBar" TargetType="ProgressBar">
       <Setter Property="Height" Value="7"/><Setter Property="Minimum" Value="0"/><Setter Property="Maximum" Value="100"/>
       <Setter Property="Background" Value="#383838"/><Setter Property="Foreground" Value="#72D4B5"/><Setter Property="BorderThickness" Value="0"/>
@@ -122,7 +138,9 @@
           </Grid>
         </Border>
 
-        <Grid Grid.Row="1" Margin="12">
+        <Grid Grid.Row="1">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="0.26*" MaxWidth="262"/></Grid.ColumnDefinitions>
+        <Grid Margin="12">
           <Grid.ColumnDefinitions><ColumnDefinition Width="1*"/><ColumnDefinition Width="1*"/><ColumnDefinition Width="1.1*"/></Grid.ColumnDefinitions>
 
           <Border x:Name="Account1Card" Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,10,0">
@@ -206,6 +224,24 @@
             </Grid>
           </Border>
         </Grid>
+          <Grid Grid.Column="1" Margin="0,12,12,12">
+            <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="10"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <Button x:Name="ScreenOffButton" Style="{StaticResource PowerButton}" ToolTip="꾹 눌러서 화면 끄기">
+              <StackPanel>
+                <Viewbox Width="56" Height="56"><Canvas Width="24" Height="24"><Path Stroke="#38BDF8" StrokeThickness="1.8" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M5,4 H19 A2,2 0 0 1 21,6 V14 A2,2 0 0 1 19,16 H5 A2,2 0 0 1 3,14 V6 A2,2 0 0 1 5,4 Z M8,20 H16 M12,16 V20"/></Canvas></Viewbox>
+                <TextBlock x:Name="ScreenOffLabel" Text="화면 끄기" FontSize="20" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,14,0,0"/>
+                <TextBlock x:Name="ScreenOffHint" Text="꾹 누르기" Style="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+              </StackPanel>
+            </Button>
+            <Button x:Name="SleepButton" Grid.Row="2" Style="{StaticResource PowerButton}" ToolTip="꾹 눌러서 절전">
+              <StackPanel>
+                <Viewbox Width="56" Height="56"><Canvas Width="24" Height="24"><Path Stroke="#FBBF24" StrokeThickness="1.8" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M20,14.5 A8,8 0 0 1 9.5,4 A8,8 0 1 0 20,14.5 Z"/></Canvas></Viewbox>
+                <TextBlock x:Name="SleepLabel" Text="절전" FontSize="20" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,14,0,0"/>
+                <TextBlock x:Name="SleepHint" Text="꾹 누르기" Style="{StaticResource Muted}" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+              </StackPanel>
+            </Button>
+          </Grid>
+        </Grid>
 
         <Border Grid.Row="2" Background="#1A1A1A" BorderBrush="#333333" BorderThickness="0,1,0,0" Padding="14,0">
           <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -223,7 +259,7 @@
     <Border x:Name="CompactShell" Margin="0" Background="#151515" BorderThickness="0"
             CornerRadius="0" ClipToBounds="False">
       <Grid>
-        <Grid.RowDefinitions><RowDefinition Height="50"/><RowDefinition Height="*"/><RowDefinition Height="32"/></Grid.RowDefinitions>
+        <Grid.RowDefinitions><RowDefinition Height="50"/><RowDefinition Height="*"/><RowDefinition Height="0.36*" MaxHeight="134"/><RowDefinition Height="32"/></Grid.RowDefinitions>
 
         <Border x:Name="CompactTitleBar" Grid.Row="0" Background="#1A1A1A" BorderBrush="#333333" BorderThickness="0,0,0,1" Padding="13,0">
           <Grid>
@@ -352,8 +388,29 @@
             </Grid>
           </Border>
         </Grid>
+          <Grid Grid.Row="2" Margin="10,0,10,10">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Button x:Name="CompactScreenOffButton" Style="{StaticResource PowerButton}" ToolTip="꾹 눌러서 화면 끄기">
+              <StackPanel Orientation="Horizontal">
+                <Viewbox Width="34" Height="34" VerticalAlignment="Center"><Canvas Width="24" Height="24"><Path Stroke="#38BDF8" StrokeThickness="1.8" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M5,4 H19 A2,2 0 0 1 21,6 V14 A2,2 0 0 1 19,16 H5 A2,2 0 0 1 3,14 V6 A2,2 0 0 1 5,4 Z M8,20 H16 M12,16 V20"/></Canvas></Viewbox>
+                <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
+                  <TextBlock x:Name="CompactScreenOffLabel" Text="화면 끄기" FontSize="14" FontWeight="Bold"/>
+                  <TextBlock x:Name="CompactScreenOffHint" Text="꾹 누르기" Style="{StaticResource Muted}" FontSize="9" Margin="0,3,0,0"/>
+                </StackPanel>
+              </StackPanel>
+            </Button>
+            <Button x:Name="CompactSleepButton" Grid.Column="2" Style="{StaticResource PowerButton}" ToolTip="꾹 눌러서 절전">
+              <StackPanel Orientation="Horizontal">
+                <Viewbox Width="34" Height="34" VerticalAlignment="Center"><Canvas Width="24" Height="24"><Path Stroke="#FBBF24" StrokeThickness="1.8" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Data="M20,14.5 A8,8 0 0 1 9.5,4 A8,8 0 1 0 20,14.5 Z"/></Canvas></Viewbox>
+                <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
+                  <TextBlock x:Name="CompactSleepLabel" Text="절전" FontSize="14" FontWeight="Bold"/>
+                  <TextBlock x:Name="CompactSleepHint" Text="꾹 누르기" Style="{StaticResource Muted}" FontSize="9" Margin="0,3,0,0"/>
+                </StackPanel>
+              </StackPanel>
+            </Button>
+          </Grid>
 
-        <Border Grid.Row="2" Background="#1A1A1A" BorderBrush="#333333" BorderThickness="0,1,0,0" Padding="12,0">
+        <Border Grid.Row="3" Background="#1A1A1A" BorderBrush="#333333" BorderThickness="0,1,0,0" Padding="12,0">
           <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <Ellipse Width="6" Height="6" Fill="#2F9E7E" Margin="0,0,7,0"/>
             <TextBlock x:Name="CompactFooterStatus" Grid.Column="1" Text="준비 중…" Style="{StaticResource Muted}" FontSize="9" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>

@@ -149,6 +149,7 @@ $arguments += @(
     (Join-Path $sourceRoot 'ChromeSubscriptionTests.cs'),
     (Join-Path $sourceRoot 'ChromeSubscriptionBridge.cs'),
     (Join-Path $sourceRoot 'IndependentProcess.cs'),
+    (Join-Path $sourceRoot 'PowerButtons.cs'),
     (Join-Path $sourceRoot 'ProcessLifetimeTests.cs'),
     (Join-Path $sourceRoot 'CodexClient.cs'),
     (Join-Path $sourceRoot 'SystemMonitor.cs'),

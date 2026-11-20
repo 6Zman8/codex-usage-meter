@@ -25,8 +25,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.26.0")]
-[assembly: AssemblyFileVersion("1.9.26.0")]
+[assembly: AssemblyVersion("1.9.27.0")]
+[assembly: AssemblyFileVersion("1.9.27.0")]
 
 namespace CodexUsageMeter
 {
@@ -795,6 +795,10 @@ namespace CodexUsageMeter
             _window.KeyDown += WindowKeyDown;
             _modalPrimaryButton.Click += ModalPrimaryClick;
             _modalSecondaryButton.Click += ModalSecondaryClick;
+            PowerHoldButton.ScreenOff(Find<Button>("ScreenOffButton"), Find<TextBlock>("ScreenOffLabel"), Find<TextBlock>("ScreenOffHint"), true, TurnOffScreen);
+            PowerHoldButton.ScreenOff(Find<Button>("CompactScreenOffButton"), Find<TextBlock>("CompactScreenOffLabel"), Find<TextBlock>("CompactScreenOffHint"), false, TurnOffScreen);
+            PowerHoldButton.Sleep(Find<Button>("SleepButton"), Find<TextBlock>("SleepLabel"), Find<TextBlock>("SleepHint"), true, StartSleep);
+            PowerHoldButton.Sleep(Find<Button>("CompactSleepButton"), Find<TextBlock>("CompactSleepLabel"), Find<TextBlock>("CompactSleepHint"), false, StartSleep);
 
             _layouts = LayoutSettingsStore.Load();
             _layoutView = new DashboardLayoutView(_window);
@@ -3559,6 +3563,14 @@ namespace CodexUsageMeter
         {
             _footerStatus.Text = text;
             _compactFooterStatus.Text = text;
+        }
+
+        private void TurnOffScreen() { PowerActions.TurnOffScreen(_window); }
+
+        private void StartSleep()
+        {
+            Task.Run(new Action(PowerActions.Sleep)).ContinueWith(task => _window.Dispatcher.BeginInvoke(new Action(() =>
+                SetFooterText("절전 실패: " + task.Exception.GetBaseException().Message))), TaskContinuationOptions.OnlyOnFaulted);
         }
 
         private static void UpdateWindow(TextBlock name, TextBlock value, ProgressBar bar, ProgressBar timeBar,

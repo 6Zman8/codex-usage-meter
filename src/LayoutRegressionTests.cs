@@ -34,6 +34,7 @@ namespace CodexUsageMeter
             LayoutSettings itemLayout = LayoutSettings.Parse("{\"Version\":1,\"Widget\":{\"Columns\":1,\"Cards\":[{\"Id\":\"account1\",\"Visible\":true,\"Span\":1,\"Size\":1,\"ItemLayouts\":[{\"Id\":\"weekly\",\"X\":0.2,\"Y\":0.3,\"Width\":0.4,\"Height\":0.5}]}]}}");
             VerifyVerticalShrink(report);
             VerifySavedLowHeader(report);
+            VerifyPowerButtons(report, previewDirectory);
             Require(itemLayout.Copy().ToJson().Contains("\"X\":0.2"), "individual item positions and sizes did not survive save/reload");
             VerifyEditorZoom(report, previewDirectory);
             using (Fixture fixture = new Fixture())
@@ -118,13 +119,13 @@ namespace CodexUsageMeter
                 CardLayoutPanel panel = (CardLayoutPanel)((Viewbox)first.Parent).Parent;
                 Require(panel.Tiles.Count(tile => tile.Host.Visibility == Visibility.Visible) == 2, "Single-account layout keeps an empty account slot.");
                 Rect accountBounds = panel.Tiles.Single(tile => tile.Card == first).Bounds;
-                Require(accountBounds.Width > 580, "Single-account layout failed to reclaim the unused column.");
+                Require(accountBounds.Width > panel.ActualWidth * .45, "Single-account layout failed to reclaim the unused column.");
                 if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "expanded-single.png"));
                 layout.Expanded.Move("pc", "account1"); fixture.Layout(layout, false); fixture.Render(1280, 820);
                 Require(panel.Tiles.First(tile => tile.Host.Visibility == Visibility.Visible).Settings.Id == "pc", "Moving a card did not change the rendered order.");
                 layout.Expanded.Card("pc").Span = 2; layout.Expanded.Card("pc").Size = 2;
                 fixture.Layout(layout, false); fixture.Render(1280, 820);
-                Require(panel.Tiles.Single(tile => tile.Settings.Id == "pc").Bounds.Width > 1200, "Card column span did not change its actual width.");
+                Require(panel.Tiles.Single(tile => tile.Settings.Id == "pc").Bounds.Width > panel.ActualWidth * .95, "Card column span did not change its actual width.");
                 fixture.Layout(LayoutSettings.Defaults(), false); fixture.Page(1);
                 Require(fixture.First.State.Number == 3 && fixture.Second.State.Number == 4 && fixture.Accounts.Count == 4, "Restoring multiple accounts lost page 2.");
                 fixture.Page(0); Require(fixture.First.State.Number == 1 && fixture.Second.State.Number == 2, "Account page restoration failed.");
@@ -614,7 +615,8 @@ namespace CodexUsageMeter
         {
             using (Fixture fixture = new Fixture())
             {
-                fixture.Layout(LayoutSettings.Defaults(), true); fixture.Render(460, 780);
+                // The widget power strip takes 134 px, so 914 keeps the card area of the former 460x780 default.
+                fixture.Layout(LayoutSettings.Defaults(), true); fixture.Render(460, 914);
                 LayoutTile tile = Descendants<CardLayoutPanel>(fixture.Root).Single(panel => panel.IsVisible).Tiles.First();
                 Func<string, Rect> bounds = id => {
                     FrameworkElement element = tile.ContentItems().Single(item => item.Id == id).Element;
@@ -624,7 +626,7 @@ namespace CodexUsageMeter
                 double ringWidth = bounds("weekly").Width;
                 if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "default-spacing-widget.png"));
                 Require(narrowGap >= 12, "default widget gauges are crowded: gap=" + narrowGap);
-                fixture.Render(900, 780);
+                fixture.Render(900, 914);
                 double wideGap = bounds("short").Left - bounds("weekly").Right;
                 Require(wideGap > narrowGap + 20 && bounds("weekly").Width >= ringWidth - 1, "wider cards keep their contents clustered at a fixed width");
                 if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "default-spacing-wide.png"));
@@ -972,6 +974,114 @@ namespace CodexUsageMeter
             while (hit != null && hit != element) hit = VisualTreeHelper.GetParent(hit);
             Require(hit == element, "visible control is not hit-test reachable: " + element.Name + " card=" + tile.Card.RenderSize +
                 " header=" + tile.Header.RenderSize + " bounds=" + bounds + " hit=" + path);
+        }
+
+        private static void VerifyPowerButtons(Action<string> report, string previewDirectory)
+        {
+            HoldToConfirm hold = new HoldToConfirm(PowerHoldButton.HoldMilliseconds);
+            hold.Press(0);
+            Require(!hold.Release(600) && hold.Phase == HoldPhase.Draining, "an early release committed the power action");
+            hold.Press(675);
+            Require(Math.Abs(hold.Progress - .25) < 1e-6, "a new press did not resume from the draining gauge");
+            hold.Cancel(975); hold.Advance(1300);
+            Require(hold.Phase == HoldPhase.Idle && hold.Progress == 0 && !hold.Release(1400), "leaving the button did not drain and cancel the press");
+            hold.Press(2000); hold.Advance(3199);
+            Require(hold.Phase == HoldPhase.Holding, "the gauge filled before the hold time");
+            hold.Advance(3200); hold.Cancel(3300);
+            Require(hold.Phase == HoldPhase.Armed, "a full gauge was not committed");
+            Require(hold.Release(3400) && hold.Phase == HoldPhase.Fired && !hold.Release(3500), "a committed press did not run exactly once on release");
+
+            using (Fixture fixture = new Fixture())
+            {
+                Func<string, Button> button = name => (Button)fixture.Window.FindName(name);
+                Func<FrameworkElement, Rect> bounds = element => element.TransformToAncestor(fixture.Root).TransformBounds(new Rect(element.RenderSize));
+                Func<double, double, bool> near = (actual, expected) => Math.Abs(actual - expected) < 1;
+                Button off = button("ScreenOffButton"), sleep = button("SleepButton"), compactOff = button("CompactScreenOffButton"), compactSleep = button("CompactSleepButton");
+                Action<FrameworkElement> reachable = element =>
+                {
+                    Point center = element.TransformToAncestor(fixture.Root).Transform(new Point(element.ActualWidth / 2, element.ActualHeight / 2));
+                    DependencyObject hit = fixture.Root.InputHitTest(center) as DependencyObject;
+                    while (hit != null && hit != element) hit = VisualTreeHelper.GetParent(hit);
+                    Require(hit == element, "power button is not hit-test reachable: " + element.Name);
+                };
+
+                fixture.Layout(LayoutSettings.Defaults(), false); fixture.Render(1280, 820);
+                Rect offBounds = bounds(off), sleepBounds = bounds(sleep);
+                Rect cards = bounds(Descendants<CardPanelScrollViewer>(fixture.Root).Single(viewer => viewer.IsVisible));
+                Require(near(offBounds.Width, 250) && near(offBounds.Height, 341) && near(offBounds.Right, 1268) &&
+                    near(sleepBounds.Top, offBounds.Bottom + 10) && near(sleepBounds.Bottom, 820 - 42 - 12) && cards.Right <= offBounds.Left - 11,
+                    "full-mode power column does not match the approved 250-pixel column: " + offBounds + " / " + sleepBounds + " cards=" + cards);
+                reachable(off); reachable(sleep);
+
+                fixture.Layout(LayoutSettings.Defaults(), true); fixture.Render(476, 591);
+                Rect compactBounds = bounds(compactOff), compactSleepBounds = bounds(compactSleep);
+                Require(near(compactBounds.Width, 224) && near(compactBounds.Height, 124) && near(compactBounds.Bottom, 591 - 32 - 10) &&
+                    near(compactSleepBounds.Left, compactBounds.Right + 8) && near(compactSleepBounds.Height, 124),
+                    "widget power strip does not match the approved 224x124 buttons: " + compactBounds + " / " + compactSleepBounds);
+                reachable(compactOff); reachable(compactSleep);
+
+                foreach (bool compact in new[] { false, true })
+                foreach (int[] size in new[] { new[] { 320, 480 }, new[] { 460, 320 }, new[] { 900, 500 } })
+                {
+                    fixture.Layout(LayoutSettings.Defaults(), compact); fixture.Render(size[0], size[1]);
+                    foreach (Button power in compact ? new[] { compactOff, compactSleep } : new[] { off, sleep })
+                    {
+                        Rect rect = bounds(power);
+                        Require(rect.Width >= 40 && rect.Height >= 40 && rect.Left >= 0 && rect.Top >= 0 && rect.Right <= size[0] && rect.Bottom <= size[1],
+                            "power button collapsed or left the window at " + size[0] + "x" + size[1] + ": " + power.Name + " " + rect);
+                        reachable(power);
+                    }
+                }
+
+                fixture.Layout(LayoutSettings.Defaults(), false); fixture.Render(1280, 820);
+                TextBlock label = (TextBlock)fixture.Window.FindName("ScreenOffLabel"), hint = (TextBlock)fixture.Window.FindName("ScreenOffHint");
+                Border fill = (Border)off.Template.FindName("Fill", off);
+                int runs = 0; double now = 0; bool physicallyDown = false;
+                List<Action> later = new List<Action>();
+                PowerHoldButton controller = PowerHoldButton.ScreenOff(off, label, hint, true, () => runs++);
+                controller.Now = () => now; controller.IsKeyDown = key => physicallyDown; controller.After = (delay, action) => later.Add(action);
+                // Drive the real event wiring: ButtonBase's pressed state, mouse/Space routed events and capture loss.
+                MethodInfo setPressed = typeof(ButtonBase).GetMethod("SetIsPressed", BindingFlags.Instance | BindingFlags.NonPublic);
+                Action<bool> pressed = value => setPressed.Invoke(off, new object[] { value });
+                Action<RoutedEvent, int> mouse = (routed, time) => off.RaiseEvent(routed == Mouse.LostMouseCaptureEvent
+                    ? new MouseEventArgs(Mouse.PrimaryDevice, time) { RoutedEvent = routed }
+                    : new MouseButtonEventArgs(Mouse.PrimaryDevice, time, MouseButton.Left) { RoutedEvent = routed });
+                Action<int> release = time => { mouse(UIElement.PreviewMouseLeftButtonUpEvent, time); pressed(false); mouse(Mouse.LostMouseCaptureEvent, time); };
+                PresentationSource source = PresentationSource.FromVisual(off);
+                Action<RoutedEvent, int> space = (routed, time) => off.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, source, time, Key.Space) { RoutedEvent = routed });
+
+                mouse(UIElement.PreviewMouseLeftButtonDownEvent, 0); pressed(true); now = 600; controller.Tick(); fixture.Root.UpdateLayout();
+                Require(fill.IsVisible && Math.Abs(fill.ActualHeight - (off.ActualHeight - 2) / 2) < 2 && hint.Text == "계속 누르세요",
+                    "the gauge does not follow the press: fill=" + fill.ActualHeight + " button=" + off.ActualHeight);
+                if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "power-holding.png"));
+                release(600); now = 1000; controller.Tick(); fixture.Root.UpdateLayout();
+                Require(runs == 0 && later.Count == 0 && !fill.IsVisible && controller.Phase == HoldPhase.Idle, "an early release ran the power action or kept the gauge");
+
+                now = 2000; mouse(UIElement.PreviewMouseLeftButtonDownEvent, 2000); pressed(true); now = 3400; controller.Tick();
+                release(3100);
+                Require(runs == 0 && later.Count == 0 && controller.Phase == HoldPhase.Draining, "a release before the gauge filled ran after a late timer tick");
+                now = 3800; controller.Tick();
+
+                now = 4000; mouse(UIElement.PreviewMouseLeftButtonDownEvent, 4000); pressed(true); now = 5300; controller.Tick();
+                Require(controller.Phase == HoldPhase.Armed && hint.Text == "손을 떼면 꺼집니다", "a full gauge did not show it is committed");
+                physicallyDown = true; pressed(false); mouse(Mouse.LostMouseCaptureEvent, 5300);
+                Require(controller.Phase == HoldPhase.Armed && later.Count == 0, "a lost capture ran the action while the button was still held");
+                physicallyDown = false; now = 5400; controller.Tick();
+                Require(label.Text == "화면 끄는 중…" && runs == 0 && later.Count == 2, "the physical release did not schedule the committed action");
+                release(5400);
+                Require(later.Count == 2, "a second release scheduled the action again");
+                later[0](); later[1](); later.Clear(); fixture.Root.UpdateLayout();
+                Require(runs == 1 && label.Text == "화면 끄기" && hint.Text == "꾹 누르기" && !fill.IsVisible, "the power action did not run once and reset");
+
+                now = 7000; space(Keyboard.PreviewKeyDownEvent, 7000); pressed(true); now = 8300; controller.Tick();
+                mouse(UIElement.PreviewMouseLeftButtonUpEvent, 8300);
+                Require(controller.Phase == HoldPhase.Armed && later.Count == 0, "a mouse release ended a Space press");
+                space(Keyboard.PreviewKeyUpEvent, 8400);
+                Require(later.Count == 2, "the Space release did not run the committed press");
+                later[0](); later[1]();
+                Require(runs == 2, "the Space press did not run exactly once");
+            }
+            report("PASS power buttons: 1.2 s hold gauge through real pressed/mouse/Space/capture events, early release and leave cancel, release judged by its own timestamp, full gauge runs once after its own physical release, 250x341 full-mode column, 224x124 widget strip, reachable in 320/460/900 windows");
         }
 
         private static void VerifyContentLayout(Action<string> report, string previewDirectory)
