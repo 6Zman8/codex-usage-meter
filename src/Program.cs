@@ -25,8 +25,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.28.0")]
-[assembly: AssemblyFileVersion("1.9.28.0")]
+[assembly: AssemblyVersion("1.9.29.0")]
+[assembly: AssemblyFileVersion("1.9.29.0")]
 
 namespace CodexUsageMeter
 {
@@ -85,6 +85,12 @@ namespace CodexUsageMeter
             {
                 StringBuilder report = new StringBuilder();
                 try { SingleInstanceRegressionTests.Run(line => report.AppendLine(line)); File.WriteAllText(args[1], report.ToString()); return 0; }
+                catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
+            }
+            if (args.Length == 2 && args[0] == "--phone-remote-self-test")
+            {
+                StringBuilder report = new StringBuilder();
+                try { PhoneRemoteTests.Run(line => report.AppendLine(line), Path.GetDirectoryName(Path.GetFullPath(args[1]))); File.WriteAllText(args[1], report.ToString()); return 0; }
                 catch (Exception ex) { report.AppendLine("FAIL " + ex.ToString()); File.WriteAllText(args[1], report.ToString()); return 1; }
             }
             if (args.Length == 2 && args[0] == "--usage-history-self-test")
@@ -258,6 +264,7 @@ namespace CodexUsageMeter
                 DashboardController controller = new DashboardController(window);
                 if (!uiSmoke) controller.EnableWindowsWidgetPublishing();
                 if (!uiSmoke) controller.EnableAutomaticUpdateCheck();
+                if (!uiSmoke) controller.EnablePhoneRemote();
                 if (!uiSmoke) controller.EnableWindowBoundsMemory();
                 if (!uiSmoke && (args.Contains("--tray") || args.Contains("--widget-refresh"))) controller.StartInTray = true;
                 // Restart state from a quiet update: minimized, custom-maximized and full mode come back as they were.
@@ -526,6 +533,7 @@ namespace CodexUsageMeter
         private TrayUsageSettings _trayUsageSettings;
         private TrayUsageIcon _trayUsageIcon;
         private bool _settingTrayUsage = true;
+        private PhoneRemoteSettings _phoneRemote;
         private WindowsWidgetBridge _windowsWidgetBridge;
         private WindowsWidgetRenderer _windowsWidgetRenderer;
         private object _widgetPages;
@@ -799,6 +807,7 @@ namespace CodexUsageMeter
             PowerHoldButton.ScreenOff(Find<Button>("CompactScreenOffButton"), Find<TextBlock>("CompactScreenOffLabel"), Find<TextBlock>("CompactScreenOffHint"), false, TurnOffScreen);
             PowerHoldButton.Sleep(Find<Button>("SleepButton"), Find<TextBlock>("SleepLabel"), Find<TextBlock>("SleepHint"), true, StartSleep);
             PowerHoldButton.Sleep(Find<Button>("CompactSleepButton"), Find<TextBlock>("CompactSleepLabel"), Find<TextBlock>("CompactSleepHint"), false, StartSleep);
+            _phoneRemote = new PhoneRemoteSettings(_window, PhoneRemoteStore.User(), SetFooterText, TurnOffScreen, StartSleep);
 
             _layouts = LayoutSettingsStore.Load();
             _layoutView = new DashboardLayoutView(_window);
@@ -3567,6 +3576,8 @@ namespace CodexUsageMeter
 
         private void TurnOffScreen() { PowerActions.TurnOffScreen(_window); }
 
+        public void EnablePhoneRemote() { _phoneRemote.Enable(); }
+
         private void StartSleep()
         {
             Task.Run(new Action(PowerActions.Sleep)).ContinueWith(task => _window.Dispatcher.BeginInvoke(new Action(() =>
@@ -3962,6 +3973,7 @@ namespace CodexUsageMeter
             }
             _disposed = true;
             _resumeRefresh.Dispose();
+            _phoneRemote.Dispose();
             PublishWindowsWidget(false);
             if (_windowsWidgetRenderer != null) _windowsWidgetRenderer.Dispose();
             _systemTimer.Stop();
@@ -4279,6 +4291,30 @@ namespace CodexUsageMeter
                 key.SetValue("StartInTray", enabled ? 1 : 0, RegistryValueKind.DWord);
         }
 
+        internal static bool LoadPhoneRemoteEnabled()
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey, false))
+                return key != null && Convert.ToString(key.GetValue("PhoneRemote")) == "1";
+        }
+
+        internal static void SavePhoneRemoteEnabled(bool enabled)
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                key.SetValue("PhoneRemote", enabled ? 1 : 0, RegistryValueKind.DWord);
+        }
+
+        internal static string LoadPhoneRemoteToken()
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey, false))
+                return key == null ? null : key.GetValue("PhoneRemoteToken") as string;
+        }
+
+        internal static void SavePhoneRemoteToken(string token)
+        {
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
+                key.SetValue("PhoneRemoteToken", token, RegistryValueKind.String);
+        }
+
         public static bool LoadTopmost()
         {
             using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey, false))
@@ -4579,6 +4615,7 @@ namespace CodexUsageMeter
                 UpdateUiRegressionTests.Run(lines.Add, null);
                 RateLimitRegressionTests.Run(lines.Add);
                 UsageHistoryRegressionTests.Run(lines.Add, Path.GetDirectoryName(Path.GetFullPath(resultPath)));
+                PhoneRemoteTests.Run(lines.Add, Path.GetDirectoryName(Path.GetFullPath(resultPath)));
                 string layoutEvidence = Path.GetDirectoryName(Path.GetFullPath(resultPath));
                 Directory.CreateDirectory(layoutEvidence);
                 LayoutRegressionTests.Run(lines.Add, null, layoutEvidence);

@@ -468,6 +468,20 @@
             <Button x:Name="WindowsWidgetInstallButton" HorizontalContentAlignment="Stretch" Style="{StaticResource AccentButton}" Margin="0,10,0,0"><TextBlock Text="Windows 위젯 추가 / 업데이트" TextWrapping="Wrap" TextAlignment="Center"/></Button>
           </StackPanel>
         </Border>
+        <Border Style="{StaticResource SubCard}" Margin="0,8,0,0">
+          <StackPanel>
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <StackPanel><TextBlock Text="폰 리모컨" FontWeight="SemiBold"/><TextBlock Text="원격 접속 없이 같은 와이파이의 폰에서 화면 끄기·절전을 꾹 눌러 실행합니다. 처음 켤 때 Windows 방화벽 창이 뜨면 '액세스 허용'을 누르세요." Style="{StaticResource Muted}" Margin="0,3,12,0" TextWrapping="Wrap"/></StackPanel>
+              <CheckBox x:Name="PhoneRemoteCheckBox" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" AutomationProperties.Name="폰 리모컨"/>
+            </Grid>
+            <StackPanel x:Name="PhoneRemoteLinkPanel" Margin="0,10,0,0" Visibility="Collapsed">
+              <Image x:Name="PhoneRemoteQrImage" Width="200" Height="200" HorizontalAlignment="Center" RenderOptions.BitmapScalingMode="NearestNeighbor" AutomationProperties.Name="폰 리모컨 QR 코드"/>
+              <TextBox x:Name="PhoneRemoteLinkText" IsReadOnly="True" Margin="0,10,0,0" TextWrapping="Wrap" AutomationProperties.Name="폰 리모컨 링크"/>
+            </StackPanel>
+            <TextBlock x:Name="PhoneRemoteStatusText" Style="{StaticResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"/>
+            <Button x:Name="PhoneRemoteResetButton" HorizontalContentAlignment="Stretch" Margin="0,10,0,0" Visibility="Collapsed"><TextBlock Text="새 링크 만들기 (이전 폰 링크는 사용 중지)" TextWrapping="Wrap" TextAlignment="Center"/></Button>
+          </StackPanel>
+        </Border>
         <Border Grid.Row="2" Style="{StaticResource SubCard}" Margin="0,8,0,0">
           <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel><TextBlock Text="계정 칸 수" FontWeight="SemiBold"/><TextBlock Text="1~4개 계정을 두 칸씩 넘겨 봅니다." Style="{StaticResource Muted}" Margin="0,3,12,0"/></StackPanel>

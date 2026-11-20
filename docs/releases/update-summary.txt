@@ -1,1 +1,1 @@
-Large hold-to-confirm Screen off and Sleep buttons: full view on the right, widget view at the bottom.
+Phone remote: scan a QR code in Settings to turn the screen off or sleep from a phone on the same Wi-Fi.

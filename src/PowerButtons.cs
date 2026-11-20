@@ -196,7 +196,7 @@ namespace CodexUsageMeter
             _hint.Foreground = committed ? TextBrush : MutedBrush;
         }
 
-        private static void RunLater(TimeSpan delay, Action action)
+        internal static void RunLater(TimeSpan delay, Action action)
         {
             DispatcherTimer timer = new DispatcherTimer { Interval = delay };
             timer.Tick += delegate { timer.Stop(); action(); };
