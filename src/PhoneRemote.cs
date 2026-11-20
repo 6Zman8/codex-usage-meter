@@ -257,11 +257,91 @@ namespace CodexUsageMeter
         internal IPAddress Address = IPAddress.Any;
         internal int Port = PhoneRemoteServer.DefaultPort;
         internal Func<IPAddress> FindAddress = PhoneRemoteServer.LanAddress;
+        internal Func<int, PhoneRemoteFirewall.State> CheckFirewall = port => PhoneRemoteFirewall.Check(PhoneRemoteFirewall.Program, port);
+        // Runs off the UI thread; true when the rule was added.
+        internal Func<int, bool> AllowFirewall = port => PhoneRemoteFirewall.Allow(PhoneRemoteFirewall.Program, port);
 
         internal static PhoneRemoteStore User()
         {
             return new PhoneRemoteStore { LoadEnabled = UserSettings.LoadPhoneRemoteEnabled, SaveEnabled = UserSettings.SavePhoneRemoteEnabled,
                 LoadToken = UserSettings.LoadPhoneRemoteToken, SaveToken = UserSettings.SavePhoneRemoteToken };
+        }
+    }
+
+    // Windows Firewall blocks the phone unless an inbound rule exists. This PC had prompts on new listeners
+    // turned off, so the meter checks the rules itself and offers a one-time elevated rule.
+    internal static class PhoneRemoteFirewall
+    {
+        internal enum State { Allowed, Blocked, PublicNetwork }
+        internal const string RuleName = "CodexUsageMeter Phone Remote";
+        private const int ProfilePrivate = 2, ProfilePublic = 4;
+
+        internal static string Program { get { return Assembly.GetExecutingAssembly().Location; } }
+
+        // Reads the policy through the firewall COM API, which needs no elevation.
+        internal static State Check(string program, int port)
+        {
+            object policy = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2"));
+            int current = (int)Get(policy, "CurrentProfileTypes");
+            bool allowed = false;
+            foreach (object rule in (System.Collections.IEnumerable)Get(policy, "Rules"))
+            {
+                if (!(bool)Get(rule, "Enabled") || (int)Get(rule, "Direction") != 1 || (int)Get(rule, "Action") != 1) continue;
+                if (((int)Get(rule, "Profiles") & current) == 0) continue;
+                int protocol = (int)Get(rule, "Protocol");
+                if (protocol != 6 && protocol != 256) continue;
+                if (RuleAllows(Get(rule, "ApplicationName") as string, Get(rule, "LocalPorts") as string, program, port)) { allowed = true; break; }
+            }
+            if (allowed) return State.Allowed;
+            return (current & ProfilePublic) != 0 && (current & ProfilePrivate) == 0 ? State.PublicNetwork : State.Blocked;
+        }
+
+        // Rules without a program and port are usually scoped to a Store package or service, which COM does not
+        // show reliably; trust only rules naming this program or naming this port.
+        internal static bool RuleAllows(string application, string ports, string program, int port)
+        {
+            bool forProgram = !String.IsNullOrEmpty(application) && String.Equals(Environment.ExpandEnvironmentVariables(application), program, StringComparison.OrdinalIgnoreCase);
+            bool forPort = String.IsNullOrEmpty(application) && !String.IsNullOrEmpty(ports) && ports != "*";
+            return (forProgram || forPort) && PortMatches(ports, port);
+        }
+
+        internal static bool PortMatches(string ports, int port)
+        {
+            if (String.IsNullOrEmpty(ports) || ports == "*") return true;
+            foreach (string part in ports.Split(','))
+            {
+                string[] range = part.Trim().Split('-');
+                int low, high;
+                if (range.Length == 1 && Int32.TryParse(range[0], out low) && low == port) return true;
+                if (range.Length == 2 && Int32.TryParse(range[0], out low) && Int32.TryParse(range[1], out high) && low <= port && port <= high) return true;
+            }
+            return false;
+        }
+
+        // Private networks only, this program only, this port only.
+        internal static string Command(string program, int port)
+        {
+            string p = port.ToString(CultureInfo.InvariantCulture);
+            return "/c netsh advfirewall firewall delete rule name=\"" + RuleName + "\" >nul & netsh advfirewall firewall add rule name=\"" + RuleName +
+                "\" dir=in action=allow protocol=TCP localport=" + p + " profile=private program=\"" + program + "\"";
+        }
+
+        internal static bool Allow(string program, int port)
+        {
+            try
+            {
+                using (Process process = Process.Start(new ProcessStartInfo("cmd.exe", Command(program, port)) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden }))
+                {
+                    process.WaitForExit();
+                    return process.ExitCode == 0;
+                }
+            }
+            catch (Win32Exception) { return false; } // The user declined the administrator prompt.
+        }
+
+        private static object Get(object target, string name)
+        {
+            return target.GetType().InvokeMember(name, BindingFlags.GetProperty, null, target, null);
         }
     }
 
@@ -271,7 +351,7 @@ namespace CodexUsageMeter
         private readonly Window _window;
         private readonly PhoneRemoteStore _store;
         private readonly CheckBox _toggle;
-        private readonly Button _reset;
+        private readonly Button _reset, _firewall;
         private readonly Action<string> _footer;
         private readonly Action _screenOff, _sleep;
         private readonly DispatcherTimer _retry;
@@ -284,6 +364,19 @@ namespace CodexUsageMeter
             _window = window; _store = store; _footer = footer; _screenOff = screenOff; _sleep = sleep;
             _toggle = (CheckBox)window.FindName("PhoneRemoteCheckBox");
             _reset = (Button)window.FindName("PhoneRemoteResetButton");
+            _firewall = (Button)window.FindName("PhoneRemoteFirewallButton");
+            _firewall.Click += delegate
+            {
+                _firewall.IsEnabled = false;
+                int port = _store.Port;
+                Task.Run(() => _store.AllowFirewall(port)).ContinueWith(task => _window.Dispatcher.BeginInvoke(new Action(delegate
+                {
+                    _firewall.IsEnabled = true;
+                    bool added = task.Status == TaskStatus.RanToCompletion && task.Result;
+                    _footer(added ? "폰 리모컨: Windows 방화벽에서 폰 연결을 허용했습니다." : "폰 리모컨: 방화벽 허용이 취소되었거나 실패했습니다.");
+                    Apply();
+                })));
+            };
             _retry = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
             _retry.Tick += delegate { Apply(); };
             _setting = true; _toggle.IsChecked = store.LoadEnabled(); _setting = false;
@@ -346,8 +439,23 @@ namespace CodexUsageMeter
             }
             IPAddress address = _store.FindAddress();
             if (address == null) { Show(null, "네트워크 연결을 찾지 못했습니다. 인터넷 공유기에 연결된 뒤 다시 확인합니다."); _retry.Start(); return; }
-            Show(PhoneRemoteServer.Link(address, _server.Port, token),
-                "폰 카메라로 QR 코드를 찍어 열고, 브라우저 메뉴에서 '홈 화면에 추가'를 누르세요. 폰은 이 PC와 같은 공유기(와이파이)에 연결돼 있어야 합니다.");
+            string link = PhoneRemoteServer.Link(address, _server.Port, token);
+            PhoneRemoteFirewall.State firewall;
+            try { firewall = _store.CheckFirewall(_server.Port); }
+            catch (Exception) { firewall = PhoneRemoteFirewall.State.Blocked; }
+            if (firewall == PhoneRemoteFirewall.State.Blocked)
+            {
+                Show(link, "Windows 방화벽이 폰 연결을 막고 있습니다. 아래 '방화벽 허용'을 누르고 관리자 승인 창에서 '예'를 누르세요.");
+                _firewall.Visibility = Visibility.Visible;
+                return;
+            }
+            if (firewall == PhoneRemoteFirewall.State.PublicNetwork)
+            {
+                Show(link, "이 PC의 네트워크가 '공용'으로 설정돼 있어 폰이 연결할 수 없습니다. Windows 설정 → 네트워크 및 인터넷에서 연결을 '개인 네트워크'로 바꾼 뒤 '방화벽 허용'을 누르세요.");
+                _firewall.Visibility = Visibility.Visible;
+                return;
+            }
+            Show(link, "폰 카메라로 QR 코드를 찍어 열고, 브라우저 메뉴에서 '홈 화면에 추가'를 누르세요. 폰은 이 PC와 같은 공유기(와이파이)에 연결돼 있어야 합니다.");
         }
 
         private void Run(string action)
@@ -376,6 +484,7 @@ namespace CodexUsageMeter
             ((TextBlock)window.FindName("PhoneRemoteStatusText")).Text = status;
             ((FrameworkElement)window.FindName("PhoneRemoteLinkPanel")).Visibility = link == null ? Visibility.Collapsed : Visibility.Visible;
             ((FrameworkElement)window.FindName("PhoneRemoteResetButton")).Visibility = link == null ? Visibility.Collapsed : Visibility.Visible;
+            ((FrameworkElement)window.FindName("PhoneRemoteFirewallButton")).Visibility = Visibility.Collapsed;
             image.Source = link == null ? null : QrImage(QrCode.Encode(link), 8);
             text.Text = link ?? "";
         }

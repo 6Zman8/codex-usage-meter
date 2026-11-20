@@ -25,7 +25,9 @@ namespace CodexUsageMeter
             VerifyServer();
             report("PASS phone remote server: secret path only, page/manifest/icon, redirect, POST-only actions with the remote header, one action per request, 404/403/405/413 rejections, whole-request deadline for slow senders");
             VerifyLifecycle();
-            report("PASS phone remote lifecycle: off by default, switch on, new link on the same port, switch off frees the port, switch on again and close, all while a child process started without shell execute is running");
+            report("PASS phone remote lifecycle: off by default, switch on, new link on the same port, blocked firewall/public network explained with the allow button, allow refreshes, switch off frees the port, switch on again and close, all while a child process started without shell execute is running");
+            VerifyFirewall();
+            report("PASS phone remote firewall: rule limited to this program, TCP port and private networks; program-less any-port (Store/service) rules ignored; port lists/ranges matched; policy readable without elevation");
             VerifySettings(evidenceDirectory);
             report("PASS phone remote settings: QR code and link shown at 200 px inside the settings panel");
         }
@@ -121,6 +123,10 @@ namespace CodexUsageMeter
             PhoneRemoteStore store = new PhoneRemoteStore { LoadEnabled = () => enabled, SaveEnabled = value => enabled = value,
                 LoadToken = () => token, SaveToken = value => token = value, Address = IPAddress.Loopback, Port = port,
                 FindAddress = () => IPAddress.Loopback };
+            PhoneRemoteFirewall.State firewall = PhoneRemoteFirewall.State.Allowed;
+            int allowRequests = 0;
+            store.CheckFirewall = checkedPort => firewall;
+            store.AllowFirewall = checkedPort => { allowRequests++; firewall = PhoneRemoteFirewall.State.Allowed; return true; };
             Window window = DashboardController.LoadWindow();
             CheckBox toggle = (CheckBox)window.FindName("PhoneRemoteCheckBox");
             Func<string> link = () => ((TextBox)window.FindName("PhoneRemoteLinkText")).Text;
@@ -140,8 +146,22 @@ namespace CodexUsageMeter
                     ((Button)window.FindName("PhoneRemoteResetButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     Require(token != old && link().Contains("/r/" + token + "/") && Send(port, "GET /r/" + old + "/ HTTP/1.1").Status == 404 &&
                         Send(port, "GET /r/" + token + "/ HTTP/1.1").Status == 200, "a new link did not replace the old one on the same port");
+                    Button firewallButton = (Button)window.FindName("PhoneRemoteFirewallButton");
+                    TextBlock status = (TextBlock)window.FindName("PhoneRemoteStatusText");
+                    Require(firewallButton.Visibility != Visibility.Visible, "the firewall button showed although the port is allowed");
+                    firewall = PhoneRemoteFirewall.State.Blocked;
+                    toggle.IsChecked = false; toggle.IsChecked = true;
+                    Require(firewallButton.Visibility == Visibility.Visible && status.Text.Contains("방화벽") && link() != "", "a blocked firewall was not explained with its button");
+                    firewallButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Stopwatch waited = Stopwatch.StartNew();
+                    while (firewallButton.Visibility == Visibility.Visible && waited.ElapsedMilliseconds < 5000) DoEvents(window);
+                    Require(allowRequests == 1 && firewallButton.Visibility != Visibility.Visible && firewallButton.IsEnabled, "allowing the firewall did not refresh the section");
+                    firewall = PhoneRemoteFirewall.State.PublicNetwork;
+                    toggle.IsChecked = false; toggle.IsChecked = true;
+                    Require(firewallButton.Visibility == Visibility.Visible && status.Text.Contains("공용"), "a public network was not explained");
+                    firewall = PhoneRemoteFirewall.State.Allowed;
                     toggle.IsChecked = false;
-                    Require(!enabled && link() == "" && CanBind(port), "switching off left the port open while a child process runs");
+                    Require(!enabled && link() == "" && CanBind(port) && firewallButton.Visibility != Visibility.Visible, "switching off left the port open while a child process runs");
                     toggle.IsChecked = true;
                     Require(Send(port, "GET /r/" + token + "/ HTTP/1.1").Status == 200, "switching on again failed while a child process runs");
                 }
@@ -152,6 +172,33 @@ namespace CodexUsageMeter
                 if (child != null) { if (!child.HasExited) child.Kill(); child.Dispose(); }
                 window.Close();
             }
+        }
+
+        private static void DoEvents(Window window)
+        {
+            System.Windows.Threading.DispatcherFrame frame = new System.Windows.Threading.DispatcherFrame();
+            window.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, new Action(() => frame.Continue = false));
+            System.Windows.Threading.Dispatcher.PushFrame(frame);
+            System.Threading.Thread.Sleep(10);
+        }
+
+        private static void VerifyFirewall()
+        {
+            Require(PhoneRemoteFirewall.PortMatches(null, 43130) && PhoneRemoteFirewall.PortMatches("*", 43130) && PhoneRemoteFirewall.PortMatches("80,43130", 43130) &&
+                PhoneRemoteFirewall.PortMatches("43000-43200", 43130) && !PhoneRemoteFirewall.PortMatches("80,443", 43130) && !PhoneRemoteFirewall.PortMatches("43131-43200", 43130),
+                "firewall port matching is wrong");
+            const string exe = @"B:\42b\mod\CodexUsageMeter.exe";
+            Require(!PhoneRemoteFirewall.RuleAllows(null, null, exe, 43130) && !PhoneRemoteFirewall.RuleAllows("", "*", exe, 43130) &&
+                PhoneRemoteFirewall.RuleAllows(exe.ToLowerInvariant(), null, exe, 43130) && PhoneRemoteFirewall.RuleAllows(exe, "43130", exe, 43130) &&
+                !PhoneRemoteFirewall.RuleAllows(@"C:\other.exe", "43130", exe, 43130) && PhoneRemoteFirewall.RuleAllows(null, "43000-43200", exe, 43130) &&
+                !PhoneRemoteFirewall.RuleAllows(exe, "80", exe, 43130),
+                "package-scoped or unrelated firewall rules were treated as allowing the remote");
+            string command = PhoneRemoteFirewall.Command(@"B:\42b\mod\CodexUsageMeter.exe", 43130);
+            Require(command == "/c netsh advfirewall firewall delete rule name=\"CodexUsageMeter Phone Remote\" >nul & netsh advfirewall firewall add rule name=\"CodexUsageMeter Phone Remote\" dir=in action=allow protocol=TCP localport=43130 profile=private program=\"B:\\42b\\mod\\CodexUsageMeter.exe\"",
+                "the firewall rule command is not limited to this program, port and private networks: " + command);
+            // Reading the real policy must work without elevation; the result depends on the PC.
+            PhoneRemoteFirewall.State state = PhoneRemoteFirewall.Check(PhoneRemoteFirewall.Program, 43130);
+            Require(Enum.IsDefined(typeof(PhoneRemoteFirewall.State), state), "the firewall policy could not be read");
         }
 
         private static bool CanBind(int port)

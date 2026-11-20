@@ -1,1 +1,1 @@
-Phone remote: scan a QR code in Settings to turn the screen off or sleep from a phone on the same Wi-Fi.
+Phone remote now detects a blocking Windows Firewall and offers a one-time Allow button in Settings.
