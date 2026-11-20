@@ -339,7 +339,7 @@ namespace CodexUsageMeter
                         throw new InvalidOperationException("Windows PC widget changes track geometry with the reading");
                 if (!((Canvas)renderer.Window.FindName("CompactPcChartGuides")).IsVisible ||
                     ((TextBlock)renderer.Window.FindName("CompactGpuValue")).Text != "N/A" ||
-                    settings.Copy().ToJson() != saved)
+                    LayoutRegressionTests.CanonicalJson(settings.Copy().ToJson()) != LayoutRegressionTests.CanonicalJson(saved))
                     throw new InvalidOperationException("Windows PC widget lost its grid, missing-device state or saved settings");
                 foreach (string size in WindowsWidgetRenderer.Sizes)
                 {

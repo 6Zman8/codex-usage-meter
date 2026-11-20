@@ -22,7 +22,7 @@ namespace CodexUsageMeter
         {
             string serialized = File.ReadAllText(path);
             LayoutSettings loaded = LayoutSettings.Parse(serialized);
-            return loaded.ToJson() == serialized && loaded.Widget.Cards[0].Id == "pc" && loaded.Widget.VisibleAccounts(4).SequenceEqual(new[] { 3 }) &&
+            return CanonicalJson(loaded.ToJson()) == CanonicalJson(serialized) && loaded.Widget.Cards[0].Id == "pc" && loaded.Widget.VisibleAccounts(4).SequenceEqual(new[] { 3 }) &&
                 loaded.Widget.Card("pc").Span == 2 && loaded.Widget.Card("pc").Size == 2 &&
                 loaded.Widget.Card("pc").ItemLayouts.Any(item => item.Id == "cpu" && item.X == 0.25 && item.Width == 0.4) &&
                 !loaded.Widget.Card("pc").ShowsItem("network") &&
@@ -337,10 +337,11 @@ namespace CodexUsageMeter
                     editor.SetPreviewZoom(0); root.UpdateLayout();
                     Require(editor.PreviewZoom == 0.25 && !Descendants<Button>(root).Single(button => button.Name == "LayoutZoomOut").IsEnabled, "zoom lower bound failed");
                     editor.FitPreview(); root.UpdateLayout();
-                    Require(scroll.ScrollableWidth < 1 && scroll.ScrollableHeight < 1 && editor.Draft.ToJson() == originalLayout.ToJson(),
+                    bool layoutUnchanged = CanonicalJson(editor.Draft.ToJson()) == CanonicalJson(originalLayout.ToJson());
+                    Require(scroll.ScrollableWidth < 1 && scroll.ScrollableHeight < 1 && layoutUnchanged,
                         "fit-to-screen changed saved layout or left unreachable content: scroll=" +
                         scroll.ScrollableWidth + "x" + scroll.ScrollableHeight + " zoom=" + editor.PreviewZoom +
-                        " layoutUnchanged=" + (editor.Draft.ToJson() == originalLayout.ToJson()));
+                        " layoutUnchanged=" + layoutUnchanged);
                     editor.SetPreviewZoom(1.5); root.UpdateLayout();
                     editor.SetItemEditing(true); root.UpdateLayout();
                     scroll.ScrollToTop(); scroll.ScrollToLeftEnd(); root.UpdateLayout();
@@ -940,7 +941,8 @@ namespace CodexUsageMeter
             report("PASS compact 460px/200% saved header Y=.8 Height=.02, 820-to-380 and boundary sweep, intrinsic button bounds and scrolled center hits, unchanged JSON");
         }
 
-        private static string CanonicalJson(string json)
+        // JavaScriptSerializer follows reflection property order, which .NET does not guarantee between runs.
+        internal static string CanonicalJson(string json)
         {
             var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
             return serializer.Serialize(SortJson(serializer.DeserializeObject(json)));
@@ -1312,7 +1314,7 @@ namespace CodexUsageMeter
                         if (previewDirectory != null) Capture(root, 1220, 860, Path.Combine(previewDirectory, compact ? "snap-widget.png" : "snap-expanded.png"));
                     }, null);
                     editor.Close();
-                    Require(settings.ToJson() == original, "snapping or cancelling rewrote the saved layout");
+                    Require(CanonicalJson(settings.ToJson()) == CanonicalJson(original), "snapping or cancelling rewrote the saved layout");
                 }
             }
             report("PASS magnetic alignment: item/card edges and centers, aspect resize, six screen DIPs at 25-400% zoom, 100-200% text, Alt, guide cleanup and cancel");
@@ -1334,7 +1336,7 @@ namespace CodexUsageMeter
                 converted.Expanded.Card("pc").ItemLayouts.Single().X == 0.17 &&
                 converted.Widget.Card("account1").ItemLayouts.Single().X == 0.14, "PC conversion lost recoverable positions, visibility, order or another card");
             converted.Widget.Card("pc").ItemLayouts.Add(new LayoutItemSettings { Id = "cpu", X = 0.23, Y = 0.11, Width = 0.12, Height = 0.6 });
-            Require(converted.Copy().ToJson() == converted.ToJson(), "a later reload reset the new PC bar arrangement");
+            Require(CanonicalJson(converted.Copy().ToJson()) == CanonicalJson(converted.ToJson()), "a later reload reset the new PC bar arrangement");
             using (Fixture fixture = new Fixture())
             {
                 LayoutSettings settings = LayoutSettings.Defaults();
@@ -1519,7 +1521,7 @@ namespace CodexUsageMeter
                                 }
                             }
                         }
-                        Require(settings.Copy().ToJson() == saved, "PC chart rendering changed stored positions, sizes or visibility");
+                        Require(CanonicalJson(settings.Copy().ToJson()) == CanonicalJson(saved), "PC chart rendering changed stored positions, sizes or visibility");
                         if (!custom && font == 1.5 && width != 900)
                         {
                             var sample = new SystemSnapshot { CpuPercent = 28, MemoryPercent = 62 };
@@ -1548,13 +1550,13 @@ namespace CodexUsageMeter
                     LayoutEditor editor = fixture.Editor(saved, compact, state => { }, state => accepted = state);
                     RenderEditor(editor, root => { editor.SetItemEditing(true); editor.SetPreviewZoom(4); root.UpdateLayout(); }, null);
                     Require(editor.TrySave(), "unchanged legacy layout could not be saved"); editor.Close();
-                    Require(accepted.ToJson() == original && saved.ToJson() == original,
+                    Require(CanonicalJson(accepted.ToJson()) == CanonicalJson(original) && CanonicalJson(saved.ToJson()) == CanonicalJson(original),
                         "opening/rendering/saving after upgrade changed legacy coordinates, order, dimensions or hidden items");
                 }
                 using (var renderer = new WindowsWidgetRenderer())
                     renderer.Render(fixture.Accounts, saved, new SystemSnapshot(), 2, DateTime.UtcNow);
             }
-            Require(saved.Copy().ToJson() == original, "Windows widget rendering or reload changed the legacy layout");
+            Require(CanonicalJson(saved.Copy().ToJson()) == CanonicalJson(original), "Windows widget rendering or reload changed the legacy layout");
             report("PASS upgrade preservation: LayoutV1 off-grid positions, sizes, order, sections and hidden items survive render, editor open/save, widget render and reload unchanged");
         }
 
@@ -1729,7 +1731,7 @@ namespace CodexUsageMeter
                         .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     fixture.Render(width, height);
                     Require(tiles[slot].History == null && tiles[slot].HeaderHost.IsVisible && tiles[slot].Content.IsVisible &&
-                        tiles[slot].Header.Visibility == headers[slot] && settings.ToJson() == saved,
+                        tiles[slot].Header.Visibility == headers[slot] && CanonicalJson(settings.ToJson()) == CanonicalJson(saved),
                         "return changed saved header settings or failed to restore normal card layers");
                 }
             }

@@ -66,7 +66,7 @@ namespace CodexUsageMeter
                         Same(beforePc, Bounds(pc, root), "PC preview " + width + "/" + height + "/" + font + "/" + placement);
                         if (!editor.TrySave()) throw new InvalidOperationException("Parity fixture save failed.");
                         saved = LayoutSettings.Parse(editor.Draft.ToJson());
-                        if (saved.ToJson() != originalSettings)
+                        if (LayoutRegressionTests.CanonicalJson(saved.ToJson()) != LayoutRegressionTests.CanonicalJson(originalSettings))
                             throw new InvalidOperationException("Opening/saving preview changed the saved layout. before=" + originalSettings + " after=" + saved.ToJson());
                     });
                 }
