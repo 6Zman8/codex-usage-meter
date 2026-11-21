@@ -91,7 +91,6 @@ $arguments = @(
     ('/win32icon:' + $iconPath),
     ('/resource:' + (Join-Path $sourceRoot 'Dashboard.xaml') + ',CodexUsageMeter.Dashboard.xaml'),
     ('/resource:' + (Join-Path $sourceRoot 'DarkTheme.xaml') + ',CodexUsageMeter.DarkTheme.xaml'),
-    ('/resource:' + (Join-Path $sourceRoot 'PhoneRemote.html') + ',CodexUsageMeter.PhoneRemote.html'),
     ('/resource:' + $iconPath + ',CodexUsageMeter.AppIcon.ico'),
     ('/resource:' + $iconPngPath + ',CodexUsageMeter.AppIcon.png'),
     ('/resource:' + $updaterPath + ',CodexUsageMeter.Updater.exe'),

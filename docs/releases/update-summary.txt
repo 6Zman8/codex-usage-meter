@@ -1,1 +1,1 @@
-Phone remote now detects a blocking Windows Firewall and offers a one-time Allow button in Settings.
+Phone remote is now an Android app (PC 리모컨) that controls several PCs; Settings shows the app install and PC pairing QR codes.

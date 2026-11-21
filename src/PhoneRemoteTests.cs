@@ -21,15 +21,15 @@ namespace CodexUsageMeter
         internal static void Run(Action<string> report, string evidenceDirectory)
         {
             VerifyQrCode();
-            report("PASS phone remote QR: byte mode, level M, versions 1/4/6 with forced masks match the Nayuki reference module for module; quiet-zone bitmap matches the matrix");
+            report("PASS phone remote QR: byte mode, level M, versions 1/4/6 with forced masks match the Nayuki reference module for module; quiet-zone bitmap matches the matrix; longest pairing link and the app install link fit");
             VerifyServer();
-            report("PASS phone remote server: secret path only, page/manifest/icon, redirect, POST-only actions with the remote header, one action per request, 404/403/405/413 rejections, whole-request deadline for slow senders");
+            report("PASS phone remote server: secret path only, GET status with id/name/version (UTF-8), POST-only actions, remote header required everywhere, old web page paths gone, one action per request, 404/403/405/413 rejections, whole-request deadline for slow senders");
             VerifyLifecycle();
-            report("PASS phone remote lifecycle: off by default, switch on, new link on the same port, blocked firewall/public network explained with the allow button, allow refreshes, switch off frees the port, switch on again and close, all while a child process started without shell execute is running");
+            report("PASS phone remote lifecycle: off by default, switch on with a stable PC id and pairing link, name edits reach the status, new secret on the same port keeps the id, blocked firewall/public network explained with the allow button, allow refreshes, switch off frees the port, switch on again and close, all while a child process started without shell execute is running");
             VerifyFirewall();
             report("PASS phone remote firewall: rule limited to this program, TCP port and private networks; program-less any-port (Store/service) rules ignored; port lists/ranges matched; policy readable without elevation");
             VerifySettings(evidenceDirectory);
-            report("PASS phone remote settings: QR code and link shown at 200 px inside the settings panel");
+            report("PASS phone remote settings: app install and PC pairing QR codes at full 150 px, side by side at 560 px and stacked at 320 px, with the app name box inside the settings panel");
         }
 
         private static void VerifyQrCode()
@@ -41,6 +41,9 @@ namespace CodexUsageMeter
             bool tooLong = false;
             try { QrCode.Encode(new string('x', 120)); } catch (ArgumentException) { tooLong = true; }
             Require(tooLong, "an oversized QR payload was not rejected");
+            string longest = PhoneRemoteServer.PairLink(PhoneRemoteServer.NewId(), IPAddress.Parse("255.255.255.255"), 65535, PhoneRemoteServer.NewToken());
+            Require(longest.Length <= 106 && QrCode.Encode(longest).GetLength(0) <= 41 && QrCode.Encode(PhoneRemoteServer.InstallLink).GetLength(0) <= 41,
+                "the pairing or install link does not fit a version 6 QR code: " + longest);
 
             bool[,] modules = QrCode.Encode("http://192.168.0.107:43130/r/" + Token + "/");
             BitmapSource bitmap = PhoneRemoteSettings.QrImage(modules, 3);
@@ -66,7 +69,7 @@ namespace CodexUsageMeter
         private static void VerifyServer()
         {
             List<string> actions = new List<string>();
-            using (PhoneRemoteServer server = new PhoneRemoteServer(IPAddress.Loopback, 0, Token, new byte[] { 0x89, 0x50, 0x4E, 0x47 }, action => { lock (actions) actions.Add(action); }))
+            using (PhoneRemoteServer server = new PhoneRemoteServer(IPAddress.Loopback, 0, Token, action => { lock (actions) actions.Add(action); }))
             {
                 server.RequestMilliseconds = 400;
                 int port = server.Port;
@@ -85,26 +88,25 @@ namespace CodexUsageMeter
                     }
                     Require(closed && waited.ElapsedMilliseconds < 1500, "a trickling request kept its connection past the whole-request deadline: " + waited.ElapsedMilliseconds + " ms");
                 }
-                Response page = Send(port, "GET " + prefix + " HTTP/1.1");
-                Require(page.Status == 200 && page.Head.Contains("text/html; charset=utf-8") && page.Text.Contains("화면 끄기") && page.Text.Contains("절전") &&
-                    page.Text.Contains("X-Codex-Remote") && page.Text.Contains("manifest.webmanifest"), "the remote page was not served");
-                Require(Send(port, "GET " + prefix + "?from=home HTTP/1.1").Status == 200, "a query string broke the page");
-                Response redirect = Send(port, "GET /r/" + Token + " HTTP/1.1");
-                Require(redirect.Status == 301 && redirect.Head.Contains("Location: " + prefix), "the link without a slash was not redirected");
-                Response manifest = Send(port, "GET " + prefix + "manifest.webmanifest HTTP/1.1");
-                Require(manifest.Status == 200 && manifest.Text.Contains("\"start_url\":\"./\"") && manifest.Text.Contains("PC 리모컨"), "the manifest was not served");
-                Response icon = Send(port, "GET " + prefix + "icon.png HTTP/1.1");
-                Require(icon.Status == 200 && icon.Head.Contains("image/png") && icon.Body.Length == 4, "the icon was not served");
+                server.SetStatus("Ab_9-xYz012", "데스크톱 \"메인\"", "1.9.31");
+                Response status = Send(port, "GET " + prefix + "status HTTP/1.1", "X-Codex-Remote: 1");
+                Dictionary<string, object> body = status.Status == 200 ? new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>(status.Text) : null;
+                Require(body != null && status.Head.Contains("application/json; charset=utf-8") && (string)body["status"] == "ok" && (string)body["id"] == "Ab_9-xYz012" &&
+                    (string)body["name"] == "데스크톱 \"메인\"" && (string)body["version"] == "1.9.31", "the status was not answered: " + status.Text);
+                Require(Send(port, "GET " + prefix + "status?t=1 HTTP/1.1", "X-Codex-Remote: 1").Status == 200, "a query string broke the status");
+                Require(Send(port, "GET " + prefix + "status HTTP/1.1").Status == 403, "the status was answered without the remote header");
+                Require(Send(port, "POST " + prefix + "status HTTP/1.1", "X-Codex-Remote: 1").Status == 405, "POST was accepted for the status");
 
-                foreach (string wrong in new[] { "/", "/r/", "/r/" + Token.Substring(1) + "x/", "/r/" + Token.ToLowerInvariant() + "/", "/r/" + Token + "/../", "/r/" + Token + "/screen-off/x" })
-                    Require(Send(port, "GET " + wrong + " HTTP/1.1").Status == 404, "an unknown path was answered: " + wrong);
+                foreach (string wrong in new[] { "/", "/r/", "/r/" + Token, prefix, prefix + "manifest.webmanifest", prefix + "icon.png", "/r/" + Token.Substring(1) + "x/status",
+                    "/r/" + Token.ToLowerInvariant() + "/status", "/r/" + Token + "/../", "/r/" + Token + "/screen-off/x" })
+                    Require(Send(port, "GET " + wrong + " HTTP/1.1", "X-Codex-Remote: 1").Status == 404, "an unknown path was answered: " + wrong);
                 Require(Send(port, "POST /r/WRONGWRONGWRONGWRONG12/screen-off HTTP/1.1", "X-Codex-Remote: 1").Status == 404, "a wrong secret reached an action");
                 Require(Send(port, "GET " + prefix + "screen-off HTTP/1.1", "X-Codex-Remote: 1").Status == 405, "GET ran an action");
-                Require(Send(port, "HEAD " + prefix + " HTTP/1.1").Status == 405, "HEAD was answered with a body");
+                Require(Send(port, "HEAD " + prefix + "status HTTP/1.1", "X-Codex-Remote: 1").Status == 405, "HEAD was answered with a body");
                 Require(Send(port, "POST " + prefix + "screen-off HTTP/1.1").Status == 403, "an action ran without the remote header");
                 Require(Send(port, "POST " + prefix + "sleep HTTP/1.1", "X-Codex-Remote: 1", "Content-Length: 5").Status == 413, "an action with a body was accepted");
                 Require(Send(port, "POST " + prefix + "reboot HTTP/1.1", "X-Codex-Remote: 1").Status == 404, "an unknown action was accepted");
-                Require(Send(port, "GET " + prefix + " HTTP/1.1", "X-Big: " + new string('a', 9000)).Status == 400, "an oversized header was accepted");
+                Require(Send(port, "GET " + prefix + "status HTTP/1.1", "X-Big: " + new string('a', 9000)).Status == 400, "an oversized header was accepted");
                 lock (actions) Require(actions.Count == 0, "a rejected request ran an action");
 
                 Require(Send(port, "POST " + prefix + "screen-off HTTP/1.1", "X-Codex-Remote: 1", "Content-Length: 0").Status == 200, "screen off was not accepted");
@@ -112,6 +114,9 @@ namespace CodexUsageMeter
                 lock (actions) Require(actions.Count == 2 && actions[0] == "screen-off" && actions[1] == "sleep", "accepted requests did not run exactly one matching action each");
             }
             Require(PhoneRemoteServer.NewToken().Length == 22 && PhoneRemoteServer.NewToken() != PhoneRemoteServer.NewToken(), "secret links are not random 128-bit values");
+            Require(PhoneRemoteServer.NewId().Length == 11 && PhoneRemoteServer.NewId() != PhoneRemoteServer.NewId(), "PC ids are not random 64-bit values");
+            Require(PhoneRemoteServer.PairLink("Ab_9-xYz012", IPAddress.Parse("192.168.0.107"), 43130, Token) ==
+                "codexmeter://pair?v=1&id=Ab_9-xYz012&host=192.168.0.107&port=43130&token=" + Token, "the pairing link differs from docs/PHONE_APP.md");
         }
 
         private static void VerifyLifecycle()
@@ -119,51 +124,77 @@ namespace CodexUsageMeter
             int port;
             TcpListener free = new TcpListener(IPAddress.Loopback, 0);
             free.Start(); port = ((IPEndPoint)free.LocalEndpoint).Port; free.Stop();
-            bool enabled = false; string token = null;
+            bool enabled = false;
+            Dictionary<string, string> values = new Dictionary<string, string>();
             PhoneRemoteStore store = new PhoneRemoteStore { LoadEnabled = () => enabled, SaveEnabled = value => enabled = value,
-                LoadToken = () => token, SaveToken = value => token = value, Address = IPAddress.Loopback, Port = port,
-                FindAddress = () => IPAddress.Loopback };
+                LoadValue = key => values.ContainsKey(key) ? values[key] : null, SaveValue = (key, value) => values[key] = value,
+                Address = IPAddress.Loopback, Port = port, FindAddress = () => IPAddress.Loopback, Version = "1.9.31" };
+            Func<string> token = () => values.ContainsKey(PhoneRemoteStore.TokenKey) ? values[PhoneRemoteStore.TokenKey] : null;
+            Func<string, Dictionary<string, object>> status = secret =>
+            {
+                Response reply = Send(port, "GET /r/" + secret + "/status HTTP/1.1", "X-Codex-Remote: 1");
+                return reply.Status == 200 ? new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>(reply.Text) : null;
+            };
             PhoneRemoteFirewall.State firewall = PhoneRemoteFirewall.State.Allowed;
             int allowRequests = 0;
             store.CheckFirewall = checkedPort => firewall;
             store.AllowFirewall = checkedPort => { allowRequests++; firewall = PhoneRemoteFirewall.State.Allowed; return true; };
             Window window = DashboardController.LoadWindow();
             CheckBox toggle = (CheckBox)window.FindName("PhoneRemoteCheckBox");
-            Func<string> link = () => ((TextBox)window.FindName("PhoneRemoteLinkText")).Text;
+            TextBox name = (TextBox)window.FindName("PhoneRemoteNameText");
+            Image pairQr = (Image)window.FindName("PhoneRemoteQrImage"), installQr = (Image)window.FindName("PhoneRemoteInstallQrImage");
             Process child = null;
             try
             {
                 using (PhoneRemoteSettings settings = new PhoneRemoteSettings(window, store, line => { }, () => { }, () => { }))
                 {
+                    Func<string> link = () => settings.PairLink ?? "";
                     settings.Enable();
-                    Require(toggle.IsChecked != true && link() == "" && CanBind(port), "the remote listened while switched off");
+                    Require(toggle.IsChecked != true && link() == "" && pairQr.Source == null && CanBind(port) && name.Text == Environment.MachineName,
+                        "the remote listened while switched off or the default name is not the computer name");
                     toggle.IsChecked = true;
-                    Require(enabled && token != null && link().EndsWith(":" + port + "/r/" + token + "/") &&
-                        Send(port, "GET /r/" + token + "/ HTTP/1.1").Status == 200, "switching on did not open the remote: " + link());
+                    string id = values.ContainsKey(PhoneRemoteStore.IdKey) ? values[PhoneRemoteStore.IdKey] : null;
+                    Dictionary<string, object> first = status(token());
+                    Require(enabled && token() != null && id != null && id.Length == 11 && pairQr.Source != null && installQr.Source != null &&
+                        link() == "codexmeter://pair?v=1&id=" + id + "&host=127.0.0.1&port=" + port + "&token=" + token() &&
+                        first != null && (string)first["id"] == id && (string)first["name"] == Environment.MachineName && (string)first["version"] == "1.9.31",
+                        "switching on did not open the remote: " + link());
+                    Func<string> storedName = () => values.ContainsKey(PhoneRemoteStore.NameKey) ? values[PhoneRemoteStore.NameKey] : null;
+                    name.Text = "";
+                    PressEnter(name);
+                    Require(name.Text == Environment.MachineName && String.IsNullOrEmpty(storedName()), "clearing the box before any name was saved left it empty");
+                    PressEnter(name);
+                    Require(name.Text == Environment.MachineName && String.IsNullOrEmpty(storedName()), "leaving the cleared box saved the computer name as a custom name");
+                    name.Text = "  노트북  ";
+                    PressEnter(name);
+                    Require(values[PhoneRemoteStore.NameKey] == "노트북" && name.Text == "노트북" && (string)status(token())["name"] == "노트북", "a new name did not reach the status");
+                    name.Text = "";
+                    PressEnter(name);
+                    Require(name.Text == Environment.MachineName && (string)status(token())["name"] == Environment.MachineName, "an empty name did not fall back to the computer name");
                     // Children started without shell execute (codex app-server, updater) inherit inheritable handles.
                     child = Process.Start(new ProcessStartInfo(Assembly.GetExecutingAssembly().Location, "--lifetime-test-child") { UseShellExecute = false, CreateNoWindow = true });
-                    string old = token;
+                    string old = token();
                     ((Button)window.FindName("PhoneRemoteResetButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    Require(token != old && link().Contains("/r/" + token + "/") && Send(port, "GET /r/" + old + "/ HTTP/1.1").Status == 404 &&
-                        Send(port, "GET /r/" + token + "/ HTTP/1.1").Status == 200, "a new link did not replace the old one on the same port");
+                    Require(token() != old && link().EndsWith("&token=" + token()) && link().Contains("&id=" + id + "&") && status(old) == null &&
+                        status(token()) != null && (string)status(token())["id"] == id, "a new secret did not replace the old one on the same port with the same PC id");
                     Button firewallButton = (Button)window.FindName("PhoneRemoteFirewallButton");
-                    TextBlock status = (TextBlock)window.FindName("PhoneRemoteStatusText");
+                    TextBlock statusText = (TextBlock)window.FindName("PhoneRemoteStatusText");
                     Require(firewallButton.Visibility != Visibility.Visible, "the firewall button showed although the port is allowed");
                     firewall = PhoneRemoteFirewall.State.Blocked;
                     toggle.IsChecked = false; toggle.IsChecked = true;
-                    Require(firewallButton.Visibility == Visibility.Visible && status.Text.Contains("방화벽") && link() != "", "a blocked firewall was not explained with its button");
+                    Require(firewallButton.Visibility == Visibility.Visible && statusText.Text.Contains("방화벽") && link() != "", "a blocked firewall was not explained with its button");
                     firewallButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     Stopwatch waited = Stopwatch.StartNew();
                     while (firewallButton.Visibility == Visibility.Visible && waited.ElapsedMilliseconds < 5000) DoEvents(window);
                     Require(allowRequests == 1 && firewallButton.Visibility != Visibility.Visible && firewallButton.IsEnabled, "allowing the firewall did not refresh the section");
                     firewall = PhoneRemoteFirewall.State.PublicNetwork;
                     toggle.IsChecked = false; toggle.IsChecked = true;
-                    Require(firewallButton.Visibility == Visibility.Visible && status.Text.Contains("공용"), "a public network was not explained");
+                    Require(firewallButton.Visibility == Visibility.Visible && statusText.Text.Contains("공용"), "a public network was not explained");
                     firewall = PhoneRemoteFirewall.State.Allowed;
                     toggle.IsChecked = false;
                     Require(!enabled && link() == "" && CanBind(port) && firewallButton.Visibility != Visibility.Visible, "switching off left the port open while a child process runs");
                     toggle.IsChecked = true;
-                    Require(Send(port, "GET /r/" + token + "/ HTTP/1.1").Status == 200, "switching on again failed while a child process runs");
+                    Require(status(token()) != null && values[PhoneRemoteStore.IdKey] == id, "switching on again failed while a child process runs or changed the PC id");
                 }
                 Require(CanBind(port), "closing the meter left the remote port open");
             }
@@ -172,6 +203,12 @@ namespace CodexUsageMeter
                 if (child != null) { if (!child.HasExited) child.Kill(); child.Dispose(); }
                 window.Close();
             }
+        }
+
+        private static void PressEnter(TextBox box)
+        {
+            using (HwndSource source = new HwndSource(new HwndSourceParameters("CodexUsageMeter.PhoneRemoteKeyTest")))
+                box.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice, source, 0, System.Windows.Input.Key.Enter) { RoutedEvent = UIElement.KeyDownEvent });
         }
 
         private static void DoEvents(Window window)
@@ -244,36 +281,47 @@ namespace CodexUsageMeter
             Grid root = (Grid)window.Content;
             foreach (UIElement child in root.Children) child.Visibility = Visibility.Collapsed;
             ((Grid)window.FindName("SettingsOverlay")).Visibility = Visibility.Visible;
-            PhoneRemoteSettings.ShowLink(window, "http://192.168.0.107:43130/r/" + Token + "/", "폰 카메라로 QR 코드를 찍어 여세요.");
+            PhoneRemoteSettings.ShowCodes(window, PhoneRemoteServer.PairLink("Ab_9-xYz012", IPAddress.Parse("192.168.0.107"), 43130, Token), "폰 앱에서 QR을 찍으세요.");
             window.Content = null; root.Resources.MergedDictionaries.Add(window.Resources);
             root.SetValue(Control.FontFamilyProperty, window.FontFamily);
             root.SetValue(Control.ForegroundProperty, window.Foreground);
             root.SetValue(Control.FontSizeProperty, window.FontSize);
-            HwndSourceParameters parameters = new HwndSourceParameters("CodexUsageMeter.PhoneRemoteTest") {
-                Width = 560, Height = 900, WindowStyle = unchecked((int)0x80000000), ExtendedWindowStyle = 0x08000080
-            };
-            using (HwndSource surface = new HwndSource(parameters))
+            // 560 px fits both codes side by side; at 320 px they must stack instead of being cut.
+            foreach (int width in new[] { 560, 320 })
             {
-                surface.RootVisual = root;
-                root.Measure(new Size(560, 900)); root.Arrange(new Rect(0, 0, 560, 900)); root.UpdateLayout();
-                Image image = (Image)window.FindName("PhoneRemoteQrImage");
-                ScrollViewer scroll = null;
-                for (DependencyObject node = image; node != null && scroll == null; node = VisualTreeHelper.GetParent(node)) scroll = node as ScrollViewer;
-                Rect inContent = image.TransformToAncestor(scroll).TransformBounds(new Rect(image.RenderSize));
-                scroll.ScrollToVerticalOffset(scroll.VerticalOffset + inContent.Top - 12); root.UpdateLayout();
-                Rect bounds = image.TransformToAncestor(scroll).TransformBounds(new Rect(image.RenderSize));
-                Require(image.IsVisible && image.Source != null && Math.Abs(bounds.Width - 200) < 1 && Math.Abs(bounds.Height - 200) < 1 &&
-                    bounds.Top >= 0 && bounds.Bottom <= scroll.ViewportHeight && bounds.Left >= 0 && bounds.Right <= scroll.ViewportWidth,
-                    "the QR code is not fully visible at 200 px inside the settings scroll area: " + bounds + " viewport=" + scroll.ViewportWidth + "x" + scroll.ViewportHeight);
-                Require(((Button)window.FindName("PhoneRemoteResetButton")).IsVisible, "the new-link button is hidden while a link is shown");
-                if (evidenceDirectory != null)
+                HwndSourceParameters parameters = new HwndSourceParameters("CodexUsageMeter.PhoneRemoteTest") {
+                    Width = width, Height = 900, WindowStyle = unchecked((int)0x80000000), ExtendedWindowStyle = 0x08000080
+                };
+                using (HwndSource surface = new HwndSource(parameters))
                 {
-                    Directory.CreateDirectory(evidenceDirectory);
-                    RenderTargetBitmap bitmap = new RenderTargetBitmap(560, 900, 96, 96, PixelFormats.Pbgra32); bitmap.Render(root);
-                    PngBitmapEncoder encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
-                    using (FileStream output = File.Create(Path.Combine(evidenceDirectory, "phone-remote-settings.png"))) encoder.Save(output);
+                    surface.RootVisual = root;
+                    root.Measure(new Size(width, 900)); root.Arrange(new Rect(0, 0, width, 900)); root.UpdateLayout();
+                    Image install = (Image)window.FindName("PhoneRemoteInstallQrImage"), pair = (Image)window.FindName("PhoneRemoteQrImage");
+                    ScrollViewer scroll = null;
+                    for (DependencyObject node = pair; node != null && scroll == null; node = VisualTreeHelper.GetParent(node)) scroll = node as ScrollViewer;
+                    Rect inContent = install.TransformToAncestor(scroll).TransformBounds(new Rect(install.RenderSize));
+                    scroll.ScrollToVerticalOffset(scroll.VerticalOffset + inContent.Top - 40); root.UpdateLayout();
+                    Rect installBounds = install.TransformToAncestor(scroll).TransformBounds(new Rect(install.RenderSize));
+                    Rect pairBounds = pair.TransformToAncestor(scroll).TransformBounds(new Rect(pair.RenderSize));
+                    foreach (Rect bounds in new[] { installBounds, pairBounds })
+                        Require(Math.Abs(bounds.Width - 150) < 1 && Math.Abs(bounds.Height - 150) < 1 && bounds.Top >= 0 && bounds.Bottom <= scroll.ViewportHeight &&
+                            bounds.Left >= 0 && bounds.Right <= scroll.ViewportWidth,
+                            "a QR code is not fully visible at 150 px inside the settings scroll area of a " + width + " px window: " + bounds + " viewport=" + scroll.ViewportWidth + "x" + scroll.ViewportHeight);
+                    bool sideBySide = installBounds.Right + 8 <= pairBounds.Left && Math.Abs(installBounds.Top - pairBounds.Top) < 1;
+                    Require(install.IsVisible && pair.IsVisible && install.Source != null && pair.Source != null &&
+                        (width == 560 ? sideBySide : pairBounds.Top >= installBounds.Bottom),
+                        "the install and pairing QR codes are not " + (width == 560 ? "side by side" : "stacked") + " at " + width + " px: " + installBounds + " " + pairBounds);
+                    Require(((TextBox)window.FindName("PhoneRemoteNameText")).IsVisible && ((Button)window.FindName("PhoneRemoteResetButton")).IsVisible,
+                        "the name box or the new-QR button is hidden while the codes are shown");
+                    if (evidenceDirectory != null)
+                    {
+                        Directory.CreateDirectory(evidenceDirectory);
+                        RenderTargetBitmap bitmap = new RenderTargetBitmap(width, 900, 96, 96, PixelFormats.Pbgra32); bitmap.Render(root);
+                        PngBitmapEncoder encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                        using (FileStream output = File.Create(Path.Combine(evidenceDirectory, "phone-remote-settings-" + width + ".png"))) encoder.Save(output);
+                    }
+                    surface.RootVisual = null;
                 }
-                surface.RootVisual = null;
             }
             window.Close();
         }

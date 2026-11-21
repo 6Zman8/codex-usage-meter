@@ -109,9 +109,45 @@ jobs:
             throw 'Account switch verification failed'
           }
 
+      - name: Build and verify the Android phone app
+        shell: pwsh
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          $env:JAVA_HOME = $env:JAVA_HOME_17_X64
+          $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools\latest\bin\sdkmanager.bat'
+          & $sdkmanager --install 'platforms;android-37.2' 'build-tools;36.0.0'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK install failed' }
+          $keystore = Join-Path $env:RUNNER_TEMP 'codexremote-release.jks'
+          [IO.File]::WriteAllBytes($keystore, [Convert]::FromBase64String($env:ANDROID_KEYSTORE_BASE64))
+          $env:ANDROID_KEYSTORE_PATH = $keystore
+          foreach ($name in 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD') { Set-Item "env:$name" ((Get-Item "env:$name").Value.Trim()) }
+          Push-Location android
+          try {
+            .\gradlew.bat --no-daemon testDebugUnitTest releaseAssets
+            if ($LASTEXITCODE -ne 0) { throw 'Android app build failed' }
+          } finally {
+            Pop-Location
+            Remove-Item -LiteralPath $keystore -ErrorAction SilentlyContinue
+          }
+          $assets = '.\android\app\build\release-assets'
+          $info = Get-Content -LiteralPath "$assets\CodexMeterRemote.json" -Raw | ConvertFrom-Json
+          $apk = Get-Item -LiteralPath "$assets\CodexMeterRemote.apk"
+          if ((Get-FileHash -LiteralPath $apk.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $info.sha256) { throw 'APK hash does not match CodexMeterRemote.json' }
+          $version = ConvertFrom-StringData (Get-Content -LiteralPath '.\android\version.properties' -Raw)
+          if ([int]$version.versionCode -ne [int]$info.versionCode -or $version.versionName -ne $info.versionName) { throw 'CodexMeterRemote.json does not match android/version.properties' }
+          # An APK signed with any other key cannot update the installed app, so publish only the release key's signature.
+          $certs = & (Join-Path $env:ANDROID_HOME 'build-tools\36.0.0\apksigner.bat') verify --print-certs $apk.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed' }
+          if (-not ($certs -match 'certificate SHA-256 digest: b012b8c890e26aec30da51aea81e7329db592a5d9067147c7a5fc877363d27fd')) { throw "APK is not signed with the phone app release key: $certs" }
+          "Phone app $($info.versionName) ($($info.versionCode)) $($apk.Length) bytes sha256=$($info.sha256)"
+
       - name: Publish GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:GITHUB_REF_NAME '.\bin\CodexUsageMeter.exe#CodexUsageMeter.exe' '.\bin\windows-widget\CodexUsageMeter.WindowsWidget.zip#CodexUsageMeter.WindowsWidget.zip' --verify-tag --notes-file '.\docs\releases\update-summary.txt' --title "Codex Usage Meter $env:GITHUB_REF_NAME"
+          gh release create $env:GITHUB_REF_NAME '.\bin\CodexUsageMeter.exe#CodexUsageMeter.exe' '.\bin\windows-widget\CodexUsageMeter.WindowsWidget.zip#CodexUsageMeter.WindowsWidget.zip' '.\android\app\build\release-assets\CodexMeterRemote.apk#CodexMeterRemote.apk' '.\android\app\build\release-assets\CodexMeterRemote.json#CodexMeterRemote.json' --verify-tag --notes-file '.\docs\releases\update-summary.txt' --title "Codex Usage Meter $env:GITHUB_REF_NAME"

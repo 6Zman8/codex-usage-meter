@@ -25,8 +25,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.30.0")]
-[assembly: AssemblyFileVersion("1.9.30.0")]
+[assembly: AssemblyVersion("1.9.31.0")]
+[assembly: AssemblyFileVersion("1.9.31.0")]
 
 namespace CodexUsageMeter
 {
@@ -4303,16 +4303,17 @@ namespace CodexUsageMeter
                 key.SetValue("PhoneRemote", enabled ? 1 : 0, RegistryValueKind.DWord);
         }
 
-        internal static string LoadPhoneRemoteToken()
+        // PhoneRemoteToken, PhoneRemoteId and PhoneRemoteName.
+        internal static string LoadPhoneRemoteValue(string name)
         {
             using (RegistryKey key = Registry.CurrentUser.OpenSubKey(SettingsKey, false))
-                return key == null ? null : key.GetValue("PhoneRemoteToken") as string;
+                return key == null ? null : key.GetValue(name) as string;
         }
 
-        internal static void SavePhoneRemoteToken(string token)
+        internal static void SavePhoneRemoteValue(string name, string value)
         {
             using (RegistryKey key = Registry.CurrentUser.CreateSubKey(SettingsKey))
-                key.SetValue("PhoneRemoteToken", token, RegistryValueKind.String);
+                key.SetValue(name, value, RegistryValueKind.String);
         }
 
         public static bool LoadTopmost()

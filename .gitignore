@@ -1,5 +1,7 @@
 bin/
 obj/
+# Android app release signing key and its password (also stored as GitHub secrets).
+secrets/
 artifacts/
 work/
 *.user

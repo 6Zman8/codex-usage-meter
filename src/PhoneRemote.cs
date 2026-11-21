@@ -14,6 +14,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -22,26 +23,26 @@ using System.Windows.Threading;
 
 namespace CodexUsageMeter
 {
-    // Serves the phone remote page on the home network. Everything lives under /r/<secret>/, so only a phone
-    // that scanned the QR code can open the page or send Screen off / Sleep.
+    // Serves the phone app's API on the home network (docs/PHONE_APP.md). Everything lives under /r/<secret>/,
+    // so only a phone that scanned the pairing QR code can read the status or send Screen off / Sleep.
     internal sealed class PhoneRemoteServer : IDisposable
     {
         internal const int DefaultPort = 43130;
+        internal const string InstallLink = "https://github.com/6Zman8/codex-usage-meter/releases/latest/download/CodexMeterRemote.apk";
         internal static readonly string[] Actions = { "screen-off", "sleep" };
-        private static readonly byte[] Page = ReadPage();
         private const uint HandleFlagInherit = 1;
         private readonly TcpListener _listener;
         private volatile string _token;
+        private volatile byte[] _status = Encoding.UTF8.GetBytes("{\"status\":\"ok\"}");
         private readonly Action<string> _run;
-        private readonly byte[] _icon;
         private readonly SemaphoreSlim _clients = new SemaphoreSlim(8, 8);
         private volatile bool _stopped;
         // Whole-request deadline, so a slow sender cannot hold one of the few connection slots.
         internal int RequestMilliseconds = 5000;
 
-        internal PhoneRemoteServer(IPAddress address, int port, string token, byte[] icon, Action<string> run)
+        internal PhoneRemoteServer(IPAddress address, int port, string token, Action<string> run)
         {
-            _token = token; _icon = icon; _run = run;
+            _token = token; _run = run;
             _listener = new TcpListener(address, port);
             // .NET Framework sockets are inheritable: codex app-server, the updater and other children started
             // without shell execute would keep the port open after Stop, so switching off or on again would fail.
@@ -61,9 +62,21 @@ namespace CodexUsageMeter
         // A new link takes effect at once on the same port; the old link stops working.
         internal string Token { set { _token = value; } }
 
-        internal static string NewToken()
+        // What GET status answers; the PC id and name the app shows.
+        internal void SetStatus(string id, string name, string version)
         {
-            byte[] bytes = new byte[16];
+            _status = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(new Dictionary<string, string> {
+                { "status", "ok" }, { "id", id }, { "name", name }, { "version", version } }));
+        }
+
+        internal static string NewToken() { return RandomText(16); }
+
+        // The PC's stable id in the pairing QR code; 64 bits keep the QR code within version 6.
+        internal static string NewId() { return RandomText(8); }
+
+        private static string RandomText(int byteCount)
+        {
+            byte[] bytes = new byte[byteCount];
             using (RandomNumberGenerator random = RandomNumberGenerator.Create()) random.GetBytes(bytes);
             return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         }
@@ -103,35 +116,10 @@ namespace CodexUsageMeter
             return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168);
         }
 
-        internal static string Link(IPAddress address, int port, string token)
+        // The pairing QR code; the id and token are base64url, so nothing needs escaping.
+        internal static string PairLink(string id, IPAddress address, int port, string token)
         {
-            return "http://" + address + ":" + port.ToString(CultureInfo.InvariantCulture) + "/r/" + token + "/";
-        }
-
-        // Rendered on the UI thread: the 50 px app icon is too small for a phone home screen.
-        internal static byte[] RenderIcon()
-        {
-            DrawingVisual visual = new DrawingVisual();
-            using (DrawingContext context = visual.RenderOpen())
-            {
-                context.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(0x15, 0x15, 0x15)), null, new Rect(0, 0, 192, 192), 40, 40);
-                Pen pen = new Pen(new SolidColorBrush(Color.FromRgb(0x38, 0xBD, 0xF8)), 14) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
-                PathGeometry ring = new PathGeometry(new[] { new PathFigure(new Point(70, 66), new PathSegment[] {
-                    new ArcSegment(new Point(122, 66), new Size(46, 46), 0, true, SweepDirection.Counterclockwise, true) }, false) });
-                context.DrawGeometry(null, pen, ring);
-                context.DrawLine(pen, new Point(96, 44), new Point(96, 98));
-            }
-            RenderTargetBitmap bitmap = new RenderTargetBitmap(192, 192, 96, 96, PixelFormats.Pbgra32);
-            bitmap.Render(visual);
-            PngBitmapEncoder encoder = new PngBitmapEncoder();
-            encoder.Frames.Add(BitmapFrame.Create(bitmap));
-            using (MemoryStream stream = new MemoryStream()) { encoder.Save(stream); return stream.ToArray(); }
-        }
-
-        private static byte[] ReadPage()
-        {
-            using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("CodexUsageMeter.PhoneRemote.html"))
-            using (MemoryStream copy = new MemoryStream()) { stream.CopyTo(copy); return copy.ToArray(); }
+            return "codexmeter://pair?v=1&id=" + id + "&host=" + address + "&port=" + port.ToString(CultureInfo.InvariantCulture) + "&token=" + token;
         }
 
         private async Task Listen()
@@ -165,7 +153,18 @@ namespace CodexUsageMeter
                     {
                         int remaining = RequestMilliseconds - (int)clock.ElapsedMilliseconds;
                         if (remaining <= 0) return;
-                        if (total == buffer.Length) { Reply(stream, 400, "text/plain", Encoding.ASCII.GetBytes("bad request")); return; }
+                        if (total == buffer.Length)
+                        {
+                            Reply(stream, 400, "text/plain", Encoding.ASCII.GetBytes("bad request"));
+                            // Closing with unread bytes sends a reset, which can discard the reply before the sender reads it.
+                            client.Client.Shutdown(SocketShutdown.Send);
+                            while (clock.ElapsedMilliseconds < RequestMilliseconds)
+                            {
+                                client.ReceiveTimeout = Math.Max(1, RequestMilliseconds - (int)clock.ElapsedMilliseconds);
+                                if (stream.Read(buffer, 0, buffer.Length) <= 0) break;
+                            }
+                            return;
+                        }
                         client.ReceiveTimeout = remaining;
                         int read = stream.Read(buffer, total, buffer.Length - total);
                         if (read <= 0) return;
@@ -198,24 +197,15 @@ namespace CodexUsageMeter
             int query = target.IndexOf('?');
             if (query >= 0) target = target.Substring(0, query);
             string[] parts = target.Split('/');
-            if (parts.Length < 3 || parts[0].Length != 0 || parts[1] != "r" || !SameToken(parts[2], token)) { NotFound(stream); return; }
-            if (parts.Length == 3) { Redirect(stream, "/r/" + token + "/"); return; }
-            string resource = parts.Length == 4 ? parts[3] : null;
-            if (resource == "" || resource == "manifest.webmanifest" || resource == "icon.png")
-            {
-                if (method != "GET") { Reply(stream, 405, "text/plain", Encoding.ASCII.GetBytes("method not allowed")); return; }
-                if (resource == "") Reply(stream, 200, "text/html; charset=utf-8", Page);
-                else if (resource == "icon.png") Reply(stream, 200, "image/png", _icon);
-                else Reply(stream, 200, "application/manifest+json; charset=utf-8", Encoding.UTF8.GetBytes(
-                    "{\"name\":\"PC 리모컨\",\"short_name\":\"PC 리모컨\",\"start_url\":\"./\",\"scope\":\"./\",\"display\":\"standalone\"," +
-                    "\"background_color\":\"#151515\",\"theme_color\":\"#151515\",\"icons\":[{\"src\":\"icon.png\",\"sizes\":\"192x192\",\"type\":\"image/png\"}]}"));
-                return;
-            }
-            if (resource == null || Array.IndexOf(Actions, resource) < 0) { NotFound(stream); return; }
-            if (method != "POST") { Reply(stream, 405, "text/plain", Encoding.ASCII.GetBytes("method not allowed")); return; }
+            if (parts.Length != 4 || parts[0].Length != 0 || parts[1] != "r" || !SameToken(parts[2], token)) { NotFound(stream); return; }
+            string resource = parts[3];
+            bool status = resource == "status";
+            if (!status && Array.IndexOf(Actions, resource) < 0) { NotFound(stream); return; }
+            if (method != (status ? "GET" : "POST")) { Reply(stream, 405, "text/plain", Encoding.ASCII.GetBytes("method not allowed")); return; }
             // A custom header cannot be sent cross-site without a preflight this server never approves.
             string marker;
             if (!fields.TryGetValue("X-Codex-Remote", out marker) || marker != "1") { Reply(stream, 403, "text/plain", Encoding.ASCII.GetBytes("forbidden")); return; }
+            if (status) { Reply(stream, 200, "application/json; charset=utf-8", _status); return; }
             Reply(stream, 200, "application/json", Encoding.ASCII.GetBytes("{\"status\":\"ok\"}"));
             stream.Flush();
             _run(resource);
@@ -229,12 +219,6 @@ namespace CodexUsageMeter
 
         private static void NotFound(Stream stream) { Reply(stream, 404, "text/plain", Encoding.ASCII.GetBytes("not found")); }
 
-        private static void Redirect(Stream stream, string location)
-        {
-            byte[] head = Encoding.ASCII.GetBytes("HTTP/1.1 301 Moved\r\nLocation: " + location + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            stream.Write(head, 0, head.Length);
-        }
-
         private static void Reply(Stream stream, int status, string type, byte[] body)
         {
             byte[] head = Encoding.ASCII.GetBytes("HTTP/1.1 " + status + " Result\r\nContent-Type: " + type + "\r\nContent-Length: " + body.Length +
@@ -247,13 +231,15 @@ namespace CodexUsageMeter
         [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
     }
 
-    // Where the phone remote keeps its switch and secret; tests supply an in-memory store and a loopback address.
+    // Where the phone remote keeps its switch, secret, PC id and name; tests supply an in-memory store and a loopback address.
     internal sealed class PhoneRemoteStore
     {
+        internal const string TokenKey = "PhoneRemoteToken", IdKey = "PhoneRemoteId", NameKey = "PhoneRemoteName";
         internal Func<bool> LoadEnabled;
         internal Action<bool> SaveEnabled;
-        internal Func<string> LoadToken;
-        internal Action<string> SaveToken;
+        internal Func<string, string> LoadValue;
+        internal Action<string, string> SaveValue;
+        internal string Version = Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
         internal IPAddress Address = IPAddress.Any;
         internal int Port = PhoneRemoteServer.DefaultPort;
         internal Func<IPAddress> FindAddress = PhoneRemoteServer.LanAddress;
@@ -264,7 +250,21 @@ namespace CodexUsageMeter
         internal static PhoneRemoteStore User()
         {
             return new PhoneRemoteStore { LoadEnabled = UserSettings.LoadPhoneRemoteEnabled, SaveEnabled = UserSettings.SavePhoneRemoteEnabled,
-                LoadToken = UserSettings.LoadPhoneRemoteToken, SaveToken = UserSettings.SavePhoneRemoteToken };
+                LoadValue = UserSettings.LoadPhoneRemoteValue, SaveValue = UserSettings.SavePhoneRemoteValue };
+        }
+
+        // Created on first use and kept, so the app recognises a re-scanned PC.
+        internal string Ensure(string key, Func<string> create)
+        {
+            string value = LoadValue(key);
+            if (String.IsNullOrEmpty(value)) { value = create(); SaveValue(key, value); }
+            return value;
+        }
+
+        internal string Name()
+        {
+            string name = LoadValue(NameKey);
+            return String.IsNullOrWhiteSpace(name) ? Environment.MachineName : name.Trim();
         }
     }
 
@@ -345,19 +345,23 @@ namespace CodexUsageMeter
         }
     }
 
-    // The Settings section: toggle, QR code, link and a button to replace the secret link.
+    // The Settings section: toggle, app install and PC pairing QR codes, the name the app shows,
+    // and a button to replace the secret.
     internal sealed class PhoneRemoteSettings : IDisposable
     {
         private readonly Window _window;
         private readonly PhoneRemoteStore _store;
         private readonly CheckBox _toggle;
         private readonly Button _reset, _firewall;
+        private readonly TextBox _name;
         private readonly Action<string> _footer;
         private readonly Action _screenOff, _sleep;
         private readonly DispatcherTimer _retry;
         private PhoneRemoteServer _server;
-        private byte[] _icon;
         private bool _allowed, _setting, _disposed;
+
+        // The pairing link the QR code shows, or null while it is hidden.
+        internal string PairLink { get; private set; }
 
         internal PhoneRemoteSettings(Window window, PhoneRemoteStore store, Action<string> footer, Action screenOff, Action sleep)
         {
@@ -365,6 +369,10 @@ namespace CodexUsageMeter
             _toggle = (CheckBox)window.FindName("PhoneRemoteCheckBox");
             _reset = (Button)window.FindName("PhoneRemoteResetButton");
             _firewall = (Button)window.FindName("PhoneRemoteFirewallButton");
+            _name = (TextBox)window.FindName("PhoneRemoteNameText");
+            _name.Text = store.Name();
+            _name.LostKeyboardFocus += delegate { SaveName(); };
+            _name.KeyDown += (sender, e) => { if (e.Key == System.Windows.Input.Key.Enter) SaveName(); };
             _firewall.Click += delegate
             {
                 _firewall.IsEnabled = false;
@@ -385,12 +393,31 @@ namespace CodexUsageMeter
             _reset.Click += delegate
             {
                 string token = PhoneRemoteServer.NewToken();
-                _store.SaveToken(token);
+                _store.SaveValue(PhoneRemoteStore.TokenKey, token);
                 if (_server != null) _server.Token = token;
                 Apply();
-                _footer("폰 리모컨 링크를 새로 만들었습니다. 폰에서 QR 코드를 다시 찍어 주세요.");
+                _footer("폰 리모컨 등록 QR을 새로 만들었습니다. 폰 앱에서 QR을 다시 찍어 주세요.");
             };
             Show(null, "켜면 이 PC에서 폰 리모컨을 엽니다.");
+        }
+
+        private void SaveName()
+        {
+            string name = _name.Text.Trim();
+            // Compared with the name in use, so leaving the box showing the computer name keeps "no custom name".
+            if (name != _store.Name())
+            {
+                try { _store.SaveValue(PhoneRemoteStore.NameKey, name); }
+                catch (Exception ex) { _footer("폰 리모컨 이름 저장 실패: " + ex.Message); return; }
+                UpdateStatus();
+            }
+            // An emptied box shows the computer name the app receives instead.
+            _name.Text = _store.Name();
+        }
+
+        private void UpdateStatus()
+        {
+            if (_server != null) _server.SetStatus(_store.Ensure(PhoneRemoteStore.IdKey, PhoneRemoteServer.NewId), _store.Name(), _store.Version);
         }
 
         // Only the real meter listens; self-tests and previews construct the controller without it.
@@ -419,14 +446,14 @@ namespace CodexUsageMeter
             _retry.Stop();
             if (_toggle.IsChecked != true) { Show(null, "켜면 이 PC에서 폰 리모컨을 엽니다."); return; }
             if (!_allowed) { Show(null, "미터기를 다시 시작하면 열립니다."); return; }
-            string token = _store.LoadToken();
-            if (String.IsNullOrEmpty(token)) { token = PhoneRemoteServer.NewToken(); _store.SaveToken(token); }
+            string token = _store.Ensure(PhoneRemoteStore.TokenKey, PhoneRemoteServer.NewToken);
+            string id = _store.Ensure(PhoneRemoteStore.IdKey, PhoneRemoteServer.NewId);
             if (_server == null)
             {
                 try
                 {
-                    if (_icon == null) _icon = PhoneRemoteServer.RenderIcon();
-                    _server = new PhoneRemoteServer(_store.Address, _store.Port, token, _icon, Run);
+                    _server = new PhoneRemoteServer(_store.Address, _store.Port, token, Run);
+                    UpdateStatus();
                 }
                 catch (SocketException)
                 {
@@ -439,7 +466,7 @@ namespace CodexUsageMeter
             }
             IPAddress address = _store.FindAddress();
             if (address == null) { Show(null, "네트워크 연결을 찾지 못했습니다. 인터넷 공유기에 연결된 뒤 다시 확인합니다."); _retry.Start(); return; }
-            string link = PhoneRemoteServer.Link(address, _server.Port, token);
+            string link = PhoneRemoteServer.PairLink(id, address, _server.Port, token);
             PhoneRemoteFirewall.State firewall;
             try { firewall = _store.CheckFirewall(_server.Port); }
             catch (Exception) { firewall = PhoneRemoteFirewall.State.Blocked; }
@@ -455,7 +482,7 @@ namespace CodexUsageMeter
                 _firewall.Visibility = Visibility.Visible;
                 return;
             }
-            Show(link, "폰 카메라로 QR 코드를 찍어 열고, 브라우저 메뉴에서 '홈 화면에 추가'를 누르세요. 폰은 이 PC와 같은 공유기(와이파이)에 연결돼 있어야 합니다.");
+            Show(link, "폰의 'PC 리모컨' 앱에서 'QR 찍어서 PC 추가'를 누르고 2번 QR을 찍으세요. 앱이 없으면 1번 QR로 먼저 설치합니다. 폰은 이 PC와 같은 공유기(와이파이)에 연결돼 있어야 합니다.");
         }
 
         private void Run(string action)
@@ -475,18 +502,16 @@ namespace CodexUsageMeter
             }));
         }
 
-        private void Show(string link, string status) { ShowLink(_window, link, status); }
+        private void Show(string link, string status) { PairLink = link; ShowCodes(_window, link, status); }
 
-        internal static void ShowLink(Window window, string link, string status)
+        internal static void ShowCodes(Window window, string link, string status)
         {
-            Image image = (Image)window.FindName("PhoneRemoteQrImage");
-            TextBox text = (TextBox)window.FindName("PhoneRemoteLinkText");
             ((TextBlock)window.FindName("PhoneRemoteStatusText")).Text = status;
             ((FrameworkElement)window.FindName("PhoneRemoteLinkPanel")).Visibility = link == null ? Visibility.Collapsed : Visibility.Visible;
             ((FrameworkElement)window.FindName("PhoneRemoteResetButton")).Visibility = link == null ? Visibility.Collapsed : Visibility.Visible;
             ((FrameworkElement)window.FindName("PhoneRemoteFirewallButton")).Visibility = Visibility.Collapsed;
-            image.Source = link == null ? null : QrImage(QrCode.Encode(link), 8);
-            text.Text = link ?? "";
+            ((Image)window.FindName("PhoneRemoteQrImage")).Source = link == null ? null : QrImage(QrCode.Encode(link), 3);
+            ((Image)window.FindName("PhoneRemoteInstallQrImage")).Source = link == null ? null : QrImage(QrCode.Encode(PhoneRemoteServer.InstallLink), 3);
         }
 
         // Black modules on white with the 4-module quiet zone scanners need, even in the dark theme.
