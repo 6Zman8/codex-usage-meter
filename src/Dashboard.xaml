@@ -475,19 +475,19 @@
               <CheckBox x:Name="PhoneRemoteCheckBox" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" AutomationProperties.Name="폰 리모컨"/>
             </Grid>
             <StackPanel x:Name="PhoneRemoteLinkPanel" Margin="0,10,0,0" Visibility="Collapsed">
-              <!-- The codes keep their scannable 150 px and move under each other when the window is narrow. -->
-              <WrapPanel HorizontalAlignment="Center">
-                <StackPanel Width="164" Margin="6,0,6,10">
-                  <TextBlock Text="1. 폰에 앱 설치" FontWeight="SemiBold" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
-                  <Image x:Name="PhoneRemoteInstallQrImage" Width="150" Height="150" Margin="0,6,0,0" HorizontalAlignment="Center" RenderOptions.BitmapScalingMode="NearestNeighbor" AutomationProperties.Name="폰 앱 설치 QR 코드"/>
-                  <TextBlock Text="폰 카메라로 찍어 앱을 받습니다. 한 번만 하면 됩니다." Style="{StaticResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap" TextAlignment="Center"/>
-                </StackPanel>
-                <StackPanel Width="164" Margin="6,0,6,10">
-                  <TextBlock Text="2. PC 등록" FontWeight="SemiBold" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
-                  <Image x:Name="PhoneRemoteQrImage" Width="150" Height="150" Margin="0,6,0,0" HorizontalAlignment="Center" RenderOptions.BitmapScalingMode="NearestNeighbor" AutomationProperties.Name="PC 등록 QR 코드"/>
-                  <TextBlock Text="앱의 'QR 찍어서 PC 추가'로 찍습니다." Style="{StaticResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap" TextAlignment="Center"/>
-                </StackPanel>
-              </WrapPanel>
+              <!-- One code at a time: two codes side by side made the phone camera read the wrong one. -->
+              <Grid Margin="0,0,0,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="8"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                <Button x:Name="PhoneRemoteInstallTab" HorizontalContentAlignment="Stretch" AutomationProperties.Name="폰에 앱 설치 QR 보기"><TextBlock Text="1. 폰에 앱 설치" TextWrapping="Wrap" TextAlignment="Center"/></Button>
+                <Button x:Name="PhoneRemotePairTab" Grid.Column="2" HorizontalContentAlignment="Stretch" Style="{StaticResource AccentButton}" AutomationProperties.Name="PC 등록 QR 보기"><TextBlock Text="2. PC 등록" TextWrapping="Wrap" TextAlignment="Center"/></Button>
+              </Grid>
+              <StackPanel x:Name="PhoneRemoteInstallQrPanel" MaxWidth="280" Margin="0,0,0,10" HorizontalAlignment="Center" Visibility="Collapsed">
+                <Image x:Name="PhoneRemoteInstallQrImage" Width="150" Height="150" HorizontalAlignment="Center" RenderOptions.BitmapScalingMode="NearestNeighbor" AutomationProperties.Name="폰 앱 설치 QR 코드"/>
+                <TextBlock Text="폰 카메라로 찍어 앱을 받습니다. 한 번만 하면 됩니다." Style="{StaticResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap" TextAlignment="Center"/>
+              </StackPanel>
+              <StackPanel x:Name="PhoneRemotePairQrPanel" MaxWidth="280" Margin="0,0,0,10" HorizontalAlignment="Center">
+                <Image x:Name="PhoneRemoteQrImage" Width="150" Height="150" HorizontalAlignment="Center" RenderOptions.BitmapScalingMode="NearestNeighbor" AutomationProperties.Name="PC 등록 QR 코드"/>
+                <TextBlock Text="앱의 'QR 찍어서 PC 추가'로 찍습니다." Style="{StaticResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap" TextAlignment="Center"/>
+              </StackPanel>
               <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <TextBlock Text="앱에 보일 이름" Style="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <!-- The phone app shows at most 30 characters. -->

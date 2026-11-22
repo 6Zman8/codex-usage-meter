@@ -29,7 +29,7 @@ namespace CodexUsageMeter
             VerifyFirewall();
             report("PASS phone remote firewall: rule limited to this program, TCP port and private networks; program-less any-port (Store/service) rules ignored; port lists/ranges matched; policy readable without elevation");
             VerifySettings(evidenceDirectory);
-            report("PASS phone remote settings: app install and PC pairing QR codes at full 150 px, side by side at 560 px and stacked at 320 px, with the app name box inside the settings panel");
+            report("PASS phone remote settings: one QR code at a time (PC pairing first, the install tab swaps it) at full 150 px with its tab highlighted at 560 px and 320 px, with the app name box inside the settings panel");
         }
 
         private static void VerifyQrCode()
@@ -286,7 +286,7 @@ namespace CodexUsageMeter
             root.SetValue(Control.FontFamilyProperty, window.FontFamily);
             root.SetValue(Control.ForegroundProperty, window.Foreground);
             root.SetValue(Control.FontSizeProperty, window.FontSize);
-            // 560 px fits both codes side by side; at 320 px they must stack instead of being cut.
+            // Only one code is ever on screen, at its scannable 150 px, in a wide and a narrow window.
             foreach (int width in new[] { 560, 320 })
             {
                 HwndSourceParameters parameters = new HwndSourceParameters("CodexUsageMeter.PhoneRemoteTest") {
@@ -295,22 +295,29 @@ namespace CodexUsageMeter
                 using (HwndSource surface = new HwndSource(parameters))
                 {
                     surface.RootVisual = root;
-                    root.Measure(new Size(width, 900)); root.Arrange(new Rect(0, 0, width, 900)); root.UpdateLayout();
                     Image install = (Image)window.FindName("PhoneRemoteInstallQrImage"), pair = (Image)window.FindName("PhoneRemoteQrImage");
+                    Require(install.Source != null && pair.Source != null, "a QR code has no image");
                     ScrollViewer scroll = null;
                     for (DependencyObject node = pair; node != null && scroll == null; node = VisualTreeHelper.GetParent(node)) scroll = node as ScrollViewer;
-                    Rect inContent = install.TransformToAncestor(scroll).TransformBounds(new Rect(install.RenderSize));
-                    scroll.ScrollToVerticalOffset(scroll.VerticalOffset + inContent.Top - 40); root.UpdateLayout();
-                    Rect installBounds = install.TransformToAncestor(scroll).TransformBounds(new Rect(install.RenderSize));
-                    Rect pairBounds = pair.TransformToAncestor(scroll).TransformBounds(new Rect(pair.RenderSize));
-                    foreach (Rect bounds in new[] { installBounds, pairBounds })
+                    // The pairing code is shown first; the install tab swaps it for the install code and back.
+                    bool[] steps = { false, true, false };
+                    for (int step = 0; step < steps.Length; step++)
+                    {
+                        bool showInstall = steps[step];
+                        // The 560 px window first checks the state the settings open in.
+                        if (step > 0 || width != 560) PhoneRemoteSettings.SelectCode(window, showInstall);
+                        root.Measure(new Size(width, 900)); root.Arrange(new Rect(0, 0, width, 900)); root.UpdateLayout();
+                        Image shown = showInstall ? install : pair, hidden = showInstall ? pair : install;
+                        Require(shown.IsVisible && !hidden.IsVisible, "both or neither QR code is on screen at " + width + " px (install tab: " + showInstall + ")");
+                        Rect inContent = shown.TransformToAncestor(scroll).TransformBounds(new Rect(shown.RenderSize));
+                        scroll.ScrollToVerticalOffset(scroll.VerticalOffset + inContent.Top - 80); root.UpdateLayout();
+                        Rect bounds = shown.TransformToAncestor(scroll).TransformBounds(new Rect(shown.RenderSize));
                         Require(Math.Abs(bounds.Width - 150) < 1 && Math.Abs(bounds.Height - 150) < 1 && bounds.Top >= 0 && bounds.Bottom <= scroll.ViewportHeight &&
                             bounds.Left >= 0 && bounds.Right <= scroll.ViewportWidth,
                             "a QR code is not fully visible at 150 px inside the settings scroll area of a " + width + " px window: " + bounds + " viewport=" + scroll.ViewportWidth + "x" + scroll.ViewportHeight);
-                    bool sideBySide = installBounds.Right + 8 <= pairBounds.Left && Math.Abs(installBounds.Top - pairBounds.Top) < 1;
-                    Require(install.IsVisible && pair.IsVisible && install.Source != null && pair.Source != null &&
-                        (width == 560 ? sideBySide : pairBounds.Top >= installBounds.Bottom),
-                        "the install and pairing QR codes are not " + (width == 560 ? "side by side" : "stacked") + " at " + width + " px: " + installBounds + " " + pairBounds);
+                        Button tab = (Button)window.FindName(showInstall ? "PhoneRemoteInstallTab" : "PhoneRemotePairTab");
+                        Require(tab.IsVisible && tab.Style == (Style)tab.FindResource("AccentButton"), "the tab of the shown QR code is not highlighted at " + width + " px");
+                    }
                     Require(((TextBox)window.FindName("PhoneRemoteNameText")).IsVisible && ((Button)window.FindName("PhoneRemoteResetButton")).IsVisible,
                         "the name box or the new-QR button is hidden while the codes are shown");
                     if (evidenceDirectory != null)

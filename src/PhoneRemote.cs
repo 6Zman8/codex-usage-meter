@@ -398,7 +398,19 @@ namespace CodexUsageMeter
                 Apply();
                 _footer("폰 리모컨 등록 QR을 새로 만들었습니다. 폰 앱에서 QR을 다시 찍어 주세요.");
             };
+            ((Button)window.FindName("PhoneRemoteInstallTab")).Click += delegate { SelectCode(_window, true); };
+            ((Button)window.FindName("PhoneRemotePairTab")).Click += delegate { SelectCode(_window, false); };
             Show(null, "켜면 이 PC에서 폰 리모컨을 엽니다.");
+        }
+
+        internal static void SelectCode(Window window, bool install)
+        {
+            ((FrameworkElement)window.FindName("PhoneRemoteInstallQrPanel")).Visibility = install ? Visibility.Visible : Visibility.Collapsed;
+            ((FrameworkElement)window.FindName("PhoneRemotePairQrPanel")).Visibility = install ? Visibility.Collapsed : Visibility.Visible;
+            Button installTab = (Button)window.FindName("PhoneRemoteInstallTab"), pairTab = (Button)window.FindName("PhoneRemotePairTab");
+            Style selected = (Style)installTab.FindResource("AccentButton"), plain = (Style)installTab.FindResource(typeof(Button));
+            installTab.Style = install ? selected : plain;
+            pairTab.Style = install ? plain : selected;
         }
 
         private void SaveName()
@@ -482,7 +494,7 @@ namespace CodexUsageMeter
                 _firewall.Visibility = Visibility.Visible;
                 return;
             }
-            Show(link, "폰의 'PC 리모컨' 앱에서 'QR 찍어서 PC 추가'를 누르고 2번 QR을 찍으세요. 앱이 없으면 1번 QR로 먼저 설치합니다. 폰은 이 PC와 같은 공유기(와이파이)에 연결돼 있어야 합니다.");
+            Show(link, "폰의 'PC 리모컨' 앱에서 'QR 찍어서 PC 추가'를 누르고 '2. PC 등록' QR을 찍으세요. 앱이 없으면 위의 '1. 폰에 앱 설치'를 눌러 나온 QR로 먼저 설치합니다. 폰은 이 PC와 같은 공유기(와이파이)에 연결돼 있어야 합니다.");
         }
 
         private void Run(string action)

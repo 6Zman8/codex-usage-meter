@@ -1,1 +1,1 @@
-Phone remote app 1.0.1 fixes the crash when adding a PC by QR code and downloads Google's QR scanner on first use.
+Settings show the app install and PC pairing QR codes one at a time, so the phone camera no longer reads the wrong one.
