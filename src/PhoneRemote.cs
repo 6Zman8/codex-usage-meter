@@ -244,8 +244,9 @@ namespace CodexUsageMeter
         internal int Port = PhoneRemoteServer.DefaultPort;
         internal Func<IPAddress> FindAddress = PhoneRemoteServer.LanAddress;
         internal Func<int, PhoneRemoteFirewall.State> CheckFirewall = port => PhoneRemoteFirewall.Check(PhoneRemoteFirewall.Program, port);
-        // Runs off the UI thread; true when the rule was added.
-        internal Func<int, bool> AllowFirewall = port => PhoneRemoteFirewall.Allow(PhoneRemoteFirewall.Program, port);
+        // Runs off the UI thread; true when the rule was added (and, given an address, its connection made private).
+        internal Func<int, IPAddress, bool> AllowFirewall = (port, makePrivate) => PhoneRemoteFirewall.Allow(PhoneRemoteFirewall.Program, port, makePrivate);
+        internal Action<IPAddress> OpenNetworkSettings = PhoneRemoteFirewall.OpenNetworkSettings;
 
         internal static PhoneRemoteStore User()
         {
@@ -318,19 +319,48 @@ namespace CodexUsageMeter
             return false;
         }
 
-        // Private networks only, this program only, this port only.
-        internal static string Command(string program, int port)
+        // Private networks only, this program only, this port only. A positive interface index also switches that
+        // one connection to the private profile, in the same administrator prompt.
+        internal static string Command(string program, int port, int privateInterface)
         {
             string p = port.ToString(CultureInfo.InvariantCulture);
-            return "/c netsh advfirewall firewall delete rule name=\"" + RuleName + "\" >nul & netsh advfirewall firewall add rule name=\"" + RuleName +
+            string command = "/c netsh advfirewall firewall delete rule name=\"" + RuleName + "\" >nul & netsh advfirewall firewall add rule name=\"" + RuleName +
                 "\" dir=in action=allow protocol=TCP localport=" + p + " profile=private program=\"" + program + "\"";
+            if (privateInterface > 0)
+                command += " && powershell -NoProfile -NonInteractive -Command \"Set-NetConnectionProfile -InterfaceIndex " +
+                    privateInterface.ToString(CultureInfo.InvariantCulture) + " -NetworkCategory Private -ErrorAction Stop\"";
+            return command;
         }
 
-        internal static bool Allow(string program, int port)
+        // The adapter holding the address in the pairing QR code.
+        internal static NetworkInterface Adapter(IPAddress address)
         {
+            if (address == null) return null;
+            return NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(adapter => adapter.GetIPProperties().UnicastAddresses.Any(item => item.Address.Equals(address)));
+        }
+
+        // Opens the Settings page for that connection's kind, where its network profile type is changed.
+        internal static void OpenNetworkSettings(IPAddress address)
+        {
+            NetworkInterface adapter = Adapter(address);
+            string page = adapter == null ? "ms-settings:network-status"
+                : adapter.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? "ms-settings:network-wifi"
+                : adapter.NetworkInterfaceType == NetworkInterfaceType.Ethernet ? "ms-settings:network-ethernet" : "ms-settings:network-status";
+            Process.Start(new ProcessStartInfo(page) { UseShellExecute = true });
+        }
+
+        internal static bool Allow(string program, int port, IPAddress makePrivate)
+        {
+            int privateInterface = 0;
+            if (makePrivate != null)
+            {
+                NetworkInterface adapter = Adapter(makePrivate);
+                if (adapter == null) return false;
+                privateInterface = adapter.GetIPProperties().GetIPv4Properties().Index;
+            }
             try
             {
-                using (Process process = Process.Start(new ProcessStartInfo("cmd.exe", Command(program, port)) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden }))
+                using (Process process = Process.Start(new ProcessStartInfo("cmd.exe", Command(program, port, privateInterface)) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden }))
                 {
                     process.WaitForExit();
                     return process.ExitCode == 0;
@@ -352,13 +382,16 @@ namespace CodexUsageMeter
         private readonly Window _window;
         private readonly PhoneRemoteStore _store;
         private readonly CheckBox _toggle;
-        private readonly Button _reset, _firewall;
+        private readonly Button _reset, _firewall, _network;
+        private readonly TextBlock _firewallText;
         private readonly TextBox _name;
         private readonly Action<string> _footer;
         private readonly Action _screenOff, _sleep;
         private readonly DispatcherTimer _retry;
         private PhoneRemoteServer _server;
         private bool _allowed, _setting, _disposed;
+        // The address whose connection is on a public network, or null; the firewall button then also makes it private.
+        private IPAddress _publicAddress;
 
         // The pairing link the QR code shows, or null while it is hidden.
         internal string PairLink { get; private set; }
@@ -369,6 +402,13 @@ namespace CodexUsageMeter
             _toggle = (CheckBox)window.FindName("PhoneRemoteCheckBox");
             _reset = (Button)window.FindName("PhoneRemoteResetButton");
             _firewall = (Button)window.FindName("PhoneRemoteFirewallButton");
+            _firewallText = (TextBlock)window.FindName("PhoneRemoteFirewallText");
+            _network = (Button)window.FindName("PhoneRemoteNetworkButton");
+            _network.Click += delegate
+            {
+                try { _store.OpenNetworkSettings(_publicAddress); }
+                catch (Exception ex) { _footer("Windows 네트워크 설정을 열지 못했습니다: " + ex.Message); }
+            };
             _name = (TextBox)window.FindName("PhoneRemoteNameText");
             _name.Text = store.Name();
             _name.LostKeyboardFocus += delegate { SaveName(); };
@@ -377,11 +417,16 @@ namespace CodexUsageMeter
             {
                 _firewall.IsEnabled = false;
                 int port = _store.Port;
-                Task.Run(() => _store.AllowFirewall(port)).ContinueWith(task => _window.Dispatcher.BeginInvoke(new Action(delegate
+                IPAddress makePrivate = _publicAddress;
+                Task.Run(() => _store.AllowFirewall(port, makePrivate)).ContinueWith(task => _window.Dispatcher.BeginInvoke(new Action(delegate
                 {
                     _firewall.IsEnabled = true;
                     bool added = task.Status == TaskStatus.RanToCompletion && task.Result;
-                    _footer(added ? "폰 리모컨: Windows 방화벽에서 폰 연결을 허용했습니다." : "폰 리모컨: 방화벽 허용이 취소되었거나 실패했습니다.");
+                    if (makePrivate == null)
+                        _footer(added ? "폰 리모컨: Windows 방화벽에서 폰 연결을 허용했습니다." : "폰 리모컨: 방화벽 허용이 취소되었거나 실패했습니다.");
+                    else
+                        _footer(added ? "폰 리모컨: 이 연결을 개인 네트워크로 바꾸고 방화벽에서 폰 연결을 허용했습니다."
+                            : "폰 리모컨: 개인 네트워크 변경이 취소되었거나 실패했습니다. 'Windows 네트워크 설정 열기'로 직접 바꿔 주세요.");
                     Apply();
                 })));
             };
@@ -485,13 +530,19 @@ namespace CodexUsageMeter
             if (firewall == PhoneRemoteFirewall.State.Blocked)
             {
                 Show(link, "Windows 방화벽이 폰 연결을 막고 있습니다. 아래 '방화벽 허용'을 누르고 관리자 승인 창에서 '예'를 누르세요.");
+                _firewallText.Text = "방화벽 허용 (관리자 승인 1회)";
                 _firewall.Visibility = Visibility.Visible;
                 return;
             }
             if (firewall == PhoneRemoteFirewall.State.PublicNetwork)
             {
-                Show(link, "이 PC의 네트워크가 '공용'으로 설정돼 있어 폰이 연결할 수 없습니다. Windows 설정 → 네트워크 및 인터넷에서 연결을 '개인 네트워크'로 바꾼 뒤 '방화벽 허용'을 누르세요.");
+                Show(link, "이 PC의 네트워크가 '공용'으로 설정돼 있어 폰이 연결할 수 없습니다. 집 와이파이라면 아래 버튼을 누르고 관리자 승인 창에서 '예'를 누르세요. 이 연결이 '개인 네트워크'로 바뀌고 방화벽도 허용됩니다. 직접 바꾸려면 'Windows 네트워크 설정 열기'를 누르세요.");
+                _publicAddress = address;
+                _firewallText.Text = "개인 네트워크로 바꾸고 방화벽 허용 (관리자 승인 1회)";
                 _firewall.Visibility = Visibility.Visible;
+                _network.Visibility = Visibility.Visible;
+                // Picks up a change made in Windows Settings, or one the firewall reports a moment after the button ran.
+                _retry.Start();
                 return;
             }
             Show(link, "폰의 'PC 리모컨' 앱에서 'QR 찍어서 PC 추가'를 누르고 '2. PC 등록' QR을 찍으세요. 앱이 없으면 위의 '1. 폰에 앱 설치'를 눌러 나온 QR로 먼저 설치합니다. 폰은 이 PC와 같은 공유기(와이파이)에 연결돼 있어야 합니다.");
@@ -514,7 +565,7 @@ namespace CodexUsageMeter
             }));
         }
 
-        private void Show(string link, string status) { PairLink = link; ShowCodes(_window, link, status); }
+        private void Show(string link, string status) { PairLink = link; _publicAddress = null; ShowCodes(_window, link, status); }
 
         internal static void ShowCodes(Window window, string link, string status)
         {
@@ -522,6 +573,7 @@ namespace CodexUsageMeter
             ((FrameworkElement)window.FindName("PhoneRemoteLinkPanel")).Visibility = link == null ? Visibility.Collapsed : Visibility.Visible;
             ((FrameworkElement)window.FindName("PhoneRemoteResetButton")).Visibility = link == null ? Visibility.Collapsed : Visibility.Visible;
             ((FrameworkElement)window.FindName("PhoneRemoteFirewallButton")).Visibility = Visibility.Collapsed;
+            ((FrameworkElement)window.FindName("PhoneRemoteNetworkButton")).Visibility = Visibility.Collapsed;
             ((Image)window.FindName("PhoneRemoteQrImage")).Source = link == null ? null : QrImage(QrCode.Encode(link), 3);
             ((Image)window.FindName("PhoneRemoteInstallQrImage")).Source = link == null ? null : QrImage(QrCode.Encode(PhoneRemoteServer.InstallLink), 3);
         }

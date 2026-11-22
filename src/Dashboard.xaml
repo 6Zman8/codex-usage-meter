@@ -495,7 +495,8 @@
               </Grid>
             </StackPanel>
             <TextBlock x:Name="PhoneRemoteStatusText" Style="{StaticResource Muted}" Margin="0,8,0,0" TextWrapping="Wrap"/>
-            <Button x:Name="PhoneRemoteFirewallButton" HorizontalContentAlignment="Stretch" Style="{StaticResource AccentButton}" Margin="0,10,0,0" Visibility="Collapsed"><TextBlock Text="방화벽 허용 (관리자 승인 1회)" TextWrapping="Wrap" TextAlignment="Center"/></Button>
+            <Button x:Name="PhoneRemoteFirewallButton" HorizontalContentAlignment="Stretch" Style="{StaticResource AccentButton}" Margin="0,10,0,0" Visibility="Collapsed"><TextBlock x:Name="PhoneRemoteFirewallText" Text="방화벽 허용 (관리자 승인 1회)" TextWrapping="Wrap" TextAlignment="Center"/></Button>
+            <Button x:Name="PhoneRemoteNetworkButton" HorizontalContentAlignment="Stretch" Margin="0,8,0,0" Visibility="Collapsed"><TextBlock Text="Windows 네트워크 설정 열기" TextWrapping="Wrap" TextAlignment="Center"/></Button>
             <Button x:Name="PhoneRemoteResetButton" HorizontalContentAlignment="Stretch" Margin="0,10,0,0" Visibility="Collapsed"><TextBlock Text="새 등록 QR 만들기 (등록해 둔 폰은 QR을 다시 찍어야 함)" TextWrapping="Wrap" TextAlignment="Center"/></Button>
           </StackPanel>
         </Border>

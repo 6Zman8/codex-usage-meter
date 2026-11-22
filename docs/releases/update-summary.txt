@@ -1,1 +1,1 @@
-Settings show the app install and PC pairing QR codes one at a time, so the phone camera no longer reads the wrong one.
+On a public network the phone remote offers one button that makes the connection private and allows the firewall, plus a shortcut to Windows network settings.
