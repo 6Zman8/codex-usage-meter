@@ -51,6 +51,12 @@ codexmeter://pair?v=1&id=<pcId>&host=<IPv4>&port=<포트>&token=<토큰>
 - CI(windows-latest)는 기본 제공 JDK 17(`JAVA_HOME_17_X64`)과 Android SDK에 `platforms;android-37.2`, `build-tools;36.0.0`을 설치해 `android` 폴더 안에서 `.\gradlew.bat --no-daemon testDebugUnitTest releaseAssets`를 실행합니다.
 - Google은 Play 밖에서 받은 앱의 개발자 인증을 2027년 1월부터 전 세계로 넓힌다고 발표했습니다(2026년 9월 브라질·인도네시아·싱가포르·태국 먼저 적용). 한국에 적용되면 설치·업데이트에 폰의 고급 설정(24시간 대기)이나 Android 개발자 인증 등록(소수 기기용 무료 제한 배포 계정 등)이 필요할 수 있습니다.
 
+## QR 스캐너
+
+- 'QR 찍어서 PC 추가'는 Google Play 서비스의 코드 스캐너(`play-services-code-scanner`)를 씁니다. 카메라 권한이 필요 없지만, 링크로 설치한 앱은 처음 누를 때 Play 서비스가 스캐너 부품을 내려받습니다. 앱은 `ModuleInstallClient`로 내려받기를 요청하고(3분 안에 끝나지 않으면 기다림을 멈춤), 스캐너가 `CODE_SCANNER_UNAVAILABLE`(200)로 답하면 내려받기가 실패로 보고된 뒤를 포함해 2초 간격으로 최대 1분 다시 시도합니다. 끝내 열리지 않으면 폰 기본 카메라로 찍는 방법(`codexmeter://pair` 링크)을 안내합니다.
+- 정식 빌드는 R8로 축소합니다. ML Kit는 병합된 매니페스트에 적힌 `ComponentRegistrar`를 인자 없는 생성자로 만들기 때문에 `android/app/proguard-rules.pro`가 그 생성자를 지킵니다. `releaseAssets`는 매니페스트의 등록기마다 축소 기록(mapping)에 생성자가 남았는지 확인하고, 없으면 빌드를 멈춥니다(앱 1.0.0은 이 때문에 스캐너를 여는 순간 꺼졌습니다).
+- 에뮬레이터 확인에는 Play 스토어 이미지가 필요합니다(`google_apis` 이미지에는 Play 스토어가 없어 스캐너 부품을 받지 못합니다). 작업 PC에는 `codexremote-play37`(Android 17), `codexremote-play36`(Android 16) 가상 기기가 있습니다.
+
 ## 로컬 검사 (작업 PC)
 
 - 도구는 저장소 밖 `C:\Users\lizra\.android-tools\`에 있습니다(약 14GB): `jdk-17`(JAVA_HOME), `sdk`(ANDROID_HOME, 에뮬레이터·Android 17 이미지 포함), `android-home`(ANDROID_USER_HOME, 가상 기기 `codexremote-api37`은 `android-home\avd`), `gradle-home`(GRADLE_USER_HOME).

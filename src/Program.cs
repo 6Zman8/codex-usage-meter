@@ -25,8 +25,8 @@ using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex Usage Meter")]
 [assembly: AssemblyProduct("Codex Usage Meter")]
-[assembly: AssemblyVersion("1.9.31.0")]
-[assembly: AssemblyFileVersion("1.9.31.0")]
+[assembly: AssemblyVersion("1.9.32.0")]
+[assembly: AssemblyFileVersion("1.9.32.0")]
 
 namespace CodexUsageMeter
 {

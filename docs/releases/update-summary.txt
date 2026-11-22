@@ -1,1 +1,1 @@
-Phone remote is now an Android app (PC 리모컨) that controls several PCs; Settings shows the app install and PC pairing QR codes.
+Phone remote app 1.0.1 fixes the crash when adding a PC by QR code and downloads Google's QR scanner on first use.
