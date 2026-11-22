@@ -47,3 +47,4 @@
 - 이 PC의 설치본 `B:\42b\mod\CodexUsageMeter.exe`(시작 메뉴 `CodexUsageMeter.lnk`의 대상)는 강제 종료하거나 직접 덮어쓰지 않습니다. 갱신은 `docs/RELEASING.md` 8단계의 `--install-update`로만 합니다.
 - `DashboardLayoutView`는 카드 세 장이 든 본문 격자를 비우고 다시 짜므로, 그 격자 안에 다른 요소를 넣지 않습니다(전원 버튼은 그 바깥 칸·행에 있음). `WindowsWidgetRenderer`는 위젯 창의 본문 행만 그리므로 위젯 창에 행을 더하면 렌더러에서도 접히는지 `--windows-widget-self-test`로 확인합니다.
 - `main` 푸시만으로는 배포가 시작되지 않습니다. `.github/workflows/release.yml`은 `v*` 태그에서만 동작하므로, 태그는 배포 의도가 있을 때만 만듭니다.
+- 폰 앱 디버그 빌드는 R8 축소를 하지 않아, 정식 빌드에서만 나는 다운(앱 1.0.0의 'QR 찍어서 PC 추가' 다운: ML Kit 등록기 생성자 제거)을 놓쳤습니다. 앱 동작은 정식 서명·축소 빌드(`releaseAssets`)로 확인하고, `android/app/proguard-rules.pro`의 keep 규칙과 `build.gradle.kts`의 생성자 검사를 유지합니다. 링크로 설치한 앱은 설치·업데이트 때 Play 프로텍트 '앱 검사 권장됨' 창이 뜰 수 있어, 에뮬레이터 업데이트 검사는 설치에 1분 넘게 걸릴 수 있습니다.
