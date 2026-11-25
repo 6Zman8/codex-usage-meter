@@ -1,1 +1,1 @@
-On a public network the phone remote offers one button that makes the connection private and allows the firewall, plus a shortcut to Windows network settings.
+Screen off and sleep now run after a 0.6 s hold instead of 1.2 s, on the PC and in the phone app 1.0.2.

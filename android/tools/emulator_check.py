@@ -211,7 +211,7 @@ def boot(avd, out):
         time.sleep(3)
     else:
         raise CheckFailed("emulator did not finish booting in 10 minutes")
-    # Animations off, like the "remove animations" setting: the 1.2 s hold must still take 1.2 s (the short press checks it).
+    # Animations off, like the "remove animations" setting: the 0.6 s hold must still take 0.6 s (the short press checks it).
     for setting in ("window_animation_scale", "transition_animation_scale", "animator_duration_scale"):
         shell(f"settings put global {setting} 0")
     shell("input keyevent KEYCODE_WAKEUP")
@@ -362,12 +362,13 @@ def run(out, avd, skip_build):
         code = int(re.search(r"versionCode=(\d+)", (ANDROID / "version.properties").read_text()).group(1))
     else:
         v1, v2, code = build(out)
+    name = re.search(r"versionName=(\S+)", (ANDROID / "version.properties").read_text()).group(1)
 
     updates = Path(tempfile.mkdtemp(prefix="remote-updates-"))
     shutil.copy2(v2, updates / "CodexMeterRemote.apk")
     v2_hash = hashlib.sha256(v2.read_bytes()).hexdigest()
     server = UpdateServer(updates)
-    server.publish(code, "1.0.0", hashlib.sha256(v1.read_bytes()).hexdigest())
+    server.publish(code, name, hashlib.sha256(v1.read_bytes()).hexdigest())
 
     desktop = StubMeter("deskTop0001", "데스크톱", 43131, "tokenDesktop0000000001")
     laptop = StubMeter("lapTop00001", "노트북", 43132, "tokenLaptop00000000001")
@@ -420,17 +421,17 @@ def run(out, avd, skip_build):
 
         # C · hold screen off: the gauge fills, then the request goes out
         off = find(desc="화면 끄기", exact=True)
-        hold(off, 2.0, out, "C-holding")
+        hold(off, 2.0, out, "C-holding", shot_after=0.3)
         find("데스크톱 화면을 껐습니다.")
-        expect(desktop.count("POST", "screen-off") == 1, "holding 화면 끄기 for 1.2 s sent POST /screen-off once")
+        expect(desktop.count("POST", "screen-off") == 1, "holding 화면 끄기 past 0.6 s sent POST /screen-off once")
         screenshot(out, "C-done")
 
         # A short press drains the gauge and sends nothing.
-        # One swipe in place keeps DOWN→UP at 0.5 s; separate `input` calls each take about a second to start.
+        # One swipe in place keeps DOWN→UP at 0.25 s; separate `input` calls each take about a second to start.
         sleep_button = find(desc="절전", exact=True)
-        long_press(sleep_button, 500)
+        long_press(sleep_button, 250)
         time.sleep(2.5)
-        expect(desktop.count("POST", "sleep") == 0, "a 0.5 s press on 절전 sent nothing")
+        expect(desktop.count("POST", "sleep") == 0, "a 0.25 s press on 절전 sent nothing")
 
         # Sleep on the laptop.
         tap(tab("노트북"))
@@ -469,7 +470,7 @@ def run(out, avd, skip_build):
 
         # E · PC 관리
         tap(find(desc="PC 관리", exact=True))
-        find("버전 1.0.0")
+        find(f"버전 {name}")
         find("확인 중", gone=True, timeout=20)
         if "업데이트를 확인하지 못했습니다" in texts():
             # The check at start ran before nearby devices access was allowed, and the stub release is on a

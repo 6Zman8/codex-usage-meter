@@ -77,7 +77,7 @@ namespace CodexUsageMeter
     // Drives one PowerButton-styled button: hold to fill the gauge, release a full gauge to run the action.
     internal sealed class PowerHoldButton
     {
-        internal const double HoldMilliseconds = 1200.0;
+        internal const double HoldMilliseconds = 600.0;
         private const int VkLeftButton = 0x01, VkRightButton = 0x02, VkSpace = 0x20;
         private static readonly Brush IdleBorder = Solid(0xFF, 0x34, 0x34, 0x34), HoverBorder = Solid(0xFF, 0x5A, 0x5A, 0x5A),
             IdleBackground = Solid(0xFF, 0x1B, 0x1B, 0x1B), HoverBackground = Solid(0xFF, 0x22, 0x22, 0x24),

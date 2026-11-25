@@ -982,16 +982,16 @@ namespace CodexUsageMeter
         {
             HoldToConfirm hold = new HoldToConfirm(PowerHoldButton.HoldMilliseconds);
             hold.Press(0);
-            Require(!hold.Release(600) && hold.Phase == HoldPhase.Draining, "an early release committed the power action");
-            hold.Press(675);
+            Require(!hold.Release(300) && hold.Phase == HoldPhase.Draining, "an early release committed the power action");
+            hold.Press(337.5);
             Require(Math.Abs(hold.Progress - .25) < 1e-6, "a new press did not resume from the draining gauge");
-            hold.Cancel(975); hold.Advance(1300);
-            Require(hold.Phase == HoldPhase.Idle && hold.Progress == 0 && !hold.Release(1400), "leaving the button did not drain and cancel the press");
-            hold.Press(2000); hold.Advance(3199);
+            hold.Cancel(487.5); hold.Advance(650);
+            Require(hold.Phase == HoldPhase.Idle && hold.Progress == 0 && !hold.Release(700), "leaving the button did not drain and cancel the press");
+            hold.Press(1000); hold.Advance(1599.5);
             Require(hold.Phase == HoldPhase.Holding, "the gauge filled before the hold time");
-            hold.Advance(3200); hold.Cancel(3300);
+            hold.Advance(1600); hold.Cancel(1650);
             Require(hold.Phase == HoldPhase.Armed, "a full gauge was not committed");
-            Require(hold.Release(3400) && hold.Phase == HoldPhase.Fired && !hold.Release(3500), "a committed press did not run exactly once on release");
+            Require(hold.Release(1700) && hold.Phase == HoldPhase.Fired && !hold.Release(1750), "a committed press did not run exactly once on release");
 
             using (Fixture fixture = new Fixture())
             {
@@ -1052,38 +1052,38 @@ namespace CodexUsageMeter
                 PresentationSource source = PresentationSource.FromVisual(off);
                 Action<RoutedEvent, int> space = (routed, time) => off.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, source, time, Key.Space) { RoutedEvent = routed });
 
-                mouse(UIElement.PreviewMouseLeftButtonDownEvent, 0); pressed(true); now = 600; controller.Tick(); fixture.Root.UpdateLayout();
+                mouse(UIElement.PreviewMouseLeftButtonDownEvent, 0); pressed(true); now = 300; controller.Tick(); fixture.Root.UpdateLayout();
                 Require(fill.IsVisible && Math.Abs(fill.ActualHeight - (off.ActualHeight - 2) / 2) < 2 && hint.Text == "계속 누르세요",
                     "the gauge does not follow the press: fill=" + fill.ActualHeight + " button=" + off.ActualHeight);
                 if (previewDirectory != null) fixture.Capture(Path.Combine(previewDirectory, "power-holding.png"));
-                release(600); now = 1000; controller.Tick(); fixture.Root.UpdateLayout();
+                release(300); now = 500; controller.Tick(); fixture.Root.UpdateLayout();
                 Require(runs == 0 && later.Count == 0 && !fill.IsVisible && controller.Phase == HoldPhase.Idle, "an early release ran the power action or kept the gauge");
 
-                now = 2000; mouse(UIElement.PreviewMouseLeftButtonDownEvent, 2000); pressed(true); now = 3400; controller.Tick();
-                release(3100);
+                now = 1000; mouse(UIElement.PreviewMouseLeftButtonDownEvent, 1000); pressed(true); now = 1700; controller.Tick();
+                release(1550);
                 Require(runs == 0 && later.Count == 0 && controller.Phase == HoldPhase.Draining, "a release before the gauge filled ran after a late timer tick");
-                now = 3800; controller.Tick();
+                now = 1900; controller.Tick();
 
-                now = 4000; mouse(UIElement.PreviewMouseLeftButtonDownEvent, 4000); pressed(true); now = 5300; controller.Tick();
+                now = 2000; mouse(UIElement.PreviewMouseLeftButtonDownEvent, 2000); pressed(true); now = 2650; controller.Tick();
                 Require(controller.Phase == HoldPhase.Armed && hint.Text == "손을 떼면 꺼집니다", "a full gauge did not show it is committed");
-                physicallyDown = true; pressed(false); mouse(Mouse.LostMouseCaptureEvent, 5300);
+                physicallyDown = true; pressed(false); mouse(Mouse.LostMouseCaptureEvent, 2650);
                 Require(controller.Phase == HoldPhase.Armed && later.Count == 0, "a lost capture ran the action while the button was still held");
-                physicallyDown = false; now = 5400; controller.Tick();
+                physicallyDown = false; now = 2700; controller.Tick();
                 Require(label.Text == "화면 끄는 중…" && runs == 0 && later.Count == 2, "the physical release did not schedule the committed action");
-                release(5400);
+                release(2700);
                 Require(later.Count == 2, "a second release scheduled the action again");
                 later[0](); later[1](); later.Clear(); fixture.Root.UpdateLayout();
                 Require(runs == 1 && label.Text == "화면 끄기" && hint.Text == "꾹 누르기" && !fill.IsVisible, "the power action did not run once and reset");
 
-                now = 7000; space(Keyboard.PreviewKeyDownEvent, 7000); pressed(true); now = 8300; controller.Tick();
-                mouse(UIElement.PreviewMouseLeftButtonUpEvent, 8300);
+                now = 3500; space(Keyboard.PreviewKeyDownEvent, 3500); pressed(true); now = 4150; controller.Tick();
+                mouse(UIElement.PreviewMouseLeftButtonUpEvent, 4150);
                 Require(controller.Phase == HoldPhase.Armed && later.Count == 0, "a mouse release ended a Space press");
-                space(Keyboard.PreviewKeyUpEvent, 8400);
+                space(Keyboard.PreviewKeyUpEvent, 4200);
                 Require(later.Count == 2, "the Space release did not run the committed press");
                 later[0](); later[1]();
                 Require(runs == 2, "the Space press did not run exactly once");
             }
-            report("PASS power buttons: 1.2 s hold gauge through real pressed/mouse/Space/capture events, early release and leave cancel, release judged by its own timestamp, full gauge runs once after its own physical release, 250x341 full-mode column, 224x124 widget strip, reachable in 320/460/900 windows");
+            report("PASS power buttons: 0.6 s hold gauge through real pressed/mouse/Space/capture events, early release and leave cancel, release judged by its own timestamp, full gauge runs once after its own physical release, 250x341 full-mode column, 224x124 widget strip, reachable in 320/460/900 windows");
         }
 
         private static void VerifyContentLayout(Action<string> report, string previewDirectory)

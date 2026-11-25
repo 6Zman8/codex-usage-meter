@@ -52,19 +52,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-private const val HOLD_MS = 1200
+private const val HOLD_MS = 600
 private const val DRAIN_MS = HOLD_MS / 4
 private const val RESET_AFTER_SEND_MS = 1500L
 
 private enum class Phase { Idle, Holding, Draining, Sending }
 
-/** The 1.2 s hold is a safety delay, so it ignores "remove animations" / animator duration scale (0 would fire at once). */
+/** The 0.6 s hold is a safety delay, so it ignores "remove animations" / animator duration scale (0 would fire at once). */
 private object RealTime : MotionDurationScale {
     override val scaleFactor = 1f
 }
 
 /**
- * The big hold-to-run button of the old Chrome remote: holding fills the gauge from the bottom over 1.2 s,
+ * The big hold-to-run button of the old Chrome remote: holding fills the gauge from the bottom over 0.6 s,
  * letting go (or sliding off) drains it, and a full gauge vibrates and runs [onFire].
  */
 @Composable
